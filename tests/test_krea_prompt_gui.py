@@ -36,19 +36,31 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         menus = {action.text(): action.menu() for action in menu_actions}
         self.assertIn("File", menus)
         self.assertIn("Edit", menus)
-        self.assertIn("Prompt", menus)
-        self.assertIn("Chat", menus)
+        self.assertIn("Create", menus)
+        self.assertIn("Model", menus)
+        self.assertIn("Research", menus)
+        self.assertIn("Library", menus)
+        self.assertIn("View", menus)
 
+        def descendant_actions(menu):
+            actions = []
+            for action in menu.actions():
+                if action.menu() is not None:
+                    actions.extend(descendant_actions(action.menu()))
+                elif not action.isSeparator():
+                    actions.append(action)
+            return actions
         shortcuts = {
             action.text(): action.shortcut().toString()
             for menu in menus.values()
-            for action in menu.actions()
-            if not action.isSeparator()
+            for action in descendant_actions(menu)
         }
         self.assertEqual(shortcuts["Exit"], "Ctrl+Q")
         self.assertEqual(shortcuts["Correct prompt"], "Ctrl+Return")
         self.assertEqual(shortcuts["Copy corrected prompt"], "Ctrl+Shift+C")
         self.assertEqual(shortcuts["Iterate corrected prompt"], "Ctrl+Shift+R")
+        self.assertIsNotNone(self.controller.library_dock)
+        self.assertTrue(self.controller.library_dock.isVisible())
 
     def test_iterate_result_promotes_output_and_applies_optional_feedback(self):
         result = "A red knight stands at an ancient castle gate under cold moonlight."
@@ -230,6 +242,173 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.controller.history_listbox.setCurrentRow(0)
         self.assertEqual(self.controller._selected_history_entry()["title"], "Castle")
 
+    def test_history_restores_comic_workspace_fields_result_and_references(self):
+        image_path = Path(self.temp_dir.name) / "comic-reference.png"
+        image_path.write_bytes(b"not-a-real-png")
+        self.controller.mode_tabs.setCurrentIndex(1)
+        self.controller.comic_title_var.set("Flooded Delivery")
+        self.controller.comic_premise_var.set("A courier reaches a flooded clinic.")
+        self.controller.comic_panel_count_var.set(2)
+        self.controller.comic_panel_vars[0].set("The courier reaches the gate.")
+        self.controller.comic_panel_vars[1].set("The doctor opens the gate.")
+        self.controller.comic_reference_paths[:] = [str(image_path)]
+        self.controller.comic_reference_images_var.set(True)
+        self.controller._add_prompt_history(
+            "2-panel comic draft",
+            "Stored comic result",
+            "Panel 1: arrival\nPanel 2: rescue",
+            "Comic Story",
+            "comic",
+        )
+
+        self.controller.comic_title_var.set("")
+        self.controller.comic_premise_var.set("")
+        self.controller.comic_panel_vars[0].set("")
+        self.controller.comic_reference_paths.clear()
+        self.controller.comic_reference_images_var.set(False)
+        self.controller.comic_result_text.clear()
+        self.controller.history_listbox.setCurrentRow(0)
+        self.controller.load_selected_history_prompt()
+
+        self.assertEqual(self.controller.mode_tabs.currentIndex(), 1)
+        self.assertEqual(self.controller.comic_title_var.get(), "Flooded Delivery")
+        self.assertEqual(
+            self.controller.comic_panel_vars[0].get(),
+            "The courier reaches the gate.",
+        )
+        self.assertEqual(
+            self.controller.comic_result_text.toPlainText(),
+            "Stored comic result",
+        )
+        self.assertEqual(self.controller.comic_reference_paths, [str(image_path)])
+        self.assertTrue(self.controller.comic_reference_images_var.get())
+
+    def test_history_restores_meme_workspace_without_touching_prompt_draft(self):
+        self.controller.draft_text.setPlainText("Keep this Prompt Corrector draft")
+        self.controller.mode_tabs.setCurrentIndex(2)
+        self.controller.meme_scene_var.set("A cat staring at an empty bowl")
+        self.controller.meme_top_text_var.set("DINNER IS LATE")
+        self.controller.meme_bottom_text_var.set("BY THREE SECONDS")
+        self.controller._add_prompt_history(
+            "Meme draft",
+            "Stored meme result",
+            "",
+            "Meme",
+            "meme",
+        )
+
+        self.controller.meme_scene_var.set("")
+        self.controller.meme_top_text_var.set("")
+        self.controller.history_listbox.setCurrentRow(0)
+        self.controller.load_selected_history_prompt()
+
+        self.assertEqual(self.controller.mode_tabs.currentIndex(), 2)
+        self.assertEqual(
+            self.controller.meme_scene_var.get(),
+            "A cat staring at an empty bowl",
+        )
+        self.assertEqual(self.controller.meme_top_text_var.get(), "DINNER IS LATE")
+        self.assertEqual(
+            self.controller.meme_result_text.toPlainText(),
+            "Stored meme result",
+        )
+        self.assertEqual(
+            self.controller.draft_text.toPlainText(),
+            "Keep this Prompt Corrector draft",
+        )
+
+    def test_activity_history_is_persisted_scoped_and_not_erased_by_new_run(self):
+        self.controller._log_activity("Prompt event", "prompt")
+        self.controller._log_activity("Comic event", "comic")
+        self.controller._log_activity("Connection event", "system")
+
+        self.controller.activity_scope_combo.setCurrentText("Comic Story")
+        self.assertIn("Comic event", self.controller.activity_text.toPlainText())
+        self.assertNotIn("Prompt event", self.controller.activity_text.toPlainText())
+
+        snapshot = self.controller._settings_snapshot()
+        self.assertEqual(len(snapshot["activity_log"]), 3)
+        self.controller.active_activity_workspace = "meme"
+        self.controller._log_activity("Started another run.")
+        self.assertEqual(len(self.controller.activity_log), 4)
+
+    def test_error_diagnostic_preserves_previous_result_and_logs_action(self):
+        self.controller.corrected_text.setPlainText("Previous usable prompt")
+        self.controller.request_in_progress = True
+
+        with mock.patch.object(gui.messagebox, "showerror") as showerror:
+            self.controller._show_error(
+                "LM Studio could not preserve the prompt's hard fidelity contract: count changed",
+                "prompt",
+                "Final validation",
+            )
+
+        self.assertEqual(
+            self.controller.corrected_text.toPlainText(),
+            "Previous usable prompt",
+        )
+        self.assertEqual(
+            self.controller.status_var.get(),
+            "The prompt contract could not be repaired",
+        )
+        self.assertIn("Final validation", self.controller.activity_text.toPlainText())
+        self.assertIn("Next:", self.controller.activity_text.toPlainText())
+        self.assertIn("Workspace: Prompt Corrector", showerror.call_args.args[1])
+
+    def test_error_classifier_covers_connection_timeout_output_and_reference_edges(self):
+        cases = (
+            ("Connection refused", "connection", "LM Studio is unavailable"),
+            ("The request timed out", "timeout", "LM Studio timed out"),
+            (
+                "empty response with reasoning_content and finish_reason: length",
+                "model-output",
+                "The model returned no usable result",
+            ),
+            (
+                "url field must be a base64 encoded image",
+                "reference",
+                "Reference-image analysis failed",
+            ),
+        )
+        for error, category, title in cases:
+            with self.subTest(error=error):
+                diagnostic = gui.classify_workflow_error(
+                    error,
+                    workspace="comic",
+                    stage="Reference preflight",
+                )
+                self.assertEqual(diagnostic["category"], category)
+                self.assertEqual(diagnostic["title"], title)
+                self.assertEqual(diagnostic["workspace"], "Comic Story")
+                self.assertIn("Next:", diagnostic["message"])
+
+    def test_unexpected_worker_exception_unlocks_ui_and_preserves_result(self):
+        self.controller.draft_text.setPlainText("A red car under streetlights")
+        self.controller.corrected_text.setPlainText("Previous successful result")
+        self.controller.reference_images_var.set(False)
+        self.controller.live_research_var.set(False)
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+        worker_args = thread_class.call_args.kwargs["args"]
+
+        with (
+            mock.patch(
+                "krea_prompt_gui.post_chat_completion",
+                side_effect=ValueError("unexpected parser edge"),
+            ),
+            mock.patch.object(gui.messagebox, "showerror"),
+        ):
+            self.controller._correct_prompt_worker(*worker_args)
+            self.application.processEvents()
+
+        self.assertFalse(self.controller.request_in_progress)
+        self.assertTrue(self.controller.correct_button.isEnabled())
+        self.assertEqual(
+            self.controller.corrected_text.toPlainText(),
+            "Previous successful result",
+        )
+        self.assertIn("unexpected parser edge", self.controller.activity_text.toPlainText())
+
     def test_mix_editor_has_exhaustive_searchable_ingredient_library(self):
         chosen_suffixes = {
             "Watercolor",
@@ -336,6 +515,44 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         candidate = self.controller._local_reference_candidates()[0]
         self.assertEqual(candidate["title"], "reference.png")
         self.assertTrue(candidate["url"].startswith("file:"))
+
+    def test_reference_images_are_isolated_and_routed_for_comic_and_meme(self):
+        comic_image = Path(self.temp_dir.name) / "comic.png"
+        meme_image = Path(self.temp_dir.name) / "meme.png"
+        comic_image.write_bytes(b"comic")
+        meme_image.write_bytes(b"meme")
+
+        self.controller.mode_tabs.setCurrentIndex(1)
+        self.controller.add_local_reference_paths([str(comic_image)])
+        self.assertEqual(self.controller.comic_reference_paths, [str(comic_image)])
+        self.assertEqual(self.controller.local_reference_paths, [])
+        self.assertTrue(self.controller.comic_reference_images_var.get())
+
+        self.controller.mode_tabs.setCurrentIndex(2)
+        self.controller.add_local_reference_paths([str(meme_image)])
+        self.assertEqual(self.controller.meme_reference_paths, [str(meme_image)])
+        self.assertEqual(self.controller.comic_reference_paths, [str(comic_image)])
+        self.assertTrue(self.controller.meme_reference_images_var.get())
+
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller._start_prompt_correction(
+                draft="A meme scene with exact caption text.",
+                story_elements="",
+                destination="meme",
+            )
+        worker_args = thread_class.call_args.kwargs["args"]
+        bound = inspect.signature(self.controller._correct_prompt_worker).bind(
+            *worker_args
+        )
+        self.assertTrue(bound.arguments["reference_image_analysis"])
+        self.assertEqual(
+            bound.arguments["local_reference_candidates"][0]["title"],
+            "meme.png",
+        )
+        self.assertNotIn(
+            "comic.png",
+            str(bound.arguments["local_reference_candidates"]),
+        )
 
     def test_local_references_skip_automatic_web_image_lookup(self):
         local = [

@@ -1357,6 +1357,191 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     return issues
 
 
+def _unambiguous_gender_label(
+    prompt: str,
+    *,
+    singular_terms: tuple[str, ...],
+    plural_terms: tuple[str, ...],
+    fallback_label: str,
+) -> str:
+    """Return one reusable person label only when the gender reference is unique."""
+
+    searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
+    if any(re.search(rf"\b{re.escape(term)}\b", searchable) for term in plural_terms):
+        return ""
+
+    present = [
+        term
+        for term in singular_terms
+        if re.search(rf"\b{re.escape(term)}\b", searchable)
+    ]
+    if len(present) != 1:
+        return ""
+
+    term = present[0]
+    if re.search(
+        rf"\b(?:another|both|two|three|four|five|six|several|multiple|many)\b"
+        rf"[^,.!?;]{{0,32}}\b{re.escape(term)}\b",
+        searchable,
+    ):
+        return ""
+
+    position_match = re.search(
+        rf"\b{re.escape(term)}\b[^,.!?;]{{0,48}}\b"
+        r"((?:on|at)\s+(?:the\s+)?(?:left|right|center)|"
+        r"in\s+(?:the\s+)?(?:foreground|background|center))\b",
+        searchable,
+    )
+    if position_match:
+        return f"the {term} {position_match.group(1)}"
+    return fallback_label
+
+
+def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
+    """Expand safely resolvable gendered pronouns into stable person labels."""
+
+    if not appears_multi_person_scene(prompt):
+        return prompt
+
+    female_label = _unambiguous_gender_label(
+        prompt,
+        singular_terms=(
+            "woman",
+            "female",
+            "lady",
+            "girl",
+            "queen",
+            "mother",
+            "daughter",
+            "sister",
+            "wife",
+            "bride",
+            "cavewoman",
+        ),
+        plural_terms=(
+            "women",
+            "females",
+            "ladies",
+            "girls",
+            "queens",
+            "mothers",
+            "daughters",
+            "sisters",
+            "wives",
+            "brides",
+            "cavewomen",
+        ),
+        fallback_label="the female subject",
+    )
+    male_label = _unambiguous_gender_label(
+        prompt,
+        singular_terms=(
+            "man",
+            "male",
+            "boy",
+            "king",
+            "father",
+            "son",
+            "brother",
+            "husband",
+            "groom",
+            "caveman",
+        ),
+        plural_terms=(
+            "men",
+            "males",
+            "boys",
+            "kings",
+            "fathers",
+            "sons",
+            "brothers",
+            "husbands",
+            "grooms",
+            "cavemen",
+        ),
+        fallback_label="the male subject",
+    )
+    if not female_label and not male_label:
+        return prompt
+
+    def replace_unquoted(segment: str) -> str:
+        group_label = (
+            f"{female_label} and {male_label}"
+            if female_label and male_label
+            else ""
+        )
+        if male_label:
+            segment = re.sub(r"\bhe\b", male_label, segment, flags=re.IGNORECASE)
+            segment = re.sub(r"\bhim\b", male_label, segment, flags=re.IGNORECASE)
+            segment = re.sub(
+                r"\bhis\b",
+                male_label + "'s",
+                segment,
+                flags=re.IGNORECASE,
+            )
+        if female_label:
+            segment = re.sub(r"\bshe\b", female_label, segment, flags=re.IGNORECASE)
+            segment = re.sub(
+                r"\bhers\b",
+                female_label + "'s",
+                segment,
+                flags=re.IGNORECASE,
+            )
+
+            object_her = re.compile(
+                r"(?i)(?P<prefix>\b(?:to|toward|towards|at|beside|behind|near|with|from|"
+                r"for|against|around|past|above|below|helps|watches|sees|touches|faces|"
+                r"follows|holds|grabs)\s+)\bher\b"
+            )
+            segment = object_her.sub(
+                lambda match: match.group("prefix") + female_label,
+                segment,
+            )
+            segment = re.sub(
+                r"\bher\b(?=\s*[,.:!?)]|$)",
+                female_label,
+                segment,
+                flags=re.IGNORECASE,
+            )
+            segment = re.sub(
+                r"\bher\b",
+                female_label + "'s",
+                segment,
+                flags=re.IGNORECASE,
+            )
+        if group_label:
+            segment = re.sub(
+                r"\bboth\b",
+                group_label,
+                segment,
+                flags=re.IGNORECASE,
+            )
+            segment = re.sub(
+                r"\bthey\b",
+                group_label,
+                segment,
+                flags=re.IGNORECASE,
+            )
+            segment = re.sub(
+                r"\bthem\b",
+                group_label,
+                segment,
+                flags=re.IGNORECASE,
+            )
+            segment = re.sub(
+                r"\btheir\b",
+                group_label + "'s",
+                segment,
+                flags=re.IGNORECASE,
+            )
+        return segment
+
+    return "".join(
+        part if index % 2 else replace_unquoted(part)
+        for index, part in enumerate(re.split(r'("[^"]*")', prompt))
+    )
+
+
 def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
     """Keep explicit male/female identities from being generalized or dropped."""
 
@@ -4875,18 +5060,34 @@ def strip_weighted_term_syntax(prompt: str, weighted_terms: str) -> str:
         key=lambda item: len(item[0]),
         reverse=True,
     )
-    for term, _weight in parsed:
-        flexible_term = r"\s+".join(
-            re.escape(part)
-            for part in term.split()
+
+    def clean_unquoted(segment: str) -> str:
+        for term, _weight in parsed:
+            flexible_term = r"\s+".join(
+                re.escape(part)
+                for part in term.split()
+            )
+            segment = re.sub(
+                rf"(?<!\w)({flexible_term})\s*(?::|=|\*)\s*"
+                r"[0-9]+(?:\s*\.\s*[0-9]+)?\b",
+                lambda match: match.group(1),
+                segment,
+                flags=re.IGNORECASE,
+            )
+
+        # Small models sometimes invent numeric priority syntax even when the
+        # Weighted words field is empty. A decimal after a word is weight-like;
+        # numeric ratios such as 3:2 do not match and remain untouched.
+        return re.sub(
+            r"(?<=[^\W\d_])\s*(?::|=|\*)\s*[0-9]+\s*\.\s*[0-9]+\b",
+            "",
+            segment,
         )
-        cleaned = re.sub(
-            rf"(?<!\w)({flexible_term})\s*:\s*[0-9]+(?:\.\s*[0-9]+)?\b",
-            lambda match: match.group(1),
-            cleaned,
-            flags=re.IGNORECASE,
-        )
-    return cleaned
+
+    return "".join(
+        part if index % 2 else clean_unquoted(part)
+        for index, part in enumerate(re.split(r'("[^"]*")', cleaned))
+    )
 
 
 def parse_concept_mix(concept_mix: str, *, max_items: int = 6) -> list[tuple[str, int]]:
@@ -7101,6 +7302,7 @@ def build_meme_generation_messages(
     generator_target: str,
     variation_count: int,
     research_context: str = "",
+    reference_context: str = "",
     previous_attempt: str = "",
     previous_issues: list[str] | None = None,
     compact_model: bool = False,
@@ -7148,6 +7350,14 @@ Return prompt text only, with no notes, analysis, or markdown."""
         user_parts.append(
             "Optional factual background for understanding only; do not copy it as visible text:\n"
             + research_context.strip()
+        )
+    if reference_context.strip():
+        user_parts.append(
+            "User-selected reference analysis for requested identity, material, or style "
+            "facts only. Use only its allowed facts. Ignore rejected scene details and "
+            "never copy the source image's pose, action, camera, crop, composition, layout, "
+            "object placement, background, lighting arrangement, text, or story:\n"
+            + reference_context.strip()
         )
     if previous_attempt.strip():
         issue_text = "\n- ".join(previous_issues or ["unfinished meme prompt"])
@@ -8134,6 +8344,7 @@ def post_meme_completion(
     seed: int | None = None,
     variation_count: int = 1,
     research_context: str = "",
+    reference_context: str = "",
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
     artistic_detail_freedom: bool = False,
@@ -8162,6 +8373,7 @@ def post_meme_completion(
                 generator_target=generator_target,
                 variation_count=variation_count,
                 research_context=research_context,
+                reference_context=reference_context,
                 previous_attempt=previous_attempt,
                 previous_issues=previous_issues,
                 compact_model=compact_model,
@@ -8455,6 +8667,7 @@ def post_chat_completion(
             seed=seed,
             variation_count=variation_count,
             research_context=research_context,
+            reference_context=image_context,
             safe_for_work=safe_for_work,
             explicit_nsfw=explicit_nsfw,
             artistic_detail_freedom=artistic_detail_freedom,
@@ -8609,6 +8822,7 @@ def post_chat_completion(
         candidate = enforce_generator_settings_contract(candidate)
         candidate = make_prompt_safe_for_work(candidate) if safe_for_work else candidate
         candidate = strip_weighted_term_syntax(candidate, weighted_terms)
+        candidate = resolve_unambiguous_multi_person_pronouns(candidate)
         candidate = strip_private_prompt_guidance(candidate)
         return strip_unexpected_scripts(candidate, source_script_context)
 

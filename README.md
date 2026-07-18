@@ -133,19 +133,17 @@ results, chat history, connection settings, and local reference-image paths.
 Workbench `.ipcp` bundles and extracted media folders are ignored for the same
 reason. Back them up or share them deliberately, not as part of a source commit.
 
-Window size is not restored by default, which works better with tiling window managers such as i3wm. Enable **Window > Remember window size** if you want the app to save and restore its last size.
+Window size is not restored by default, which works better with tiling window managers such as i3wm. Enable **View > Remember window size** if you want the app to save and restore its last size.
 
 Program options are in the top menu bar:
 
-- **File**: save immediately or exit safely (`Ctrl+S`, `Ctrl+Q`).
-- **Edit**: undo, redo, or clear the current draft.
-- **Connection**: test LM Studio, save settings, and optionally unload the model after correction.
-- **Prompt**: correct with `Ctrl+Enter`, copy with `Ctrl+Shift+C`, focus the draft with `Ctrl+L`, and configure correction behavior.
-- **Generation**: thinking mode, audit/repair, and a separate generator setup recommendation.
-- **Chat**: send a direct model message, start a new conversation, or copy the last response.
-- **Research**: grounded web verification, search engine, reference image analysis, and image source.
-- **History**: load, copy, delete, or clear saved prompt pairs.
-- **Window**: window-size restore behavior and a setup-panel toggle (`Ctrl+Shift+Space`) for more editor room.
+- **File**: save, import or export setup presets, and exit safely (`Ctrl+S`, `Ctrl+Q`).
+- **Edit**: undo, redo, or clear one specific creative workspace.
+- **Create**: grouped Prompt Corrector, Comic Story, Meme Creator, and Model Chat actions.
+- **Model**: LM Studio connection, rewrite and safety rules, and generation passes.
+- **Research**: grounded web verification plus separate reference-analysis toggles for Prompt, Comic, and Meme.
+- **Library**: History, persisted Activity diagnostics, and workspace-isolated References.
+- **View**: show or hide shared settings and the Activity/History/References dock, and control window-size restore.
 
 ## Basic Workflow
 
@@ -197,7 +195,7 @@ Built-in presets include **Classic Sarcasm**, **Deadpan Irony**, **Relatable Rea
 
 Every manually supplied caption is emitted as a quoted rendered-text contract. Meme generation uses a dedicated creative-director path instead of the normal fidelity ranker. In creative-response mode, the model internally explores multiple joke mechanisms, then must return a finished image prompt with a newly invented scene, one or two concise quoted captions, and explicit top or bottom placement. Smaller 2B/4B models receive a shorter one-line contract. Common outputs such as `TOP TEXT: ...`, `BOTTOM: ...`, curly quotes, Markdown captions, and scene/caption blocks separated by blank lines are normalized automatically. If two full attempts produce a usable scene but miss the caption contract, the best scene is retained for a caption-only repair instead of being discarded. Rejected candidates and their validation issues are recorded in Activity for diagnosis. An echoed or lightly edited production brief is rejected; the source context must not become visible image text. The response brief, meme draft, and result are saved in `promptcorrector_settings.json`.
 
-Meme Creator and Comic Story share the selected model, generator, workflow, and processing behavior with Prompt Corrector. They do not inherit Prompt Corrector's concepts, concept mix, goal, focus, weighted terms, model instructions, generation feedback, or local reference images.
+Meme Creator and Comic Story share the selected model, generator, workflow, and processing behavior with Prompt Corrector. They do not inherit Prompt Corrector's concepts, concept mix, goal, focus, weighted terms, model instructions, generation feedback, or references. Each creative workspace now owns its own local references and reference-analysis toggle.
 
 In **Prompt Corrector**, open **Single-image options** for creative direction, weighted words, model guidance, generation feedback, and reference-image analysis. Those content-bearing controls belong only to the single-image workspace. Use the top-level **Settings** drawer for controls shared across image-prompt modes.
 
@@ -482,15 +480,15 @@ Use **Image source** to limit concept-image lookup to one provider. This is fast
 
 Reference image analysis requires a vision-capable model in LM Studio.
 
-The **References** tab accepts PNG, JPEG, WebP, and GIF files by drag-and-drop or with **Add images**. Local images are intentional references, but may clarify only requested identity, material, or style traits; they are not scene templates. When local images are present, the app skips automatic web image lookup. Without local images, automatic image research runs only for explicit **Concepts**. For every source, the vision model must separate allowed facts from rejected scene details, and only the allowed glossary section reaches correction. The source image's pose, action, camera, crop, composition, layout, object placement, background, setting, palette, lighting arrangement, text, and story are excluded. Up to eight local paths are remembered and shown as thumbnails.
+The shared **References** dock accepts PNG, JPEG, WebP, and GIF files by drag-and-drop or with **Add images**. Select Prompt Corrector, Comic Story, or Meme Creator at the top of the dock; each workspace keeps its own analysis toggle and up to eight local paths. Local images are intentional references, but may clarify only requested identity, material, or style traits; they are not scene templates. When local images are present, the app skips automatic web image lookup. Without local images, automatic image research runs only for explicit concepts available in that workspace. For every source, the vision model must separate allowed facts from rejected scene details, and only the allowed glossary section reaches correction. The source image's unrelated pose, action, camera, crop, composition, layout, object placement, background, setting, palette, lighting arrangement, text, and story are excluded.
 
 The **Stop** button immediately releases the GUI for a new request, closes the active LM Studio streaming connection, and discards any partial result. Old workers and research requests remain invalidated, so a late result cannot overwrite the restarted request.
 
-## Prompt History
+## History and Activity
 
-Every successful correction is stored in the prompt history list.
+Every successful Prompt Corrector, Comic Story, and Meme Creator generation is stored in the shared history list with a workspace label. Loading an entry switches to the correct workspace and restores its editable fields, result, and still-available local references without overwriting the other modes.
 
-When you reload a history entry, the app restores:
+Prompt Corrector history restores:
 
 - Original requested prompt
 - Corrected prompt
@@ -507,6 +505,10 @@ When you reload a history entry, the app restores:
 - Risk level and preset
 - Toggle states
 - Krea settings and sliders
+
+Comic history restores the title, premise, continuity, concepts, style and dialogue direction, layout, panel count, every panel beat, result, and references. Meme history restores the response brief, scene, focus, captions, humor settings, visual direction, result, and references.
+
+Activity is a timestamped persisted diagnostic history rather than a one-run console. Filter it by Prompt Corrector, Comic Story, Meme Creator, or System. Model errors identify the workspace, failed stage, low-level detail, and a concrete next action. A failed retry keeps the previous successful result visible.
 
 You can search, load, copy, rename, pin, delete, or clear history entries. Pinned entries remain at the top of the visible list.
 

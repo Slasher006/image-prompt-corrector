@@ -173,6 +173,23 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn('top caption "WE FORMED A COMMITTEE"', result)
         self.assertIn('bottom caption "TO REDUCE COMMITTEES"', result)
 
+    def test_meme_generation_uses_reference_analysis_as_glossary_only(self):
+        messages = corrector.build_meme_generation_messages(
+            prompt="A courier reacts to a late delivery.",
+            generator_target="Krea 2",
+            variation_count=1,
+            reference_context=(
+                "Allowed concept facts: red waxed-canvas courier bag.\n"
+                "Rejected scene details: rooftop pose and blue-hour camera."
+            ),
+        )
+
+        user = str(messages[1]["content"])
+        self.assertIn("User-selected reference analysis", user)
+        self.assertIn("red waxed-canvas courier bag", user)
+        self.assertIn("Use only its allowed facts", user)
+        self.assertIn("never copy", user)
+
     def test_meme_caption_suggestion_uses_context_and_normalizes_one_line(self):
         messages = corrector.build_meme_caption_suggestion_messages(
             position="bottom",
@@ -1355,6 +1372,40 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertTrue(ambiguous)
 
+    def test_resolve_unambiguous_multi_person_pronouns_repeats_unique_label(self):
+        prompt = (
+            "The woman on the left reaches toward the man on the right, touching him "
+            "while his blue coat catches the light."
+        )
+
+        resolved = corrector.resolve_unambiguous_multi_person_pronouns(prompt)
+
+        self.assertIn("touching the man on the right", resolved)
+        self.assertIn("the man on the right's blue coat", resolved)
+        self.assertEqual(corrector.multi_person_role_issues(resolved), [])
+
+    def test_resolve_multi_person_pronouns_keeps_same_gender_ambiguity(self):
+        prompt = (
+            "Two men stand on the left and right, one reaches toward him while his "
+            "blue coat catches the light."
+        )
+
+        self.assertEqual(
+            corrector.resolve_unambiguous_multi_person_pronouns(prompt),
+            prompt,
+        )
+
+    def test_resolve_unambiguous_group_pronouns_for_mixed_gender_pair(self):
+        prompt = (
+            "The woman on the left and the man on the right raise their lanterns "
+            "while they face the camera, both smiling."
+        )
+
+        resolved = corrector.resolve_unambiguous_multi_person_pronouns(prompt)
+
+        self.assertNotRegex(resolved.lower(), r"\b(?:their|they|both)\b")
+        self.assertEqual(corrector.multi_person_role_issues(resolved), [])
+
     def test_gender_identity_contract_preserves_both_source_identities(self):
         source = "A woman in a red coat stands left of a man in a blue shirt."
 
@@ -2491,6 +2542,19 @@ class PromptCorrectorTests(unittest.TestCase):
             "Fish in the foreground, RED   CLOAK behind it, aspect ratio 3:2.",
         )
 
+    def test_strip_weighted_term_syntax_removes_model_invented_decimal_weight(self):
+        cleaned = corrector.strip_weighted_term_syntax(
+            'A Car : 1 . 3 beside a Bus=1.5 and Bike*2.0, aspect ratio 3:2, '
+            'clock at 10:30, sign reading "CAR:1.3".',
+            "",
+        )
+
+        self.assertEqual(
+            cleaned,
+            'A Car beside a Bus and Bike, aspect ratio 3:2, clock at 10:30, '
+            'sign reading "CAR:1.3".',
+        )
+
     def test_post_completion_removes_leaked_weight_syntax_from_final_prompt(self):
         with patch(
             "krea_prompt_corrector.chat_completion",
@@ -2511,6 +2575,46 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertIn("Fish swimming", result)
         self.assertNotIn("Fish:1.4", result)
+
+    def test_post_completion_removes_invented_weight_without_weighted_words(self):
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value="A silver Car:1.3 parked on wet asphalt under soft daylight.",
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt="silver car",
+                temperature=0.2,
+                max_tokens=300,
+                timeout=5,
+                api_key="test",
+                context_token_budget=1_000,
+                final_gate_repair=False,
+            )
+
+        self.assertIn("silver Car parked", result)
+        self.assertNotIn("Car:1.3", result)
+
+    def test_post_completion_resolves_clear_him_and_his_role_references(self):
+        response = (
+            "The woman on the left reaches toward the man on the right, touching him "
+            "while his blue coat reflects the lantern's warm light."
+        )
+        with patch("krea_prompt_corrector.chat_completion", return_value=response):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=response,
+                temperature=0.2,
+                max_tokens=300,
+                timeout=5,
+                api_key="test",
+                context_token_budget=1_000,
+            )
+
+        self.assertNotRegex(result.lower(), r"\b(?:him|his)\b")
+        self.assertEqual(corrector.multi_person_role_issues(result), [])
 
     def test_final_compliance_issues_reports_missing_weighted_emphasis(self):
         issues = corrector.final_compliance_issues(

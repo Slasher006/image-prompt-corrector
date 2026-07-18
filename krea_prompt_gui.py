@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QDialog,
     QDialogButtonBox,
+    QDockWidget,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -831,6 +832,109 @@ def ui_tooltip(description: str, example: str) -> str:
     return f"{description}\nExample: {example}"
 
 
+WORKSPACE_LABELS = {
+    "prompt": "Prompt Corrector",
+    "comic": "Comic Story",
+    "meme": "Meme Creator",
+    "system": "System",
+}
+
+
+def classify_workflow_error(
+    error: str,
+    *,
+    workspace: str = "prompt",
+    stage: str = "",
+) -> dict[str, str]:
+    """Turn low-level model failures into stable, actionable UI diagnostics."""
+
+    detail = re.sub(r"\s+", " ", str(error or "")).strip() or "Unknown workflow error."
+    lowered = detail.casefold()
+    title = "Prompt generation failed"
+    category = "generation"
+    next_step = "Review Activity for the failed stage, adjust the current inputs, and retry."
+
+    if any(marker in lowered for marker in (
+        "failed to connect",
+        "connection refused",
+        "could not connect",
+        "no connection could be made",
+        "lm studio is unreachable",
+    )):
+        title = "LM Studio is unavailable"
+        category = "connection"
+        next_step = "Start the LM Studio local server, load the selected model, then retry."
+    elif "timed out" in lowered or "timeout" in lowered:
+        title = "LM Studio timed out"
+        category = "timeout"
+        next_step = "Keep the current inputs, raise the LM Studio timeout or use a faster loaded model, then retry."
+    elif any(marker in lowered for marker in (
+        "reasoning_content",
+        "reasoning-only",
+        "hidden reasoning",
+        "finish_reason: length",
+        "finish reason 'length'",
+        "token budget",
+        "returned no prompt",
+        "empty response",
+        "no usable value",
+        "did not invent a usable",
+    )):
+        title = "The model returned no usable result"
+        category = "model-output"
+        next_step = "Use a non-reasoning instruct model or increase the response-token budget, then retry."
+    elif "hard fidelity contract" in lowered:
+        title = "The prompt contract could not be repaired"
+        category = "contract"
+        next_step = "The input is preserved. Review the named contract issue in Activity, make the disputed identity, count, or position explicit, then retry."
+    elif any(marker in lowered for marker in (
+        "base64 encoded image",
+        "image input",
+        "vision model",
+        "reference image",
+    )):
+        title = "Reference-image analysis failed"
+        category = "reference"
+        next_step = "Use a vision-capable loaded model, remove the failing reference, or disable reference analysis and retry."
+    elif any(marker in lowered for marker in (
+        "model not found",
+        "no model",
+        "not loaded",
+        "unknown model",
+    )):
+        title = "The selected model is not loaded"
+        category = "model"
+        next_step = "Load the selected language or vision model in LM Studio, refresh the model list, then retry."
+    elif any(marker in lowered for marker in (
+        "not allowed",
+        "requires unambiguously adult",
+        "safe for work and explicit adult",
+        "incomplete comic",
+        "incomplete meme",
+        "single image format accepts",
+    )):
+        title = "The current input needs attention"
+        category = "input"
+        next_step = "Correct the named input conflict; the current draft and previous result have been kept."
+
+    workspace_label = WORKSPACE_LABELS.get(workspace, WORKSPACE_LABELS["prompt"])
+    stage_label = re.sub(r"\s+", " ", stage).strip() or "Model request"
+    return {
+        "title": title,
+        "category": category,
+        "workspace": workspace_label,
+        "stage": stage_label,
+        "detail": detail,
+        "next_step": next_step,
+        "message": (
+            f"Workspace: {workspace_label}\n"
+            f"Stage: {stage_label}\n\n"
+            f"{detail}\n\n"
+            f"Next: {next_step}"
+        ),
+    }
+
+
 class CorrectionCancelled(RuntimeError):
     """Internal signal used to stop the active correction workflow."""
 
@@ -1113,6 +1217,8 @@ class PromptCorrectorApp:
         self.live_research_var = Value(False)
         self.search_engine_var = Value("Auto (all engines)")
         self.reference_images_var = Value(False)
+        self.comic_reference_images_var = Value(False)
+        self.meme_reference_images_var = Value(False)
         self.reference_image_source_var = Value("Auto (safe sources)")
         self.audit_repair_var = Value(True)
         self.include_settings_var = Value(True)
@@ -1131,9 +1237,12 @@ class PromptCorrectorApp:
         self.weighted_highlight_after_id: QTimer | None = None
         self.cancel_event = threading.Event()
         self.active_request_id = 0
+        self.active_request_workspace = "system"
         self.closing = False
         self.available_models: list[str] = []
         self.prompt_history: list[dict[str, object]] = []
+        self.activity_log: list[dict[str, str]] = []
+        self.active_activity_workspace = "system"
         self.chat_messages: list[dict[str, str]] = []
         self.chat_stream_text = ""
         self.custom_presets: dict[str, dict[str, object]] = {}
@@ -1157,6 +1266,13 @@ class PromptCorrectorApp:
         self.recovered_workbench_project: dict[str, object] | None = None
         self.recovered_generator_profiles: dict[str, dict[str, object]] | None = None
         self.local_reference_paths: list[str] = []
+        self.comic_reference_paths: list[str] = []
+        self.meme_reference_paths: list[str] = []
+        self.web_reference_candidates: dict[str, list[dict[str, str]]] = {
+            "prompt": [],
+            "comic": [],
+            "meme": [],
+        }
         self.draft_autosave_timer: QTimer | None = None
         self.model_combo: QtComboBox | None = None
         self.weighted_terms_entry: QLineEdit | None = None
@@ -1194,6 +1310,11 @@ class PromptCorrectorApp:
         self.meme_visual_direction_button: QtButton | None = None
         self.history_listbox: QtHistoryList | None = None
         self.history_search_entry: QLineEdit | None = None
+        self.activity_scope_combo: QComboBox | None = None
+        self.reference_workspace_combo: QComboBox | None = None
+        self.reference_analysis_checkbox: QCheckBox | None = None
+        self.library_tabs: QTabWidget | None = None
+        self.library_dock: QDockWidget | None = None
         self.custom_preset_combo: QComboBox | None = None
         self.krea_recommendation_label: QLabel | None = None
         self.copy_krea_button: QPushButton | None = None
@@ -1281,10 +1402,16 @@ class PromptCorrectorApp:
             "model": self.model_var.get(),
             "available_models": self.available_models,
             "prompt_history": self.prompt_history,
+            "activity_log": self.activity_log[-500:],
             "custom_presets": self.custom_presets,
             "draft_prompt": self.draft_text.toPlainText() if hasattr(self, "draft_text") else self.recovered_draft,
             "corrected_prompt": self.corrected_text.toPlainText() if hasattr(self, "corrected_text") else self.recovered_corrected,
             "local_reference_paths": self.local_reference_paths,
+            "workspace_reference_paths": {
+                "prompt": self.local_reference_paths,
+                "comic": self.comic_reference_paths,
+                "meme": self.meme_reference_paths,
+            },
             "draft_saved_at": datetime.now().isoformat(timespec="seconds"),
             "base_url": self._current_base_url(),
             "lm_host": self.lm_host_var.get(),
@@ -1331,6 +1458,8 @@ class PromptCorrectorApp:
             "live_research": self.live_research_var.get(),
             "search_engine": self.search_engine_var.get(),
             "reference_image_analysis": self.reference_images_var.get(),
+            "comic_reference_image_analysis": self.comic_reference_images_var.get(),
+            "meme_reference_image_analysis": self.meme_reference_images_var.get(),
             "reference_image_source": self.reference_image_source_var.get(),
             "audit_repair": self.audit_repair_var.get(),
             "include_krea_settings": self.include_settings_var.get(),
@@ -1515,6 +1644,7 @@ class PromptCorrectorApp:
         if self.model_var.get() and self.model_var.get() not in self.available_models:
             self.available_models.insert(0, self.model_var.get())
         self.prompt_history = self._history_setting(settings.get("prompt_history"))
+        self.activity_log = self._activity_setting(settings.get("activity_log"))
         self.custom_presets = self._custom_presets_setting(settings.get("custom_presets"))
         stored_visual_presets = settings.get("visual_preset_selections", {})
         if isinstance(stored_visual_presets, dict):
@@ -1566,12 +1696,28 @@ class PromptCorrectorApp:
                 self.recovered_workbench_project = project
             if isinstance(profiles, dict):
                 self.recovered_generator_profiles = profiles
-        local_paths = settings.get("local_reference_paths", [])
-        if isinstance(local_paths, list):
-            self.local_reference_paths = [
-                str(path) for path in local_paths
-                if isinstance(path, str) and Path(path).is_file()
-            ][:8]
+        stored_workspace_paths = settings.get("workspace_reference_paths", {})
+        if not isinstance(stored_workspace_paths, dict):
+            stored_workspace_paths = {}
+        for workspace, attribute in (
+            ("prompt", "local_reference_paths"),
+            ("comic", "comic_reference_paths"),
+            ("meme", "meme_reference_paths"),
+        ):
+            local_paths = stored_workspace_paths.get(
+                workspace,
+                settings.get("local_reference_paths", []) if workspace == "prompt" else [],
+            )
+            if isinstance(local_paths, list):
+                setattr(
+                    self,
+                    attribute,
+                    [
+                        str(path)
+                        for path in local_paths
+                        if isinstance(path, str) and Path(path).is_file()
+                    ][:8],
+                )
         self.base_url_var.set(
             normalize_lm_studio_base_url(str(settings.get("base_url", self.base_url_var.get())))
         )
@@ -1678,6 +1824,22 @@ class PromptCorrectorApp:
         )
         self.reference_images_var.set(
             bool(settings.get("reference_image_analysis", self.reference_images_var.get()))
+        )
+        self.comic_reference_images_var.set(
+            bool(
+                settings.get(
+                    "comic_reference_image_analysis",
+                    self.comic_reference_images_var.get(),
+                )
+            )
+        )
+        self.meme_reference_images_var.set(
+            bool(
+                settings.get(
+                    "meme_reference_image_analysis",
+                    self.meme_reference_images_var.get(),
+                )
+            )
         )
         self.reference_image_source_var.set(
             self._choice_setting(
@@ -1857,6 +2019,15 @@ class PromptCorrectorApp:
                 prompt_preset = str(item.get("prompt_preset", "")).strip()
                 title = str(item.get("title", "")).strip()
                 pinned = self._bool_setting(item.get("pinned"), False)
+                workspace = str(item.get("workspace", "")).strip().casefold()
+                if workspace not in {"prompt", "comic", "meme"}:
+                    workspace = {
+                        "comic story": "comic",
+                        "meme": "meme",
+                    }.get(str(item.get("content_format", "")).strip().casefold(), "prompt")
+                workspace_state = item.get("workspace_state", {})
+                if not isinstance(workspace_state, dict):
+                    workspace_state = {}
                 option_values = {
                     key: item[key]
                     for key in PROMPT_HISTORY_OPTION_KEYS
@@ -1878,8 +2049,10 @@ class PromptCorrectorApp:
                 prompt_preset = ""
                 title = ""
                 pinned = False
+                workspace = "prompt"
+                workspace_state = {}
                 option_values = {}
-            key = f"{goal_headline}\n{requested_prompt}\n{corrected_prompt}"
+            key = f"{workspace}\n{goal_headline}\n{requested_prompt}\n{corrected_prompt}"
             if not corrected_prompt or key in seen:
                 continue
             entry: dict[str, object] = {
@@ -1896,6 +2069,8 @@ class PromptCorrectorApp:
                 "prompt_preset": prompt_preset,
                 "title": title,
                 "pinned": pinned,
+                "workspace": workspace,
+                "workspace_state": workspace_state,
                 "corrected_prompt": corrected_prompt,
                 "created_at": created_at,
             }
@@ -1905,6 +2080,26 @@ class PromptCorrectorApp:
             if len(history) >= PROMPT_HISTORY_LIMIT:
                 break
         return history
+
+    def _activity_setting(self, value: object) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        events: list[dict[str, str]] = []
+        for item in value[-500:]:
+            if not isinstance(item, dict):
+                continue
+            message = re.sub(r"\s+", " ", str(item.get("message", ""))).strip()
+            workspace = str(item.get("workspace", "system")).strip().casefold()
+            if not message or workspace not in WORKSPACE_LABELS:
+                continue
+            events.append(
+                {
+                    "time": str(item.get("time", "")).strip(),
+                    "workspace": workspace,
+                    "message": message,
+                }
+            )
+        return events
 
     def _int_setting(self, value: object, minimum: int, maximum: int, default: int) -> int:
         try:
@@ -3749,6 +3944,9 @@ class PromptCorrectorApp:
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self._save_settings)
         file_menu.addSeparator()
+        file_menu.addAction("Import setup presets…", self.import_custom_presets)
+        file_menu.addAction("Export setup presets…", self.export_custom_presets)
+        file_menu.addSeparator()
         exit_action = file_menu.addAction("Exit")
         exit_action.setShortcut("Ctrl+Q")
         exit_action.setMenuRole(QAction.MenuRole.QuitRole)
@@ -3762,17 +3960,15 @@ class PromptCorrectorApp:
         redo_action.setShortcut("Ctrl+Shift+Z")
         redo_action.triggered.connect(lambda: self._invoke_focused_editor("redo"))
         edit_menu.addSeparator()
-        clear_action = edit_menu.addAction("Clear draft")
+        clear_menu = edit_menu.addMenu("Clear workspace")
+        clear_action = clear_menu.addAction("Clear Prompt Corrector")
         clear_action.setShortcut("Ctrl+Shift+Backspace")
-        clear_action.triggered.connect(self.clear_draft)
+        clear_action.triggered.connect(self.clear_single_image)
+        clear_menu.addAction("Clear Comic Story", self.clear_comic_story)
+        clear_menu.addAction("Clear Meme Creator", self.clear_meme)
 
-        connection = bar.addMenu("Connection")
-        connection.addAction("Test LM Studio", self.test_lm_studio_connection)
-        connection.addAction("Save settings", self._save_settings)
-        connection.addSeparator()
-        self._menu_check(connection, "Unload model after correction", self.unload_after_generation_var)
-
-        prompt = bar.addMenu("Prompt")
+        create = bar.addMenu("Create")
+        prompt = create.addMenu("Prompt Corrector")
         correct_action = prompt.addAction("Correct prompt")
         correct_action.setShortcut("Ctrl+Return")
         correct_action.triggered.connect(self.correct_prompt)
@@ -3785,7 +3981,31 @@ class PromptCorrectorApp:
         focus_action = prompt.addAction("Focus prompt editor")
         focus_action.setShortcut("Ctrl+L")
         focus_action.triggered.connect(lambda: self.draft_text.setFocus())
-        processing = bar.addMenu("Processing")
+        comic = create.addMenu("Comic Story")
+        comic.addAction("Generate comic prompt", self.correct_comic_story)
+        comic.addAction("Invent all comic panels", self.invent_all_comic_panels)
+        comic.addAction("Copy comic result", self.copy_comic_result)
+        meme = create.addMenu("Meme Creator")
+        meme.addAction("Generate meme prompt", self.correct_meme)
+        meme.addAction("Copy meme result", self.copy_meme_result)
+        chat = create.addMenu("Model Chat")
+        send_chat_action = chat.addAction("Send message")
+        send_chat_action.setShortcut("Ctrl+Shift+Return")
+        send_chat_action.triggered.connect(self.send_chat_message)
+        chat.addAction("New chat", lambda _checked=False: self.clear_chat())
+        chat.addAction("Copy last response", self.copy_last_chat_response)
+
+        model_menu = bar.addMenu("Model")
+        connection = model_menu.addMenu("Connection")
+        connection.addAction("Test LM Studio", self.test_lm_studio_connection)
+        connection.addAction("Save settings", self._save_settings)
+        connection.addSeparator()
+        self._menu_check(
+            connection,
+            "Unload model after correction",
+            self.unload_after_generation_var,
+        )
+        processing = model_menu.addMenu("Rewrite and safety")
         self._menu_check(processing, "Preserve wording strictly", self.preserve_var)
         self._menu_check(
             processing,
@@ -3805,34 +4025,47 @@ class PromptCorrectorApp:
         ):
             self._menu_check(processing, label, variable)
 
-        generation = bar.addMenu("Generation")
+        generation = model_menu.addMenu("Generation passes")
         self._menu_check(generation, "Use fixed seed", self.fixed_seed_var)
         self._menu_check(generation, "Thinking mode", self.thinking_mode_var)
         self._menu_check(generation, "Audit and repair", self.audit_repair_var)
         self._menu_check(generation, "Show generator setup recommendation", self.include_settings_var)
 
-        chat = bar.addMenu("Chat")
-        send_chat_action = chat.addAction("Send message")
-        send_chat_action.setShortcut("Ctrl+Shift+Return")
-        send_chat_action.triggered.connect(self.send_chat_message)
-        chat.addAction("New chat", lambda _checked=False: self.clear_chat())
-        chat.addAction("Copy last response", self.copy_last_chat_response)
-
         research = bar.addMenu("Research")
         self._menu_check(research, "Grounded web verification", self.live_research_var)
         self._menu_choices(research, "Search engine", self.search_engine_var, TEXT_RESEARCH_ENGINES)
         research.addSeparator()
-        references = research.addMenu("Single-image references")
+        references = research.addMenu("Reference images")
         references.setToolTipsVisible(True)
         self._set_help(
             references,
-            "Reference-image controls used only by Prompt Corrector.",
-            "Analyze a local costume image for a single still prompt.",
+            "Reference-image controls separated by creative workspace.",
+            "Analyze a costume image in Comic Story without adding it to Meme Creator.",
         )
-        self._menu_check(references, "Analyze reference images", self.reference_images_var)
-        self._menu_choices(references, "Image source", self.reference_image_source_var, REFERENCE_IMAGE_SOURCES)
+        self._menu_check(
+            references,
+            "Analyze for Prompt Corrector",
+            self.reference_images_var,
+        )
+        self._menu_check(
+            references,
+            "Analyze for Comic Story",
+            self.comic_reference_images_var,
+        )
+        self._menu_check(
+            references,
+            "Analyze for Meme Creator",
+            self.meme_reference_images_var,
+        )
+        self._menu_choices(
+            references,
+            "Web image source",
+            self.reference_image_source_var,
+            REFERENCE_IMAGE_SOURCES,
+        )
 
-        history = bar.addMenu("History")
+        library = bar.addMenu("Library")
+        history = library.addMenu("History")
         history.addAction("Load selected", self.load_selected_history_prompt)
         history.addAction("Copy selected prompt", self.copy_selected_history_prompt)
         history.addAction("Delete selected", self.delete_selected_history_prompt)
@@ -3840,14 +4073,32 @@ class PromptCorrectorApp:
         history.addAction("Pin or unpin selected", self.toggle_selected_history_pin)
         history.addSeparator()
         history.addAction("Clear all", self.clear_prompt_history)
+        library.addAction(
+            "Show Activity",
+            lambda _checked=False: self.show_library_tab("Activity"),
+        )
+        library.addAction(
+            "Show History",
+            lambda _checked=False: self.show_library_tab("History"),
+        )
+        library.addAction(
+            "Show References",
+            lambda _checked=False: self.show_library_tab("References"),
+        )
+        library.addSeparator()
+        library.addAction("Clear Activity", self.clear_activity_history)
 
-        window = bar.addMenu("Window")
-        self.setup_action = window.addAction("Show shared settings")
+        self.view_menu = bar.addMenu("View")
+        self.setup_action = self.view_menu.addAction("Show shared settings")
         self.setup_action.setCheckable(True)
         self.setup_action.setChecked(False)
         self.setup_action.setShortcut("Ctrl+Shift+Space")
         self.setup_action.toggled.connect(lambda visible: self.setup_tabs.setVisible(visible))
-        self._menu_check(window, "Remember window size", self.remember_window_size_var)
+        self._menu_check(
+            self.view_menu,
+            "Remember window size",
+            self.remember_window_size_var,
+        )
 
     def _build_ui(self) -> None:
         self._build_menu()
@@ -4457,10 +4708,39 @@ class PromptCorrectorApp:
         workspace.addWidget(prompt_panel)
 
         side_tabs = QTabWidget()
+        self.library_tabs = side_tabs
+        activity_page = QWidget()
+        activity_layout = QVBoxLayout(activity_page)
+        activity_controls = QHBoxLayout()
+        activity_controls.addWidget(QLabel("Show"))
+        self.activity_scope_combo = QComboBox()
+        self.activity_scope_combo.addItems(
+            (
+                "All workspaces",
+                "Prompt Corrector",
+                "Comic Story",
+                "Meme Creator",
+                "System",
+            )
+        )
+        self.activity_scope_combo.currentTextChanged.connect(
+            self._refresh_activity_text
+        )
+        activity_controls.addWidget(self.activity_scope_combo, 1)
+        clear_activity_button = QtButton("Clear")
+        clear_activity_button.clicked.connect(self.clear_activity_history)
+        self._set_help(
+            clear_activity_button,
+            "Clears the persisted workflow activity history.",
+            "Clear old connection diagnostics after resolving a server problem.",
+        )
+        activity_controls.addWidget(clear_activity_button)
+        activity_layout.addLayout(activity_controls)
         self.activity_text = QtTextEdit()
         self.activity_text.setReadOnly(True)
         self._help(self.activity_text, "Activity")
-        side_tabs.addTab(self.activity_text, "Activity")
+        activity_layout.addWidget(self.activity_text)
+        side_tabs.addTab(activity_page, "Activity")
         history_page = QWidget()
         history_layout = QVBoxLayout(history_page)
         self.history_search_entry = QLineEdit()
@@ -4498,8 +4778,32 @@ class PromptCorrectorApp:
         side_tabs.addTab(history_page, "History")
         references_page = QWidget()
         references_layout = QVBoxLayout(references_page)
+        reference_workspace_row = QHBoxLayout()
+        reference_workspace_row.addWidget(QLabel("Workspace"))
+        self.reference_workspace_combo = QComboBox()
+        self.reference_workspace_combo.addItems(
+            ("Prompt Corrector", "Comic Story", "Meme Creator")
+        )
+        self.reference_workspace_combo.currentTextChanged.connect(
+            self._on_reference_workspace_changed
+        )
+        reference_workspace_row.addWidget(self.reference_workspace_combo, 1)
+        references_layout.addLayout(reference_workspace_row)
+        self.reference_analysis_checkbox = QCheckBox(
+            "Analyze these references in this workspace"
+        )
+        self._set_help(
+            self.reference_analysis_checkbox,
+            "Includes this workspace's isolated local references in its next model request.",
+            "Enable it for Comic Story without affecting Prompt Corrector or Meme Creator.",
+        )
+        self.reference_analysis_checkbox.toggled.connect(
+            self._set_current_reference_analysis
+        )
+        references_layout.addWidget(self.reference_analysis_checkbox)
         references_hint = QLabel(
-            "Drop local images here or add files. Web references found during analysis also appear here; double-click to open."
+            "References are isolated per workspace. Local images provide requested identity, "
+            "material, or style facts; they never donate an unrelated scene, pose, camera, or story."
         )
         references_hint.setWordWrap(True)
         self._help(references_hint, "References")
@@ -4522,9 +4826,7 @@ class PromptCorrectorApp:
         self.reference_preview_list.filesDropped.connect(self.add_local_reference_paths)
         references_layout.addWidget(self.reference_preview_list)
         side_tabs.addTab(references_page, "References")
-        workspace.addWidget(side_tabs)
-        workspace.setStretchFactor(0, 3)
-        workspace.setStretchFactor(1, 2)
+        workspace.setStretchFactor(0, 1)
         prompt_outer.addWidget(workspace, 1)
         self.mode_tabs.addTab(prompt_mode, "Prompt Corrector")
         self.mode_tabs.addTab(self._build_comic_story_page(), "Comic Story")
@@ -4536,11 +4838,27 @@ class PromptCorrectorApp:
         self._on_workspace_changed(self.mode_tabs.currentIndex())
         outer.addWidget(self.mode_tabs, 1)
         self.root.setCentralWidget(central)
+        self.library_dock = QDockWidget("Activity, History, and References", self.root)
+        self.library_dock.setObjectName("projectLibraryDock")
+        self.library_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.library_dock.setWidget(side_tabs)
+        self.root.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.library_dock,
+        )
+        self.view_menu.addAction(self.library_dock.toggleViewAction())
+        self._apply_known_tooltips(self.library_dock)
         self._apply_generator_target(self.generator_target_var.get())
         self._update_profile_summary()
         self._update_krea_recommendation()
         self._apply_known_tooltips(central)
         self._refresh_history_listbox()
+        self._refresh_activity_text()
+        self._on_reference_workspace_changed()
         self._refresh_local_reference_previews()
         self._refresh_chat_transcript()
 
@@ -4971,6 +5289,30 @@ class PromptCorrectorApp:
             self.content_format_var.set("Comic Story")
         elif index == 2:
             self.content_format_var.set("Meme")
+        if index in {0, 1, 2} and self.reference_workspace_combo is not None:
+            self.reference_workspace_combo.setCurrentIndex(index)
+
+    def _current_workspace_key(self) -> str:
+        if hasattr(self, "mode_tabs"):
+            return {0: "prompt", 1: "comic", 2: "meme"}.get(
+                self.mode_tabs.currentIndex(),
+                "system",
+            )
+        return {
+            "single image": "prompt",
+            "comic story": "comic",
+            "meme": "meme",
+        }.get(str(self.content_format_var.get()).strip().casefold(), "system")
+
+    def show_library_tab(self, name: str) -> None:
+        if self.library_tabs is None or self.library_dock is None:
+            return
+        for index in range(self.library_tabs.count()):
+            if self.library_tabs.tabText(index) == name:
+                self.library_tabs.setCurrentIndex(index)
+                break
+        self.library_dock.show()
+        self.library_dock.raise_()
 
     def _apply_meme_preset(self, preset_name: object) -> None:
         name = str(preset_name)
@@ -5427,6 +5769,7 @@ class PromptCorrectorApp:
 
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = "system"
         self.cancel_event.clear()
         self.request_in_progress = True
         self._set_request_controls(True)
@@ -5469,11 +5812,17 @@ class PromptCorrectorApp:
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._after_threadsafe(0, self._show_cancelled, request_id)
             else:
-                self._after_threadsafe(0, self._show_error, str(exc))
+                self._after_threadsafe(
+                    0,
+                    self._show_error,
+                    str(exc),
+                    "system",
+                    "Model chat",
+                )
             return
         self._after_threadsafe(0, self._show_chat_response, request_id, response)
 
@@ -5542,7 +5891,8 @@ class PromptCorrectorApp:
     def test_lm_studio_connection(self) -> None:
         base_url = self._current_base_url()
         self._save_settings()
-        self._clear_activity()
+        self.active_activity_workspace = "system"
+        self._log_activity("Started LM Studio connection test.", "system")
         self.status_var.set("Testing LM Studio...")
         self._log_activity(f"Testing LM Studio connection at {base_url}...")
         self.test_connection_button.configure(state="disabled")
@@ -5561,7 +5911,7 @@ class PromptCorrectorApp:
                 timeout=8.0,
                 api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
             )
-        except RuntimeError as exc:
+        except Exception as exc:
             self._log_activity_threadsafe(f"Connection failed: {exc}")
             self._after_threadsafe(0, self._finish_connection_test, False, str(exc))
             return
@@ -5590,7 +5940,7 @@ class PromptCorrectorApp:
                 timeout=5.0,
                 api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
             )
-        except RuntimeError:
+        except Exception:
             return
         self._after_threadsafe(0, self._update_available_models, models)
 
@@ -5823,7 +6173,11 @@ class PromptCorrectorApp:
 
     def _show_invent_error(self, request_id: int, error: str) -> None:
         self._discard_pending_invent_recall(request_id)
-        self._show_error(error)
+        self._show_error(
+            error,
+            workspace=self.active_request_workspace,
+            stage="Invent field",
+        )
 
     def invent_single_image_field(self, field: str) -> None:
         normalized_field = str(field).strip().casefold()
@@ -5854,6 +6208,7 @@ class PromptCorrectorApp:
 
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = "prompt"
         self.cancel_event.clear()
         self.request_in_progress = True
         self._stage_invent_recall(
@@ -5915,7 +6270,7 @@ class PromptCorrectorApp:
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._after_threadsafe(0, self._show_cancelled, request_id)
             else:
@@ -6074,6 +6429,7 @@ class PromptCorrectorApp:
 
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = "comic"
         self.cancel_event.clear()
         self.request_in_progress = True
         count = max(2, min(12, int(self.comic_panel_count_var.get())))
@@ -6167,7 +6523,7 @@ class PromptCorrectorApp:
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._after_threadsafe(0, self._show_cancelled, request_id)
             else:
@@ -6235,6 +6591,7 @@ class PromptCorrectorApp:
 
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = "comic"
         self.cancel_event.clear()
         self.request_in_progress = True
         self._stage_invent_recall(
@@ -6326,7 +6683,7 @@ class PromptCorrectorApp:
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._after_threadsafe(0, self._show_cancelled, request_id)
             else:
@@ -6620,6 +6977,7 @@ class PromptCorrectorApp:
 
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = "meme"
         self.cancel_event.clear()
         self.request_in_progress = True
         self._stage_invent_recall(
@@ -6681,7 +7039,7 @@ class PromptCorrectorApp:
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._after_threadsafe(0, self._show_cancelled, request_id)
             else:
@@ -6752,6 +7110,7 @@ class PromptCorrectorApp:
 
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = "meme"
         self.cancel_event.clear()
         self.request_in_progress = True
         self._stage_invent_recall(
@@ -6855,7 +7214,7 @@ class PromptCorrectorApp:
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._after_threadsafe(0, self._show_cancelled, request_id)
             else:
@@ -6933,8 +7292,12 @@ class PromptCorrectorApp:
             effective_goal_headline = self.goal_headline_var.get().strip()
             effective_focus = self.focus_var.get().strip()
             effective_generation_feedback = self.generation_feedback_var.get().strip()
-            effective_local_references = self._local_reference_candidates()
             effective_reference_image_analysis = self.reference_images_var.get()
+            effective_local_references = (
+                self._local_reference_candidates("prompt")
+                if effective_reference_image_analysis
+                else []
+            )
         elif destination == "comic":
             effective_concepts = ", ".join(
                 parse_concepts(self.comic_concepts_var.get())
@@ -6952,8 +7315,14 @@ class PromptCorrectorApp:
             effective_goal_headline = ""
             effective_focus = ""
             effective_generation_feedback = ""
-            effective_local_references = []
-            effective_reference_image_analysis = False
+            effective_reference_image_analysis = (
+                self.comic_reference_images_var.get()
+            )
+            effective_local_references = (
+                self._local_reference_candidates("comic")
+                if effective_reference_image_analysis
+                else []
+            )
         else:
             # Meme Creator has its own content fields. Keep the shared
             # model/workflow configuration, but never inherit creative
@@ -6965,26 +7334,30 @@ class PromptCorrectorApp:
             effective_goal_headline = ""
             effective_focus = ""
             effective_generation_feedback = ""
-            effective_local_references = []
-            effective_reference_image_analysis = False
+            effective_reference_image_analysis = (
+                self.meme_reference_images_var.get()
+            )
+            effective_local_references = (
+                self._local_reference_candidates("meme")
+                if effective_reference_image_analysis
+                else []
+            )
         self.active_request_id += 1
         request_id = self.active_request_id
+        self.active_request_workspace = destination
         self.cancel_event.clear()
         self.request_in_progress = True
         self._set_request_controls(True)
         self.status_var.set("Correcting...")
         self._set_progress(5.0, "Starting correction")
         self._start_progress_timer()
-        if destination == "comic" and self.comic_result_text is not None:
-            self.comic_result_text.clear()
-        elif destination == "meme" and self.meme_result_text is not None:
-            self.meme_result_text.clear()
-        else:
-            self.corrected_text.delete("1.0", "end")
+        # Keep the previous successful result visible until a replacement has
+        # actually passed validation. A recoverable server or contract error
+        # must not destroy the user's last usable output.
         self._refresh_local_reference_previews()
         self._save_settings()
-        self._clear_activity()
-        self._log_activity("Started prompt correction.")
+        self.active_activity_workspace = destination
+        self._log_activity("Started prompt correction.", destination)
         self._log_activity(f"Settings saved to {SETTINGS_PATH.name}.")
         self._log_activity(f"LM Studio URL: {base_url}")
         self._log_activity(f"LM Studio timeout: {self._lm_timeout_seconds()} seconds")
@@ -7204,15 +7577,59 @@ class PromptCorrectorApp:
             raise CorrectionCancelled()
 
     def _clear_activity(self) -> None:
-        self.activity_text.configure(state="normal")
-        self.activity_text.delete("1.0", "end")
-        self.activity_text.configure(state="disabled")
+        self.clear_activity_history()
 
-    def _log_activity(self, message: str) -> None:
-        self.activity_text.configure(state="normal")
-        self.activity_text.insert("end", message.rstrip() + "\n")
-        self.activity_text.see("end")
-        self.activity_text.configure(state="disabled")
+    def clear_activity_history(self, _checked: bool = False) -> None:
+        self.activity_log = []
+        self._refresh_activity_text()
+        self._save_settings()
+        self.status_var.set("Cleared activity history")
+
+    def _activity_scope_key(self) -> str:
+        if self.activity_scope_combo is None:
+            return "all"
+        label = self.activity_scope_combo.currentText()
+        return {
+            "Prompt Corrector": "prompt",
+            "Comic Story": "comic",
+            "Meme Creator": "meme",
+            "System": "system",
+        }.get(label, "all")
+
+    def _refresh_activity_text(self, _value: object = None) -> None:
+        if not hasattr(self, "activity_text"):
+            return
+        scope = self._activity_scope_key()
+        lines: list[str] = []
+        for event in self.activity_log:
+            workspace = event.get("workspace", "system")
+            if scope != "all" and workspace != scope:
+                continue
+            time_label = event.get("time", "")
+            prefix = f"[{time_label}] " if time_label else ""
+            prefix += f"[{WORKSPACE_LABELS.get(workspace, 'System')}] "
+            lines.append(prefix + event.get("message", ""))
+        self.activity_text.setPlainText("\n".join(lines))
+        cursor = self.activity_text.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.activity_text.setTextCursor(cursor)
+
+    def _log_activity(self, message: str, workspace: str | None = None) -> None:
+        message = str(message or "").strip()
+        if not message:
+            return
+        workspace = workspace or self.active_activity_workspace
+        if workspace not in WORKSPACE_LABELS:
+            workspace = "system"
+        self.activity_log.append(
+            {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "workspace": workspace,
+                "message": message,
+            }
+        )
+        del self.activity_log[:-500]
+        self._refresh_activity_text()
 
     def _log_activity_threadsafe(self, message: str) -> None:
         self._after_threadsafe(0, self._log_activity, message)
@@ -7263,7 +7680,14 @@ class PromptCorrectorApp:
         if len(prompt) > 72:
             prompt = prompt[:69].rstrip() + "..."
         created_at = str(entry.get("created_at", ""))
-        label = f"{created_at}  {prompt}" if created_at else prompt
+        workspace = str(entry.get("workspace", "prompt"))
+        workspace_label = {
+            "prompt": "Prompt",
+            "comic": "Comic",
+            "meme": "Meme",
+        }.get(workspace, "Prompt")
+        label = f"[{workspace_label}] {prompt}"
+        label = f"{created_at}  {label}" if created_at else label
         return f"★  {label}" if self._bool_setting(entry.get("pinned"), False) else label
 
     def _refresh_history_listbox(self, _text: str = "") -> None:
@@ -7298,20 +7722,185 @@ class PromptCorrectorApp:
         index = self._selected_history_index()
         return self.prompt_history[index] if index is not None else None
 
+    def _workspace_history_state(self, workspace: str) -> dict[str, object]:
+        if workspace == "comic":
+            return {
+                "title": self.comic_title_var.get(),
+                "premise": self.comic_premise_var.get(),
+                "continuity": self.comic_continuity_var.get(),
+                "concepts": self.comic_concepts_var.get(),
+                "visual_direction": self.comic_visual_direction_var.get(),
+                "dialogue_direction": self.comic_dialogue_direction_var.get(),
+                "panel_count": self.comic_panel_count_var.get(),
+                "layout": self.comic_layout_var.get(),
+                "reading_order": self.comic_reading_order_var.get(),
+                "aspect_ratio": self.comic_aspect_ratio_var.get(),
+                "speech_bubbles": self.comic_speech_bubbles_var.get(),
+                "panels": [panel.get() for panel in self.comic_panel_vars],
+                "reference_paths": list(self.comic_reference_paths),
+                "reference_image_analysis": self.comic_reference_images_var.get(),
+            }
+        if workspace == "meme":
+            return {
+                "scene": self.meme_scene_var.get(),
+                "top_text": self.meme_top_text_var.get(),
+                "bottom_text": self.meme_bottom_text_var.get(),
+                "response_context": self.meme_response_context_var.get(),
+                "response_goal": self.meme_response_goal_var.get(),
+                "focus": self.meme_focus_var.get(),
+                "preset": self.meme_preset_var.get(),
+                "tone": self.meme_tone_var.get(),
+                "caption_style": self.meme_caption_style_var.get(),
+                "aspect_ratio": self.meme_aspect_ratio_var.get(),
+                "visual_direction": self.meme_visual_direction_var.get(),
+                "reference_paths": list(self.meme_reference_paths),
+                "reference_image_analysis": self.meme_reference_images_var.get(),
+            }
+        return {
+            "reference_paths": list(self.local_reference_paths),
+            "reference_image_analysis": self.reference_images_var.get(),
+        }
+
+    def _restore_history_reference_paths(
+        self,
+        workspace: str,
+        state: dict[str, object],
+    ) -> None:
+        paths = state.get("reference_paths", [])
+        if not isinstance(paths, list):
+            paths = []
+        restored = [
+            str(path)
+            for path in paths
+            if isinstance(path, str) and Path(path).is_file()
+        ][:8]
+        if workspace == "comic":
+            self.comic_reference_paths[:] = restored
+        elif workspace == "meme":
+            self.meme_reference_paths[:] = restored
+        else:
+            self.local_reference_paths[:] = restored
+        self._reference_analysis_var(workspace).set(
+            self._bool_setting(
+                state.get("reference_image_analysis"),
+                bool(restored),
+            )
+        )
+        self._refresh_local_reference_previews()
+
+    def _load_comic_history_state(self, state: dict[str, object]) -> None:
+        for key, variable in (
+            ("title", self.comic_title_var),
+            ("premise", self.comic_premise_var),
+            ("continuity", self.comic_continuity_var),
+            ("concepts", self.comic_concepts_var),
+            ("visual_direction", self.comic_visual_direction_var),
+            ("dialogue_direction", self.comic_dialogue_direction_var),
+        ):
+            if key in state:
+                variable.set(str(state.get(key, "")))
+        self.comic_panel_count_var.set(
+            self._int_setting(state.get("panel_count"), 2, 12, 4)
+        )
+        self.comic_layout_var.set(
+            self._choice_setting(
+                state.get("layout"),
+                COMIC_LAYOUT_PRESETS,
+                self.comic_layout_var.get(),
+            )
+        )
+        self.comic_reading_order_var.set(
+            self._choice_setting(
+                state.get("reading_order"),
+                COMIC_READING_ORDER_PRESETS,
+                self.comic_reading_order_var.get(),
+            )
+        )
+        self.comic_aspect_ratio_var.set(
+            self._choice_setting(
+                state.get("aspect_ratio"),
+                COMIC_ASPECT_RATIO_PRESETS,
+                self.comic_aspect_ratio_var.get(),
+            )
+        )
+        self.comic_speech_bubbles_var.set(
+            self._bool_setting(
+                state.get("speech_bubbles"),
+                self.comic_speech_bubbles_var.get(),
+            )
+        )
+        panels = state.get("panels", [])
+        if isinstance(panels, list):
+            for index, panel in enumerate(self.comic_panel_vars):
+                panel.set(str(panels[index]) if index < len(panels) else "")
+        self._restore_history_reference_paths("comic", state)
+
+    def _load_meme_history_state(self, state: dict[str, object]) -> None:
+        if "preset" in state:
+            self.meme_preset_var.set(
+                self._choice_setting(
+                    state.get("preset"),
+                    tuple(MEME_PRESETS),
+                    "Custom",
+                )
+            )
+        for key, variable in (
+            ("scene", self.meme_scene_var),
+            ("top_text", self.meme_top_text_var),
+            ("bottom_text", self.meme_bottom_text_var),
+            ("response_context", self.meme_response_context_var),
+            ("response_goal", self.meme_response_goal_var),
+            ("focus", self.meme_focus_var),
+            ("visual_direction", self.meme_visual_direction_var),
+        ):
+            if key in state:
+                variable.set(str(state.get(key, "")))
+        self.meme_tone_var.set(
+            self._choice_setting(
+                state.get("tone"),
+                MEME_TONES,
+                self.meme_tone_var.get(),
+            )
+        )
+        self.meme_caption_style_var.set(
+            self._choice_setting(
+                state.get("caption_style"),
+                MEME_CAPTION_STYLES,
+                self.meme_caption_style_var.get(),
+            )
+        )
+        self.meme_aspect_ratio_var.set(
+            self._choice_setting(
+                state.get("aspect_ratio"),
+                MEME_ASPECT_RATIOS,
+                self.meme_aspect_ratio_var.get(),
+            )
+        )
+        self._restore_history_reference_paths("meme", state)
+
     def _add_prompt_history(
         self,
         requested_prompt: str,
         corrected_prompt: str,
         story_elements_override: str | None = None,
         content_format_override: str | None = None,
+        workspace: str | None = None,
     ) -> None:
-        goal_headline = self.goal_headline_var.get().strip()
+        workspace = workspace or {
+            "comic story": "comic",
+            "meme": "meme",
+        }.get(str(content_format_override or "").strip().casefold(), "prompt")
+        goal_headline = (
+            self.goal_headline_var.get().strip()
+            if workspace == "prompt"
+            else ""
+        )
         requested_prompt = requested_prompt.strip()
         corrected_prompt = corrected_prompt.strip()
         if not corrected_prompt:
             return
 
-        key = f"{goal_headline}\n{requested_prompt}\n{corrected_prompt}"
+        key = f"{workspace}\n{goal_headline}\n{requested_prompt}\n{corrected_prompt}"
         existing_metadata = next(
             (
                 {
@@ -7320,6 +7909,7 @@ class PromptCorrectorApp:
                 }
                 for entry in self.prompt_history
                 if (
+                    f"{str(entry.get('workspace', 'prompt')).strip()}\n"
                     f"{str(entry.get('goal_headline', '')).strip()}\n"
                     f"{str(entry.get('requested_prompt', '')).strip()}\n"
                     f"{str(entry.get('corrected_prompt', entry.get('prompt', ''))).strip()}"
@@ -7331,28 +7921,59 @@ class PromptCorrectorApp:
             entry
             for entry in self.prompt_history
             if (
+                f"{str(entry.get('workspace', 'prompt')).strip()}\n"
                 f"{str(entry.get('goal_headline', '')).strip()}\n"
                 f"{str(entry.get('requested_prompt', '')).strip()}\n"
                 f"{str(entry.get('corrected_prompt', entry.get('prompt', ''))).strip()}"
             ) != key
         ]
+        option_snapshot = self._prompt_option_snapshot()
+        if workspace != "prompt":
+            option_snapshot.update(
+                {
+                    "visual_direction": "",
+                    "weighted_terms": "",
+                    "story_elements": "",
+                    "reference_image_analysis": self._reference_analysis_var(
+                        workspace
+                    ).get(),
+                }
+            )
         self.prompt_history.insert(
             0,
             {
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "workspace": workspace,
+                "workspace_state": self._workspace_history_state(workspace),
                 "requested_prompt": requested_prompt,
                 "goal_headline": goal_headline,
-                "focus": self.focus_var.get().strip(),
-                "weighted_terms": self.weighted_terms_var.get().strip(),
-                "concepts": self.concepts_var.get().strip(),
-                "concept_mix": self.concept_mix_var.get().strip(),
-                "model_instructions": self.model_instructions_var.get().strip(),
-                "generation_feedback": self.generation_feedback_var.get().strip(),
+                "focus": self.focus_var.get().strip() if workspace == "prompt" else "",
+                "weighted_terms": (
+                    self.weighted_terms_var.get().strip()
+                    if workspace == "prompt"
+                    else ""
+                ),
+                "concepts": self.concepts_var.get().strip() if workspace == "prompt" else "",
+                "concept_mix": (
+                    self.concept_mix_var.get().strip()
+                    if workspace == "prompt"
+                    else ""
+                ),
+                "model_instructions": (
+                    self.model_instructions_var.get().strip()
+                    if workspace == "prompt"
+                    else ""
+                ),
+                "generation_feedback": (
+                    self.generation_feedback_var.get().strip()
+                    if workspace == "prompt"
+                    else ""
+                ),
                 "risk_level": self.risk_level_var.get().strip(),
                 "prompt_preset": self.prompt_preset_var.get().strip(),
                 "corrected_prompt": corrected_prompt,
                 **existing_metadata,
-                **self._prompt_option_snapshot(),
+                **option_snapshot,
                 "content_format": content_format_override or self.content_format_var.get(),
                 "story_elements": (
                     story_elements_override
@@ -7372,6 +7993,24 @@ class PromptCorrectorApp:
         requested_prompt = str(entry.get("requested_prompt", "")).strip()
         goal_headline = str(entry.get("goal_headline", "")).strip()
         corrected_prompt = str(entry.get("corrected_prompt", entry.get("prompt", ""))).strip()
+        workspace = str(entry.get("workspace", "prompt")).strip().casefold()
+        state = entry.get("workspace_state", {})
+        if not isinstance(state, dict):
+            state = {}
+        if workspace == "comic":
+            self._load_comic_history_state(state)
+            if self.comic_result_text is not None:
+                self.comic_result_text.setPlainText(corrected_prompt)
+            self.mode_tabs.setCurrentIndex(1)
+            self.status_var.set("Loaded Comic Story history")
+            return
+        if workspace == "meme":
+            self._load_meme_history_state(state)
+            if self.meme_result_text is not None:
+                self.meme_result_text.setPlainText(corrected_prompt)
+            self.mode_tabs.setCurrentIndex(2)
+            self.status_var.set("Loaded Meme Creator history")
+            return
         self._load_prompt_options_from_history(entry)
         self.goal_headline_var.set(goal_headline)
         self.focus_var.set(str(entry.get("focus", "")))
@@ -7386,7 +8025,9 @@ class PromptCorrectorApp:
             self.draft_text.insert("1.0", requested_prompt)
         self.corrected_text.delete("1.0", "end")
         self.corrected_text.insert("1.0", corrected_prompt)
-        self.status_var.set("Loaded history prompt pair")
+        self._restore_history_reference_paths("prompt", state)
+        self.mode_tabs.setCurrentIndex(0)
+        self.status_var.set("Loaded Prompt Corrector history")
 
     def copy_selected_history_prompt(self) -> None:
         entry = self._selected_history_entry()
@@ -7456,16 +8097,62 @@ class PromptCorrectorApp:
         )
         self.add_local_reference_paths(filenames)
 
+    def _reference_workspace_key(self) -> str:
+        if self.reference_workspace_combo is not None:
+            return {
+                "Prompt Corrector": "prompt",
+                "Comic Story": "comic",
+                "Meme Creator": "meme",
+            }.get(self.reference_workspace_combo.currentText(), "prompt")
+        workspace = self._current_workspace_key()
+        return workspace if workspace in {"prompt", "comic", "meme"} else "prompt"
+
+    def _reference_paths(self, workspace: str | None = None) -> list[str]:
+        workspace = workspace or self._reference_workspace_key()
+        return {
+            "prompt": self.local_reference_paths,
+            "comic": self.comic_reference_paths,
+            "meme": self.meme_reference_paths,
+        }.get(workspace, self.local_reference_paths)
+
+    def _reference_analysis_var(self, workspace: str | None = None) -> Value:
+        workspace = workspace or self._reference_workspace_key()
+        return {
+            "prompt": self.reference_images_var,
+            "comic": self.comic_reference_images_var,
+            "meme": self.meme_reference_images_var,
+        }.get(workspace, self.reference_images_var)
+
+    def _on_reference_workspace_changed(self, _label: object = None) -> None:
+        if self.reference_analysis_checkbox is not None:
+            self.reference_analysis_checkbox.blockSignals(True)
+            self.reference_analysis_checkbox.setChecked(
+                bool(self._reference_analysis_var().get())
+            )
+            self.reference_analysis_checkbox.blockSignals(False)
+        self._refresh_local_reference_previews()
+
+    def _set_current_reference_analysis(self, enabled: bool) -> None:
+        self._reference_analysis_var().set(bool(enabled))
+        self._save_settings()
+
     def add_local_reference_paths(self, paths: list[str]) -> None:
         supported = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        workspace = self._reference_workspace_key()
+        workspace_paths = self._reference_paths(workspace)
         for raw_path in paths:
             path = str(Path(raw_path).expanduser().resolve())
-            if Path(path).is_file() and Path(path).suffix.lower() in supported and path not in self.local_reference_paths:
-                self.local_reference_paths.append(path)
-            if len(self.local_reference_paths) >= 8:
+            if (
+                Path(path).is_file()
+                and Path(path).suffix.lower() in supported
+                and path not in workspace_paths
+            ):
+                workspace_paths.append(path)
+            if len(workspace_paths) >= 8:
                 break
-        if self.local_reference_paths:
-            self.reference_images_var.set(True)
+        if workspace_paths:
+            self._reference_analysis_var(workspace).set(True)
+        self._on_reference_workspace_changed()
         self._refresh_local_reference_previews()
         self._save_settings()
 
@@ -7474,7 +8161,8 @@ class PromptCorrectorApp:
             return
         self.reference_preview_list.clear()
         local_role = Qt.ItemDataRole.UserRole.value + 1
-        for path in self.local_reference_paths:
+        workspace = self._reference_workspace_key()
+        for path in self._reference_paths(workspace):
             pixmap = QPixmap(path)
             item = QListWidgetItem(Path(path).name)
             item.setData(Qt.ItemDataRole.UserRole, Path(path).as_uri())
@@ -7482,28 +8170,41 @@ class PromptCorrectorApp:
             if not pixmap.isNull():
                 item.setIcon(QIcon(pixmap.scaled(112, 84, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)))
             self.reference_preview_list.addItem(item)
+        for candidate in self.web_reference_candidates.get(workspace, []):
+            title = candidate.get("title", "Reference image").strip() or "Reference image"
+            summary = candidate.get("summary", "").strip()
+            item = QListWidgetItem(title + (f"\n{summary}" if summary else ""))
+            item.setData(Qt.ItemDataRole.UserRole, candidate.get("url", ""))
+            self.reference_preview_list.addItem(item)
 
     def remove_selected_reference_image(self, _checked: bool = False) -> None:
         if self.reference_preview_list is None:
             return
         item = self.reference_preview_list.currentItem()
         path = str(item.data(Qt.ItemDataRole.UserRole.value + 1) or "") if item is not None else ""
-        if path in self.local_reference_paths:
-            self.local_reference_paths.remove(path)
+        workspace_paths = self._reference_paths()
+        if path in workspace_paths:
+            workspace_paths.remove(path)
             self._refresh_local_reference_previews()
             self._save_settings()
 
     def clear_local_reference_images(self, _checked: bool = False) -> None:
-        if not self.local_reference_paths:
+        workspace = self._reference_workspace_key()
+        workspace_paths = self._reference_paths(workspace)
+        if not workspace_paths:
             return
-        self.local_reference_paths = []
+        workspace_paths.clear()
+        self.web_reference_candidates[workspace] = []
         self._refresh_local_reference_previews()
         self._save_settings()
 
-    def _local_reference_candidates(self) -> list[dict[str, str]]:
+    def _local_reference_candidates(
+        self,
+        workspace: str | None = None,
+    ) -> list[dict[str, str]]:
         return [
             {"title": Path(path).name, "url": Path(path).as_uri(), "summary": "User-provided local reference"}
-            for path in self.local_reference_paths
+            for path in self._reference_paths(workspace)
             if Path(path).is_file()
         ]
 
@@ -7525,19 +8226,28 @@ class PromptCorrectorApp:
             source=source,
         )
 
-    def _set_reference_candidates(self, request_id: int, candidates: list[dict[str, str]]) -> None:
+    def _set_reference_candidates(
+        self,
+        request_id: int,
+        workspace: str,
+        candidates: list[dict[str, str]],
+    ) -> None:
         if request_id != self.active_request_id or self.reference_preview_list is None:
             return
+        local_urls = {
+            candidate["url"]
+            for candidate in self._local_reference_candidates(workspace)
+        }
+        web_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.get("url", "") not in local_urls
+        ][:4]
+        self.web_reference_candidates[workspace] = web_candidates
+        if workspace != self._reference_workspace_key():
+            return
         self._refresh_local_reference_previews()
-        offset = self.reference_preview_list.count()
-        local_urls = {candidate["url"] for candidate in self._local_reference_candidates()}
-        web_candidates = [candidate for candidate in candidates if candidate.get("url", "") not in local_urls][:4]
-        for candidate in web_candidates:
-            title = candidate.get("title", "Reference image").strip() or "Reference image"
-            summary = candidate.get("summary", "").strip()
-            item = QListWidgetItem(title + (f"\n{summary}" if summary else ""))
-            item.setData(Qt.ItemDataRole.UserRole, candidate.get("url", ""))
-            self.reference_preview_list.addItem(item)
+        offset = len(self._reference_paths(workspace))
         if web_candidates:
             threading.Thread(
                 target=self._fetch_reference_preview_worker,
@@ -7886,7 +8596,13 @@ class PromptCorrectorApp:
                     local_reference_candidates,
                 )
                 self._raise_if_cancelled(request_id)
-                self._after_threadsafe(0, self._set_reference_candidates, request_id, image_candidates)
+                self._after_threadsafe(
+                    0,
+                    self._set_reference_candidates,
+                    request_id,
+                    destination,
+                    image_candidates,
+                )
                 for diagnostic in image_diagnostics:
                     self._log_activity_threadsafe(diagnostic)
                 self._log_activity_threadsafe(
@@ -8039,19 +8755,25 @@ class PromptCorrectorApp:
                     self._log_activity_threadsafe(
                         "Unloaded LM Studio model instance(s): " + ", ".join(unloaded)
                     )
-                except RuntimeError as unload_error:
+                except Exception as unload_error:
                     self._log_activity_threadsafe(f"Model unload failed: {unload_error}")
         except CorrectionCancelled:
             self._log_activity_threadsafe("Correction stopped. Late worker result ignored.")
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
-        except RuntimeError as exc:
+        except Exception as exc:
             if self._request_cancelled(request_id):
                 self._log_activity_threadsafe("Correction stopped after an error. Error ignored.")
                 self._after_threadsafe(0, self._show_cancelled, request_id)
                 return
             self._log_activity_threadsafe(f"Error: {exc}")
-            self._after_threadsafe(0, self._show_error, str(exc))
+            self._after_threadsafe(
+                0,
+                self._show_error,
+                str(exc),
+                destination,
+                self.progress_stage,
+            )
             return
 
         if self._request_cancelled(request_id):
@@ -8099,6 +8821,7 @@ class PromptCorrectorApp:
                 if destination == "meme"
                 else "Single Image"
             ),
+            destination,
         )
         self.status_var.set("Done")
         self._finish_progress(True)
@@ -8116,14 +8839,37 @@ class PromptCorrectorApp:
         self.request_in_progress = False
         self._set_request_controls(False)
 
-    def _show_error(self, error: str) -> None:
+    def _show_error(
+        self,
+        error: str,
+        workspace: str = "prompt",
+        stage: str = "",
+    ) -> None:
         self.chat_stream_text = ""
         self._refresh_chat_transcript()
-        self.status_var.set("Error")
+        diagnostic = classify_workflow_error(
+            error,
+            workspace=workspace,
+            stage=stage,
+        )
+        self.active_activity_workspace = (
+            workspace if workspace in WORKSPACE_LABELS else "system"
+        )
+        self._log_activity(
+            f"{diagnostic['title']} at {diagnostic['stage']}: "
+            f"{diagnostic['detail']} Next: {diagnostic['next_step']}",
+            self.active_activity_workspace,
+        )
+        self.status_var.set(diagnostic["title"])
         self._finish_progress(False)
+        self.progress_text_var.set(f"Failed: {diagnostic['stage']}")
         self.request_in_progress = False
         self._set_request_controls(False)
-        messagebox.showerror("LM Studio error", error)
+        self.show_library_tab("Activity")
+        if diagnostic["category"] == "input":
+            messagebox.showwarning(diagnostic["title"], diagnostic["message"])
+        else:
+            messagebox.showerror(diagnostic["title"], diagnostic["message"])
 
     def copy_corrected(self) -> None:
         corrected = self.corrected_text.get("1.0", "end").strip()
@@ -8187,7 +8933,9 @@ class PromptCorrectorApp:
             "emotion": [],
         }
         self.visual_preset_selections["prompt"] = []
-        self.local_reference_paths = []
+        self.local_reference_paths.clear()
+        self.web_reference_candidates["prompt"] = []
+        self.reference_images_var.set(False)
         self._refresh_local_reference_previews()
         self.status_var.set("Single Image cleared")
         self._save_settings()
@@ -8212,6 +8960,10 @@ class PromptCorrectorApp:
             panel.set("")
         if self.comic_result_text is not None:
             self.comic_result_text.clear()
+        self.comic_reference_paths.clear()
+        self.web_reference_candidates["comic"] = []
+        self.comic_reference_images_var.set(False)
+        self._refresh_local_reference_previews()
         self.status_var.set("Comic story cleared")
         self._save_settings()
 
@@ -8240,6 +8992,10 @@ class PromptCorrectorApp:
         self.visual_preset_selections["meme"] = []
         if self.meme_result_text is not None:
             self.meme_result_text.clear()
+        self.meme_reference_paths.clear()
+        self.web_reference_candidates["meme"] = []
+        self.meme_reference_images_var.set(False)
+        self._refresh_local_reference_previews()
         self.status_var.set("Meme cleared")
         self._save_settings()
 
