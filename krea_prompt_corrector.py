@@ -2735,8 +2735,10 @@ def contradiction_issues(prompt: str) -> list[str]:
     lowered = prompt.lower()
     issues: list[str] = []
     for left, right in CONTRADICTION_GROUPS:
-        left_pattern = rf"(?<!\w){re.escape(left).replace(r'\ ', r'\s+')}(?!\w)"
-        right_pattern = rf"(?<!\w){re.escape(right).replace(r'\ ', r'\s+')}(?!\w)"
+        left_escaped = re.escape(left).replace(r"\ ", r"\s+")
+        right_escaped = re.escape(right).replace(r"\ ", r"\s+")
+        left_pattern = rf"(?<!\w){left_escaped}(?!\w)"
+        right_pattern = rf"(?<!\w){right_escaped}(?!\w)"
         if re.search(left_pattern, lowered) and re.search(right_pattern, lowered):
             issues.append(f"Contradictory terms: {left} / {right}")
     return issues
