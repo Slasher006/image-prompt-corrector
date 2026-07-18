@@ -1656,6 +1656,187 @@ class PromptCorrectorTests(unittest.TestCase):
         )
 
         self.assertEqual(issues, [])
+        self.assertEqual(
+            corrector.multi_person_role_issues(
+                "The man behind the woman faces the camera in the carwash tunnel."
+            ),
+            [],
+        )
+
+    def test_unpositioned_unique_woman_and_man_get_stable_frame_labels(self):
+        prompt = (
+            "Woman and man, nude in a neon-lit carwash tunnel, locked together "
+            "beneath cascading water jets; reflections distort their forms while "
+            "steam swirls around them."
+        )
+
+        bound = corrector.bind_unpositioned_mixed_gender_pair(prompt)
+        resolved = corrector.resolve_unambiguous_multi_person_pronouns(bound)
+
+        self.assertIn("the woman on image-left", resolved)
+        self.assertIn("the man on image-right", resolved)
+        self.assertIn(
+            "the woman on image-left and the man on image-right's forms",
+            resolved,
+        )
+        self.assertNotRegex(
+            resolved.lower(),
+            r"\b(?:he|she|him|her|his|hers|they|their|them)\b",
+        )
+        self.assertEqual(corrector.multi_person_role_issues(resolved), [])
+
+    def test_mixed_gender_position_binding_leaves_ambiguous_groups_unchanged(self):
+        same_gender = "Two women stand together while one woman holds a lantern."
+        already_bound = (
+            "The woman on image-left faces the man on image-right beneath neon light."
+        )
+
+        self.assertEqual(
+            corrector.bind_unpositioned_mixed_gender_pair(same_gender),
+            same_gender,
+        )
+        self.assertEqual(
+            corrector.bind_unpositioned_mixed_gender_pair(already_bound),
+            already_bound,
+        )
+
+    def test_post_completion_repairs_unpositioned_unique_adult_pair(self):
+        prompt = (
+            "Woman and man, nude in a neon carwash tunnel, locked together beneath "
+            "cascading water jets; reflections distort their forms while steam "
+            "swirls around them."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=prompt,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=prompt,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                audit_repair=False,
+                altered_text_encoder=False,
+                explicit_nsfw=True,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertIn("the woman on image-left", result)
+        self.assertIn("the man on image-right", result)
+        self.assertEqual(corrector.multi_person_role_issues(result), [])
+
+    def test_collective_people_do_not_require_individual_position_labels(self):
+        collective_prompts = (
+            "A couple embraces beneath warm window light.",
+            "A crowd watches fireworks from a rooftop.",
+            "Two women dance together under stage lights.",
+            "Women and men march together through the plaza.",
+        )
+
+        for prompt in collective_prompts:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+                self.assertEqual(
+                    corrector.bind_unpositioned_distinct_people(prompt),
+                    prompt,
+                )
+
+    def test_distinct_roles_receive_natural_local_position_bindings(self):
+        cases = (
+            (
+                "A doctor examines a patient in a bright clinic.",
+                "A doctor on image-left examines a patient on image-right",
+            ),
+            (
+                "The red-haired woman greets the bearded man at a doorway.",
+                "The red-haired woman on image-left greets the bearded man on image-right",
+            ),
+            (
+                "A woman and a nonbinary person face each other in a studio.",
+                "A woman on image-left and a nonbinary person on image-right",
+            ),
+            (
+                "A queen addresses a guard in the throne room.",
+                "A queen on image-left addresses a guard on image-right",
+            ),
+        )
+
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                bound = corrector.bind_unpositioned_distinct_people(prompt)
+                self.assertIn(expected, bound)
+                self.assertNotIn("A the ", bound)
+                self.assertNotIn("red-haired the ", bound)
+                self.assertEqual(corrector.multi_person_role_issues(bound), [])
+
+    def test_three_unique_roles_receive_three_distinct_positions(self):
+        prompt = "A doctor, nurse, and patient wait in a clinic."
+
+        bound = corrector.bind_unpositioned_distinct_people(prompt)
+
+        self.assertIn("doctor on image-left", bound)
+        self.assertIn("nurse at image-center", bound)
+        self.assertIn("patient on image-right", bound)
+        self.assertEqual(corrector.multi_person_role_issues(bound), [])
+
+    def test_environment_positions_do_not_count_as_person_bindings(self):
+        prompt = (
+            "A woman and man in a room, with a lamp on the left and a window "
+            "on the right."
+        )
+
+        issues = corrector.multi_person_role_issues(prompt)
+        bound = corrector.bind_unpositioned_distinct_people(prompt)
+
+        self.assertIn("missing distinct position labels for each person", issues)
+        self.assertIn("woman on image-left", bound)
+        self.assertIn("man on image-right", bound)
+        self.assertEqual(corrector.multi_person_role_issues(bound), [])
+
+    def test_extended_relational_bindings_are_accepted(self):
+        for prompt in (
+            "The woman leans above the man on a sofa.",
+            "The guard stands between the doctor and the patient.",
+            "The dancer straddles the other dancer.",
+        ):
+            with self.subTest(prompt=prompt):
+                issues = corrector.multi_person_role_issues(prompt)
+                self.assertNotIn(
+                    "missing distinct position labels for each person",
+                    issues,
+                )
+
+    def test_spouse_pronoun_becomes_the_positioned_spouse_label(self):
+        prompt = "A wife hugs her husband in a kitchen."
+
+        bound = corrector.bind_unpositioned_distinct_people(prompt)
+        resolved = corrector.resolve_unambiguous_multi_person_pronouns(bound)
+
+        self.assertIn("wife on image-left hugs the husband on image-right", resolved)
+        self.assertNotIn("wife on image-left's husband", resolved)
+        self.assertEqual(corrector.multi_person_role_issues(resolved), [])
+
+    def test_nonbinary_identity_is_a_hard_source_fidelity_label(self):
+        issues = corrector.gender_identity_contract_issues(
+            "A woman on image-left faces a person on image-right.",
+            "A woman faces a nonbinary person.",
+        )
+
+        self.assertIn(
+            "missing explicit nonbinary identity label from the source",
+            issues,
+        )
+
+    def test_each_other_is_not_reported_twice_for_two_distinct_roles(self):
+        issues = corrector.multi_person_role_issues(
+            "A doctor on image-left and patient on image-right face each other."
+        )
+
+        self.assertFalse(any("each other" in issue for issue in issues))
+        self.assertFalse(any("other" in issue for issue in issues))
 
     def test_two_explicit_gendered_roles_still_require_repeated_labels(self):
         prompt = (
@@ -2702,11 +2883,12 @@ class PromptCorrectorTests(unittest.TestCase):
     def test_system_prompt_contains_multi_person_role_binding_rules(self):
         prompt = corrector.build_system_prompt()
 
-        self.assertIn("For scenes with multiple people", prompt)
+        self.assertIn("For individually tracked people", prompt)
         self.assertIn("bind every person explicitly", prompt)
-        self.assertIn("short immutable gender-or-role plus position label", prompt)
+        self.assertIn("short immutable identity-or-role plus position label", prompt)
         self.assertIn("Repeat the complete label before every action", prompt)
-        self.assertIn("Never swap, merge, or generalize male and female identities", prompt)
+        self.assertIn("female, male, and nonbinary identities", prompt)
+        self.assertIn("acting only collectively may keep one collective label", prompt)
 
     def test_user_message_can_include_non_visual_model_instructions(self):
         message = corrector.build_user_message(

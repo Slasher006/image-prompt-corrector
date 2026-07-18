@@ -527,26 +527,44 @@ POSE_MECHANIC_TERMS = (
 PERSON_ROLE_WORDS = (
     "actor",
     "adult",
+    "agender person",
     "boy",
+    "bride",
+    "brother",
     "caveman",
     "cavewoman",
     "character",
     "child",
+    "daughter",
     "dancer",
+    "doctor",
     "father",
     "female",
+    "genderqueer person",
     "girl",
+    "groom",
     "guard",
+    "husband",
     "king",
     "knight",
     "lady",
     "male",
     "man",
     "mother",
+    "non-binary person",
+    "nonbinary person",
+    "nurse",
+    "partner",
+    "patient",
     "person",
     "queen",
+    "sibling",
+    "sister",
     "soldier",
+    "son",
+    "spouse",
     "warrior",
+    "wife",
     "woman",
 )
 PLURAL_PERSON_ROLE_WORDS = (
@@ -567,6 +585,25 @@ PLURAL_PERSON_ROLE_WORDS = (
     "males",
     "men",
     "people",
+    "soldiers",
+    "warriors",
+    "women",
+)
+COLLECTIVE_PERSON_ROLE_WORDS = (
+    "adults",
+    "boys",
+    "cavemen",
+    "cavewomen",
+    "couple",
+    "crowd",
+    "dancers",
+    "females",
+    "girls",
+    "group",
+    "guards",
+    "knights",
+    "males",
+    "men",
     "soldiers",
     "warriors",
     "women",
@@ -632,18 +669,11 @@ MALE_PERSON_IDENTITY_WORDS = (
     "caveman",
     "cavemen",
 )
-PERSON_POSITION_WORDS = (
-    "background",
-    "behind",
-    "beside",
-    "center",
-    "foreground",
-    "front",
-    "left",
-    "middle",
-    "near",
-    "next to",
-    "right",
+NONBINARY_PERSON_IDENTITY_WORDS = (
+    "nonbinary",
+    "non-binary",
+    "genderqueer",
+    "agender",
 )
 MULTI_PANEL_TERMS = (
     "comic page",
@@ -1286,6 +1316,90 @@ def person_role_mentions(prompt: str) -> list[str]:
     return mentions
 
 
+def _collective_person_scene(prompt: str) -> bool:
+    """Return whether people act only as named groups, not tracked individuals."""
+
+    searchable = text_without_negative_constraints(
+        normalize_concept_text(prompt)
+    ).lower()
+    collective = [
+        word
+        for word in COLLECTIVE_PERSON_ROLE_WORDS
+        if re.search(rf"\b{re.escape(word)}\b", searchable)
+    ]
+    if not collective:
+        return False
+    singular = [
+        word
+        for word in PERSON_ROLE_WORDS
+        if re.search(rf"\b{re.escape(word)}\b", searchable)
+    ]
+    if singular:
+        return False
+    return not re.search(
+        r"\b(?:another|first|second|third|fourth|one)\b"
+        r"[^,.!?;]{0,32}\b(?:"
+        + "|".join(re.escape(word) for word in COLLECTIVE_PERSON_ROLE_WORDS)
+        + r")\b",
+        searchable,
+    )
+
+
+def _role_pattern() -> str:
+    roles = sorted(PERSON_ROLE_WORDS, key=len, reverse=True)
+    return rf"\b(?:{'|'.join(re.escape(word) for word in roles)})\b"
+
+
+def _relational_role_binding(searchable: str) -> bool:
+    role_pattern = _role_pattern()
+    return bool(
+        re.search(
+            rf"{role_pattern}[^,.!?;]{{0,48}}\b"
+            r"(?:above|behind|below|beneath|beside|between|fac(?:e|es|ed|ing)|next\s+to|"
+            r"opposite|over|straddl(?:e|es|ed|ing)|to\s+the\s+left\s+of|"
+            r"to\s+the\s+right\s+of|under|underneath|in\s+front\s+of)"
+            rf"\b[^,.!?;]{{0,48}}{role_pattern}",
+            searchable,
+        )
+    )
+
+
+def _bound_role_position_count(searchable: str) -> int:
+    """Count role mentions with their own nearby ordinal or frame position."""
+
+    role_pattern = _role_pattern()
+    role_matches = list(re.finditer(role_pattern, searchable))
+    bound_spans: set[tuple[int, int]] = set()
+    direct_position = re.compile(
+        r"\b(?:first|second|third|fourth)\b|"
+        r"\b(?:on|at)\s+(?:the\s+)?(?:(?:image|screen)-)?"
+        r"(?:left|right|center)\b|"
+        r"\bin\s+(?:the\s+)?(?:foreground|background|center|middle)\b"
+    )
+    for index, match in enumerate(role_matches):
+        clause_start = max(
+            searchable.rfind(separator, 0, match.start())
+            for separator in (".", ",", ";", "!", "?")
+        ) + 1
+        clause_end_candidates = [
+            position
+            for separator in (".", ",", ";", "!", "?")
+            if (position := searchable.find(separator, match.end())) >= 0
+        ]
+        clause_end = min(clause_end_candidates) if clause_end_candidates else len(searchable)
+        previous_role_end = role_matches[index - 1].end() if index else clause_start
+        next_role_start = (
+            role_matches[index + 1].start()
+            if index + 1 < len(role_matches)
+            else clause_end
+        )
+        before = searchable[max(clause_start, previous_role_end):match.start()]
+        after = searchable[match.end():min(clause_end, next_role_start)]
+        if direct_position.search(before) or direct_position.search(after):
+            bound_spans.add(match.span())
+    return len(bound_spans)
+
+
 def appears_multi_person_scene(prompt: str) -> bool:
     searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
     role_mentions = person_role_mentions(searchable)
@@ -1307,22 +1421,37 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
     if not appears_multi_person_scene(searchable):
         return []
+    if _collective_person_scene(searchable):
+        return []
 
     issues: list[str] = []
+    role_mentions = person_role_mentions(searchable)
+    distinct_roles = {
+        role
+        for role in role_mentions
+        if role not in {"adult", "character", "person"}
+    }
+    reciprocal_is_unambiguous = (
+        len(distinct_roles) >= 2 and "each other" in searchable
+    )
     ambiguous = [
         word
         for word in AMBIGUOUS_MULTI_PERSON_REFERENCES
         if re.search(rf"\b{re.escape(word)}\b", searchable)
+        and not (
+            reciprocal_is_unambiguous
+            and word in {"each other", "other"}
+        )
     ]
+    if "each other" in ambiguous and "other" in ambiguous:
+        ambiguous.remove("other")
     if ambiguous:
         issues.append("ambiguous person references: " + ", ".join(ambiguous[:6]))
 
-    position_count = sum(
-        1
-        for word in PERSON_POSITION_WORDS
-        if re.search(rf"\b{re.escape(word)}\b", searchable)
-    )
-    if position_count < 2:
+    role_pattern = _role_pattern()
+    relational_role_binding = _relational_role_binding(searchable)
+    position_count = _bound_role_position_count(searchable)
+    if position_count < 2 and not relational_role_binding:
         issues.append("missing distinct position labels for each person")
 
     action_count = sum(
@@ -1330,7 +1459,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         for word in ACTION_POSE_KEYWORDS
         if re.search(rf"\b{re.escape(word)}\b", searchable)
     )
-    role_pattern = rf"\b(?:{'|'.join(re.escape(word) for word in PERSON_ROLE_WORDS)})\b"
     action_pattern = rf"\b(?:{'|'.join(re.escape(word) for word in ACTION_POSE_KEYWORDS)})\b"
     action_sentences = [
         sentence
@@ -1348,9 +1476,10 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         for term in ("man", "woman", "male", "female", "men", "women", "boy", "girl")
         if re.search(rf"\b{term}\b", searchable)
     ]
-    if len(gender_terms) >= 2 and not re.search(
-        r"\b(?:left|right|center|foreground|background|first|second|third)\b",
-        searchable,
+    if (
+        len(gender_terms) >= 2
+        and position_count < 2
+        and not relational_role_binding
     ):
         issues.append("gendered subjects need explicit role and position binding")
 
@@ -1387,14 +1516,187 @@ def _unambiguous_gender_label(
         return ""
 
     position_match = re.search(
-        rf"\b{re.escape(term)}\b[^,.!?;]{{0,48}}\b"
-        r"((?:on|at)\s+(?:the\s+)?(?:left|right|center)|"
+        rf"\b{re.escape(term)}\b[^,.!?;]{{0,48}}?\b"
+        r"((?:on|at)\s+(?:the\s+)?(?:(?:image|screen)-)?(?:left|right|center)|"
         r"in\s+(?:the\s+)?(?:foreground|background|center))\b",
         searchable,
     )
     if position_match:
         return f"the {term} {position_match.group(1)}"
     return fallback_label
+
+
+def _unique_person_descriptors(prompt: str) -> list[tuple[str, str, int]]:
+    """Return unique singular identity/role phrases in source order."""
+
+    searchable = text_without_negative_constraints(
+        normalize_concept_text(prompt)
+    ).lower()
+    descriptors: list[tuple[str, str, int]] = []
+    identity_groups = (
+        (
+            "female",
+            tuple(
+                term
+                for term in FEMALE_PERSON_IDENTITY_WORDS
+                if term not in {"women", "females", "ladies", "girls", "cavewomen"}
+            ),
+        ),
+        (
+            "male",
+            tuple(
+                term
+                for term in MALE_PERSON_IDENTITY_WORDS
+                if term not in {"men", "males", "boys", "cavemen"}
+            ),
+        ),
+        ("nonbinary", NONBINARY_PERSON_IDENTITY_WORDS),
+    )
+    identity_terms = {
+        term
+        for _category, terms in identity_groups
+        for term in terms
+    }
+    occupied: list[tuple[int, int]] = []
+    for category, terms in identity_groups:
+        matches: list[re.Match[str]] = []
+        for term in sorted(terms, key=len, reverse=True):
+            suffix = (
+                r"(?:\s+(?:adult|person|subject))?"
+                if category == "nonbinary"
+                else ""
+            )
+            matches.extend(
+                re.finditer(rf"\b{re.escape(term)}{suffix}\b", searchable)
+            )
+        matches.sort(key=lambda match: match.start())
+        nonoverlapping = [
+            match
+            for match in matches
+            if not any(
+                start <= match.start() < end
+                or start < match.end() <= end
+                for start, end in occupied
+            )
+        ]
+        if len(nonoverlapping) == 1:
+            match = nonoverlapping[0]
+            descriptors.append((category, match.group(0), match.start()))
+            occupied.append(match.span())
+
+    excluded_roles = identity_terms | {
+        "actor",
+        "adult",
+        "character",
+        "child",
+        "person",
+    }
+    for role in sorted(PERSON_ROLE_WORDS, key=len, reverse=True):
+        if role in excluded_roles or any(
+            identity in role for identity in NONBINARY_PERSON_IDENTITY_WORDS
+        ):
+            continue
+        matches = list(re.finditer(rf"\b{re.escape(role)}\b", searchable))
+        matches = [
+            match
+            for match in matches
+            if not any(
+                start <= match.start() < end
+                or start < match.end() <= end
+                for start, end in occupied
+            )
+        ]
+        if len(matches) == 1:
+            match = matches[0]
+            descriptors.append((role, match.group(0), match.start()))
+            occupied.append(match.span())
+    return sorted(descriptors, key=lambda item: item[2])
+
+
+def bind_unpositioned_distinct_people(prompt: str) -> str:
+    """Position two to four unique roles without guessing between repeated roles."""
+
+    if not appears_multi_person_scene(prompt) or _collective_person_scene(prompt):
+        return prompt
+    searchable = text_without_negative_constraints(
+        normalize_concept_text(prompt)
+    ).lower()
+    if _relational_role_binding(searchable):
+        return prompt
+    descriptors = _unique_person_descriptors(prompt)
+    if not 2 <= len(descriptors) <= 4:
+        return prompt
+
+    direct_position = re.compile(
+        r"\b(?:(?:image|screen)-)?(left|right|center)\b|"
+        r"\b(foreground|background|middle)\b"
+    )
+    descriptor_positions: list[str] = []
+    for index, (_category, phrase, start) in enumerate(descriptors):
+        next_start = (
+            descriptors[index + 1][2]
+            if index + 1 < len(descriptors)
+            else len(searchable)
+        )
+        clause_end_candidates = [
+            position
+            for separator in (".", ",", ";", "!", "?")
+            if (position := searchable.find(separator, start)) >= 0
+        ]
+        clause_end = min(clause_end_candidates) if clause_end_candidates else len(searchable)
+        segment = searchable[start:min(next_start, clause_end)]
+        match = direct_position.search(segment)
+        descriptor_positions.append(
+            next((group for group in match.groups() if group), "")
+            if match
+            else ""
+        )
+    if all(descriptor_positions):
+        return prompt
+
+    preferred = {
+        2: ("left", "right"),
+        3: ("left", "center", "right"),
+        4: ("foreground-left", "foreground-right", "background-left", "background-right"),
+    }[len(descriptors)]
+    occupied = {position for position in descriptor_positions if position}
+    available = [position for position in preferred if position not in occupied]
+    assigned = list(descriptor_positions)
+    for index, position in enumerate(assigned):
+        if not position:
+            assigned[index] = available.pop(0) if available else preferred[index]
+    suffixes = {
+        "left": " on image-left",
+        "center": " at image-center",
+        "right": " on image-right",
+        "foreground-left": " in the foreground on image-left",
+        "foreground-right": " in the foreground on image-right",
+        "background-left": " in the background on image-left",
+        "background-right": " in the background on image-right",
+    }
+
+    parts = re.split(r'("[^"]*")', prompt)
+    for descriptor_index, (_category, phrase, _start) in enumerate(descriptors):
+        if descriptor_positions[descriptor_index]:
+            continue
+        pattern = re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
+        for part_index in range(0, len(parts), 2):
+            if pattern.search(parts[part_index]):
+                parts[part_index] = pattern.sub(
+                    lambda match, suffix=suffixes[assigned[descriptor_index]]: (
+                        match.group(0) + suffix
+                    ),
+                    parts[part_index],
+                    count=1,
+                )
+                break
+    return "".join(parts)
+
+
+def bind_unpositioned_mixed_gender_pair(prompt: str) -> str:
+    """Backward-compatible wrapper for generalized distinct-person binding."""
+
+    return bind_unpositioned_distinct_people(prompt)
 
 
 def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
@@ -1470,6 +1772,26 @@ def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
             if female_label and male_label
             else ""
         )
+        positioned_role = (
+            _role_pattern()
+            + r"[^,.!?;]{0,48}\b(?:"
+            r"(?:(?:image|screen)-)?(?:left|right|center)|"
+            r"foreground|background|middle)\b"
+        )
+        if male_label:
+            segment = re.sub(
+                rf"\bhis\s+(?={positioned_role})",
+                "the ",
+                segment,
+                flags=re.IGNORECASE,
+            )
+        if female_label:
+            segment = re.sub(
+                rf"\bher\s+(?={positioned_role})",
+                "the ",
+                segment,
+                flags=re.IGNORECASE,
+            )
         if male_label:
             segment = re.sub(r"\bhe\b", male_label, segment, flags=re.IGNORECASE)
             segment = re.sub(r"\bhim\b", male_label, segment, flags=re.IGNORECASE)
@@ -1543,7 +1865,7 @@ def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
 
 
 def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
-    """Keep explicit male/female identities from being generalized or dropped."""
+    """Keep explicit gender identities from being generalized or dropped."""
 
     source = text_without_negative_constraints(normalize_concept_text(original_prompt)).lower()
     candidate = text_without_negative_constraints(normalize_concept_text(final_prompt)).lower()
@@ -1551,6 +1873,7 @@ def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> 
     for label, terms in (
         ("female", FEMALE_PERSON_IDENTITY_WORDS),
         ("male", MALE_PERSON_IDENTITY_WORDS),
+        ("nonbinary", NONBINARY_PERSON_IDENTITY_WORDS),
     ):
         source_has_identity = any(
             re.search(rf"\b{re.escape(term)}\b", source) for term in terms
@@ -5578,7 +5901,7 @@ Rules:
 - Treat the supplied hard fidelity contract as non-negotiable.
 - Output format contract: {format_rule}
 - Keep the main subject and action first; group each object with its attributes, position, and relationships.
-- In scenes with multiple people, assign each person a short immutable gender-or-role plus position label, such as "the woman in the red coat on image-left" and "the man in the blue shirt on image-right". Repeat that complete label before every action, pose, gaze, clothing detail, body part, and object interaction. Do not use he, she, him, her, his, hers, they, or them.
+- For individually tracked people, assign each person a short immutable identity-or-role plus position label, such as "the woman in the red coat on image-left", "the nonbinary doctor at center", and "the man in the blue shirt on image-right". Repeat that complete label before every action, pose, gaze, clothing detail, body part, and object interaction. Preserve female, male, and nonbinary identities. A couple, crowd, or group acting only collectively may keep its collective label.
 - Preserve negative constraints as clear absence statements. Never turn excluded content into positive content.
 - Keep left/right, foreground/background, inside/outside, above/below, facing direction, source direction, and object counts exact.
 - For panels, keep the requested count, order, distinct beats, identity continuity, layout, and exact dialogue.
@@ -5700,7 +6023,7 @@ def build_small_model_audit_system_prompt(generator_target: str, content_format:
     target = normalize_generator_target(generator_target)
     return f"""You are a compact {target} prompt compliance auditor.
 Compare the source contract with the candidate. Repair only concrete failures: dropped facts, wrong counts or positions, ambiguous subject-action binding, incoherent action-critical joints or contact, comic layout or continuity loss, and incompatible syntax.
-For multiple people, preserve every explicit male/female identity and replace pronouns with repeated gender-or-role plus position labels before each person's action and attributes.
+For individually tracked people, preserve every explicit female, male, and nonbinary identity and replace ambiguous pronouns with repeated identity-or-role plus position labels before each person's action and attributes. Keep purely collective couples, crowds, and groups collective.
 Return only the repaired {normalize_content_format(content_format)} prompt. Do not output a score, notes, or reasoning."""
 
 
@@ -5889,7 +6212,7 @@ Rules:
 - Analyze vague requests before expanding them. If the draft is underspecified, identify the missing visual decisions internally and make conservative concrete choices that fit the user's stated subject, mode, focus, concepts, and research context. Do not leave generic words as the main content.
 - Run a plausibility check before final output: remove accidental AI-artifact wording, impossible body states, impossible camera combinations, unclear subject/action bindings, and visually incoherent object mixtures unless the draft clearly requests surreal, fantasy, symbolic, dreamlike, or abstract imagery.
 - Keep body orientation viewpoint-aware. Anatomical left and right always mean the subject's own left and right; use image-left, image-right, screen-left, or screen-right only for placement in the frame. For every visible action-critical body part, make torso and head facing, gaze, shoulder and hip alignment, elbow and knee bend, palm or paw direction, grip, feet or toes, weight bearing, and prop contact mutually consistent with the camera view. Do not mirror, swap, or disconnect limbs or other connected anatomy. Add only orientation details that help the requested pose or action.
-- For scenes with multiple people, bind every person explicitly. Give each person a short immutable gender-or-role plus position label, such as the woman in the red coat on image-left, the bearded man in the blue shirt at center, or the second guard in the background. Repeat the complete label before every action, pose, gaze, clothing detail, body part, object interaction, and relationship. Do not use he, she, him, her, his, hers, they, or them. Never swap, merge, or generalize male and female identities.
+- For individually tracked people, bind every person explicitly. Give each person a short immutable identity-or-role plus position label, such as the woman in the red coat on image-left, the nonbinary doctor at center, the bearded man in the blue shirt on image-right, or the second guard in the background. Repeat the complete label before every action, pose, gaze, clothing detail, body part, object interaction, and relationship. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. A couple, crowd, or group acting only collectively may keep one collective label.
 - Remove duplicate ideas, repeated descriptors, contradictions, filler, prompt chatter, and irrelevant instructions.
 - {semantic_grouping_rule}
 - Use strong composition and camera language when helpful: close-up, low angle, wide angle, macro, high-angle perspective, shallow depth of field, dynamic composition.
@@ -6180,7 +6503,7 @@ Translate each feeling into visible image evidence: facial expression, gaze dire
 Multi-person role binding analysis:
 {", ".join(role_issues)}
 
-Rewrite the final prompt so every person has a distinct identity label: a short immutable gender-or-role plus position label. Repeat the complete label before every action, pose, gaze, clothing detail, body part, and object interaction. Replace all he, she, him, her, his, hers, they, and them references with those repeated labels. Never swap, merge, or generalize male and female identities. Make it obvious who does what to whom and where each person stands in the scene.
+Rewrite the final prompt so every individually tracked person has a distinct identity label: a short immutable identity-or-role plus position label. Repeat the complete label before every action, pose, gaze, clothing detail, body part, and object interaction. Replace ambiguous he, she, him, her, his, hers, they, and them references with those repeated labels. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. Keep a purely collective couple, crowd, or group collective. Make it obvious who does what to whom and where each individually tracked person stands.
 """
         if role_issues
         else ""
@@ -6312,7 +6635,7 @@ Audit the corrected prompt against these {target} expectations:
 - No polite filler, vague placeholders, or hedged wording outside quoted rendered text. Explicit direct phrasing is acceptable when it is concrete and helps altered text encoder clarity.
 - No unresolved vague request content. Generic words such as nice, cool, aesthetic, scene, something, stuff, or things must be replaced with concrete visual decisions.
 - No accidental AI-failure wording, impossible body states, impossible camera combinations, unclear subject/action bindings, or visually incoherent object mixtures unless intentionally surreal/fantasy/abstract.
-- In every multi-person scene, each person has a short immutable gender-or-role plus position label. The complete label is repeated before that person's actions, pose, gaze, clothing, body parts, and object interactions. No he, she, him, her, his, hers, they, or them remains, and explicit male/female identities are never swapped, merged, generalized, or dropped.
+- Every individually tracked person has a short immutable identity-or-role plus position label. The complete label is repeated before that person's actions, pose, gaze, clothing, body parts, and object interactions. Ambiguous pronouns are removed, and explicit female, male, and nonbinary identities are never swapped, merged, generalized, or dropped. Purely collective couples, crowds, and groups may remain collective.
 - Body-part orientation is anatomically and spatially coherent from the stated camera view. The subject's anatomical left and right are not confused with image-left and image-right, and visible action-critical anatomy has consistent facing, joint bends, palm or paw direction, grip, foot direction, weight bearing, and prop contact. Repair mirrored, swapped, twisted, or disconnected anatomy instead of repeating generic "correct anatomy" wording.
 - No unsupported sampler, CFG, step, seed, LoRA, model, or negative-prompt boilerplate inside the prompt.
 - Avoidance constraints are folded into the main prompt naturally.
@@ -6528,7 +6851,7 @@ Translate slang and shorthand into concrete renderable visual language.
 Allow explicit direct phrasing when useful for altered text encoder clarity, but replace polite filler, hedged wording, and vague placeholders with direct visual description.
 Resolve vague requests by making conservative concrete visual choices grounded in the original intent, focus, concepts, and research context.
 Repair plausibility risks such as accidental artifact wording, impossible poses, impossible framing, or incoherent subject/action bindings.
-For every multi-person scene, preserve each explicit male/female identity and assign a short immutable gender-or-role plus position label. Repeat the complete label before each person's actions, pose, gaze, clothing, body parts, and object interactions. Replace he, she, him, her, his, hers, they, and them with those labels. Never swap, merge, generalize, or drop male and female identities.
+For every individually tracked person, preserve each explicit female, male, and nonbinary identity and assign a short immutable identity-or-role plus position label. Repeat the complete label before each person's actions, pose, gaze, clothing, body parts, and object interactions. Replace ambiguous pronouns with those labels. Never swap, merge, generalize, or drop gender identities. Keep purely collective couples, crowds, and groups collective.
 Repair body-part orientation with explicit, viewpoint-aware anatomy where the pose or action needs it. Keep the subject's anatomical left and right distinct from image-left and image-right, and make facing, joint bends, palm or paw direction, grip, foot direction, weight bearing, and prop contact mutually consistent. Replace generic "correct anatomy" wording with a small number of concrete orientation cues tied to the visible action.
 Regroup related visual details into entity-centered clusters. Keep every object next to its attributes, material, action, position, and direct effects, and keep a light source next to its emitted light, affected surfaces, shadows, and reflections. Order clusters by visual hierarchy rather than preserving a scrambled draft order.
 Preserve and strengthen coherent prompt-specific creative choices, but replace generic adjective inflation or unrelated ornament with useful staging, environmental storytelling, material behavior, light interaction, or composition.
@@ -9295,6 +9618,7 @@ def post_chat_completion(
         candidate = enforce_generator_settings_contract(candidate)
         candidate = make_prompt_safe_for_work(candidate) if safe_for_work else candidate
         candidate = strip_weighted_term_syntax(candidate, weighted_terms)
+        candidate = bind_unpositioned_distinct_people(candidate)
         candidate = resolve_unambiguous_multi_person_pronouns(candidate)
         candidate = strip_private_prompt_guidance(candidate)
         return strip_unexpected_scripts(candidate, source_script_context)
