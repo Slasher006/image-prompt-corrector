@@ -5567,7 +5567,7 @@ def build_small_model_system_prompt(
         else "Return one comic-page prompt with the exact panel count, requested layout, reading order, aspect ratio, explicit Panel labels, and one chronological beat per panel."
     )
     target_rule = (
-        "FLUX.2 Klein has no prompt upsampling, so state every essential visual fact explicitly and in priority order."
+        "FLUX.2 Klein has no prompt upsampling; state every essential visual fact explicitly in priority order."
         if target == "FLUX.2 Klein 9B"
         else "Use coherent natural-language Krea 2 phrasing with a clear subject, action, composition, lighting, and style."
     )
@@ -5582,19 +5582,24 @@ def build_small_model_system_prompt(
         else "Do not invent plot events, characters, outcomes, or panels."
     )
     length_rule = length_guidance_text(output_length, output_min_words, output_max_words)
+    preset_guidance = PROMPT_PRESET_GUIDANCE.get(
+        prompt_preset,
+        PROMPT_PRESET_GUIDANCE["Auto"],
+    )
     return f"""You are a precise prompt editor for {target}.
-Return only the final prompt, with no notes, markdown, settings, negative prompt, or reasoning.
+Return only final prompt; no notes, markdown, settings, negative prompt, or reasoning.
 {format_rule}
 {target_rule}
-Preserve every requested subject, action, object, count, side, position, relationship, exclusion, quoted visible text, and required concept.
-Resolve contradictions and ambiguous pronouns. Keep each modifier beside its owner.
-Anatomical left and right refer only to the subject's body; image-left and image-right refer only to frame placement. {action_rule}
-For multiple people, repeat each person's gender-or-role and position label before every attributed action or trait; use no pronouns.
-For comics, preserve recurring identity, wardrobe, props, environment, lighting progression, and screen direction. A working title is metadata, not visible text, unless explicitly requested.
+Preserve requested subjects, actions, objects, counts, sides, positions, relationships, exclusions, exact visible text, and concepts.
+Resolve contradictions and ambiguous pronouns. Keep modifiers beside owners.
+Anatomical left and right mean the subject's body; image-left and image-right mean frame placement. {action_rule}
+For multiple people, repeat each person's role and position before attributed actions or traits; use no pronouns.
+For comics, preserve identity, wardrobe, props, environment, lighting progression, and screen direction. A working title is metadata, not visible text unless requested.
 {story_rule}
 Requested output length: {output_length}. {length_rule}
 Rewrite risk level: {risk_level}. Prompt preset: {prompt_preset}.
-Return exactly {variation_count} prompt variation{'s' if variation_count != 1 else ''}."""
+Preset guidance: {preset_guidance}
+Return exactly {variation_count} variation{'s' if variation_count != 1 else ''}."""
 
 
 def build_small_model_user_message(
@@ -7479,7 +7484,8 @@ SINGLE_IMAGE_FIELD_SUGGESTION_RULES = {
     "concepts": (
         "concepts",
         "Return three to six useful visual concepts as a comma-separated list. "
-        "Use concrete styles, subjects, materials, places, or visual motifs.",
+        "Each entry must be a concrete one-to-four-word noun phrase, not a sentence or scene description. "
+        "Use styles, subjects, materials, places, or visual motifs.",
     ),
     "concept_mix": (
         "concept and style mix",
@@ -7522,6 +7528,24 @@ SINGLE_IMAGE_FIELD_SUGGESTION_RULES = {
     ),
 }
 
+CREATIVE_FIELD_WORD_LIMITS = {
+    "draft": 80,
+    "concepts": 24,
+    "concept_mix": 12,
+    "visual_direction": 32,
+    "goal_headline": 18,
+    "focus": 14,
+    "story_elements": 30,
+    "weighted_terms": 15,
+    "model_instructions": 22,
+    "generation_feedback": 22,
+    "title": 10,
+    "premise": 36,
+    "continuity": 48,
+    "dialogue_direction": 28,
+}
+COMIC_PANEL_BEAT_WORD_LIMIT = 48
+
 
 def creative_field_seed_instruction(field_label: str, current_value: str) -> str:
     """Tell an invention request whether to build from entered text or start blank."""
@@ -7563,6 +7587,7 @@ def build_single_image_field_suggestion_messages(
     if normalized_field not in SINGLE_IMAGE_FIELD_SUGGESTION_RULES:
         raise ValueError("Unsupported Single Image field.")
     field_label, field_rule = SINGLE_IMAGE_FIELD_SUGGESTION_RULES[normalized_field]
+    word_limit = CREATIVE_FIELD_WORD_LIMITS[normalized_field]
     current_values = {
         "draft": draft,
         "concepts": concepts,
@@ -7583,7 +7608,8 @@ def build_single_image_field_suggestion_messages(
     )
     system = (
         "You are an inventive image-prompt creative director filling exactly one form field. "
-        f"{field_rule} Use every supplied field as context and keep the concept internally consistent. "
+        f"{field_rule} Use at most {word_limit} words. "
+        "Use every supplied field as context and keep the concept internally consistent. "
         + creative_field_seed_instruction(field_label, current_value)
         + camera_rule
         + (
@@ -7638,7 +7664,8 @@ COMIC_FIELD_SUGGESTION_RULES = {
     "concepts": (
         "concepts to integrate",
         "Invent a concise comma-separated list of compatible visual concepts that enrich the existing "
-        "comic premise. Do not replace the cast, story events, setting, or intended outcome.",
+        "comic premise. Each entry must be a concrete one-to-four-word noun phrase, not a sentence "
+        "or scene description. Do not replace the cast, story events, setting, or intended outcome.",
     ),
     "visual_direction": (
         "comic style direction",
@@ -7785,9 +7812,11 @@ def build_comic_field_suggestion_messages(
             "one action or reaction phase, setting, framing, and any concise exact dialogue in double quotes. "
             "Make it advance naturally from the prior panel and leave the next panel room to continue."
         )
+        word_limit = COMIC_PANEL_BEAT_WORD_LIMIT
     elif normalized_field in COMIC_FIELD_SUGGESTION_RULES:
         field_label, field_rule = COMIC_FIELD_SUGGESTION_RULES[normalized_field]
         panel_number = 0
+        word_limit = CREATIVE_FIELD_WORD_LIMITS[normalized_field]
     else:
         raise ValueError("Unsupported Comic Story field.")
 
@@ -7865,7 +7894,8 @@ def build_comic_field_suggestion_messages(
     )
     system = (
         "You are an inventive comic-page director filling exactly one form field. "
-        f"{field_rule} Use every supplied field and panel as context. Preserve established continuity and "
+        f"{field_rule} Use at most {word_limit} words. "
+        "Use every supplied field and panel as context. Preserve established continuity and "
         "do not rewrite other fields. "
         + creative_field_seed_instruction(field_label, current_value)
         + dialogue_rule
@@ -8047,6 +8077,42 @@ def build_all_comic_panels_suggestion_messages(
     ]
 
 
+def limit_creative_field_suggestion(value: str, field: str) -> str:
+    """Keep an invented value within its field-specific size contract."""
+
+    normalized_field = str(field).strip().casefold()
+    if normalized_field in {"concepts", "concept_mix", "weighted_terms"}:
+        item_limit = {
+            "concepts": 6,
+            "concept_mix": 3,
+            "weighted_terms": 5,
+        }[normalized_field]
+        item_word_limit = 4 if normalized_field == "concepts" else 5
+        items: list[str] = []
+        for item in str(value or "").split(","):
+            words = item.strip().split()
+            if not words:
+                continue
+            shortened = " ".join(words[:item_word_limit]).strip(
+                " \t\r\n,;:-"
+            )
+            if shortened:
+                items.append(shortened)
+            if len(items) >= item_limit:
+                break
+        value = ", ".join(items)
+
+    word_limit = (
+        COMIC_PANEL_BEAT_WORD_LIMIT
+        if re.fullmatch(r"panel_\d+", normalized_field)
+        else CREATIVE_FIELD_WORD_LIMITS.get(normalized_field)
+    )
+    words = str(value or "").split()
+    if word_limit is None or len(words) <= word_limit:
+        return str(value or "").strip()
+    return " ".join(words[:word_limit]).strip(" \t\r\n,;:-")
+
+
 def normalize_creative_field_suggestion(text: str, field: str) -> str:
     """Extract one usable Single Image or Comic Story field value."""
 
@@ -8090,7 +8156,7 @@ def normalize_creative_field_suggestion(text: str, field: str) -> str:
         "new field value",
     }:
         return ""
-    return raw
+    return limit_creative_field_suggestion(raw, normalized_field)
 
 
 def enforce_comic_speech_bubble_contract(
@@ -8175,6 +8241,14 @@ MEME_FIELD_SUGGESTION_RULES = {
     ),
 }
 
+MEME_FIELD_WORD_LIMITS = {
+    "response_context": 28,
+    "response_goal": 18,
+    "scene": 32,
+    "focus": 14,
+    "visual_direction": 32,
+}
+
 
 def build_meme_field_suggestion_messages(
     *,
@@ -8198,6 +8272,7 @@ def build_meme_field_suggestion_messages(
     if normalized_field not in MEME_FIELD_SUGGESTION_RULES:
         raise ValueError("Unsupported Meme Creator field.")
     field_label, field_rule = MEME_FIELD_SUGGESTION_RULES[normalized_field]
+    word_limit = MEME_FIELD_WORD_LIMITS[normalized_field]
     current_values = {
         "response_context": response_context,
         "response_goal": response_goal,
@@ -8213,7 +8288,8 @@ def build_meme_field_suggestion_messages(
     )
     system = (
         "You are an inventive meme creative director filling exactly one form field. "
-        f"{field_rule} Use all supplied fields as context and keep the concept coherent. "
+        f"{field_rule} Use at most {word_limit} words. "
+        "Use all supplied fields as context and keep the concept coherent. "
         + creative_field_seed_instruction(
             field_label,
             "" if current_target == "blank" else current_target,
@@ -8280,6 +8356,10 @@ def normalize_meme_field_suggestion(text: str, field: str) -> str:
         "new field value",
     }:
         return ""
+    words = raw.split()
+    word_limit = MEME_FIELD_WORD_LIMITS[normalized_field]
+    if len(words) > word_limit:
+        raw = " ".join(words[:word_limit]).strip(" \t\r\n,;:-")
     return raw
 
 

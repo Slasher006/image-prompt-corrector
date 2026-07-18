@@ -322,6 +322,66 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertIn("Current field value: blank", messages[1]["content"])
 
+    def test_invented_form_fields_have_explicit_and_enforced_length_limits(self):
+        focus_messages = corrector.build_single_image_field_suggestion_messages(
+            field="focus",
+            draft="A courier reaches a flooded city gate.",
+        )
+        self.assertIn("Use at most 14 words", focus_messages[0]["content"])
+        long_focus = " ".join(f"word{index}" for index in range(1, 26))
+        normalized_focus = corrector.normalize_creative_field_suggestion(
+            f"Focus: {long_focus}",
+            "focus",
+        )
+        self.assertEqual(len(normalized_focus.split()), 14)
+        self.assertTrue(normalized_focus.endswith("word14"))
+
+        long_concepts = ", ".join(
+            f"concept {index} with several unnecessary descriptive extra words"
+            for index in range(1, 8)
+        )
+        normalized_concepts = corrector.normalize_creative_field_suggestion(
+            f"Concepts: {long_concepts}",
+            "concepts",
+        )
+        concept_items = normalized_concepts.split(", ")
+        self.assertGreaterEqual(len(concept_items), 3)
+        self.assertLessEqual(len(concept_items), 6)
+        self.assertTrue(all(len(item.split()) <= 4 for item in concept_items))
+        self.assertLessEqual(len(normalized_concepts.split()), 24)
+        self.assertNotIn("concept 7", normalized_concepts)
+        concept_messages = corrector.build_single_image_field_suggestion_messages(
+            field="concepts",
+        )
+        self.assertIn(
+            "one-to-four-word noun phrase",
+            concept_messages[0]["content"],
+        )
+
+        comic_messages = corrector.build_comic_field_suggestion_messages(
+            field="concepts",
+            premise="A courier crosses a flooded city with medicine.",
+            panel_count=2,
+        )
+        self.assertIn("Use at most 24 words", comic_messages[0]["content"])
+        long_panel = " ".join(f"beat{index}" for index in range(1, 60))
+        normalized_panel = corrector.normalize_creative_field_suggestion(
+            f"Panel 1 beat: {long_panel}",
+            "panel_1",
+        )
+        self.assertEqual(len(normalized_panel.split()), 48)
+
+        meme_messages = corrector.build_meme_field_suggestion_messages(
+            field="focus",
+            scene="A cat watches a broken printer.",
+        )
+        self.assertIn("Use at most 14 words", meme_messages[0]["content"])
+        normalized_meme_focus = corrector.normalize_meme_field_suggestion(
+            f"Primary focus: {long_focus}",
+            "focus",
+        )
+        self.assertEqual(len(normalized_meme_focus.split()), 14)
+
     def test_comic_panel_suggestion_uses_neighboring_panels_and_normalizes_one_value(self):
         messages = corrector.build_comic_field_suggestion_messages(
             field="panel_2",
@@ -4603,6 +4663,39 @@ class PromptCorrectorTests(unittest.TestCase):
             prompt_preset="Jewelry and watch",
         )
         self.assertIn("gemstone or metal behavior", system_prompt)
+
+        for preset, guidance in corrector.PROMPT_PRESET_GUIDANCE.items():
+            compact_prompt = corrector.build_small_model_system_prompt(
+                generator_target="Krea 2",
+                content_format="Single Image",
+                output_length="Balanced",
+                output_min_words=None,
+                output_max_words=None,
+                risk_level="Balanced improvement",
+                prompt_preset=preset,
+                variation_count=1,
+                enhance_actions=False,
+                develop_story=False,
+            )
+            self.assertIn(f"Prompt preset: {preset}.", compact_prompt)
+            self.assertIn(f"Preset guidance: {guidance}", compact_prompt)
+
+        unknown_compact_prompt = corrector.build_small_model_system_prompt(
+            generator_target="Krea 2",
+            content_format="Single Image",
+            output_length="Balanced",
+            output_min_words=None,
+            output_max_words=None,
+            risk_level="Balanced improvement",
+            prompt_preset="Unknown preset",
+            variation_count=1,
+            enhance_actions=False,
+            develop_story=False,
+        )
+        self.assertIn(
+            f"Preset guidance: {corrector.PROMPT_PRESET_GUIDANCE['Auto']}",
+            unknown_compact_prompt,
+        )
 
     def test_expanded_fixed_comic_layouts_enforce_compatible_panel_counts(self):
         self.assertEqual(
