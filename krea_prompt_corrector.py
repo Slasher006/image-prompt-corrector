@@ -5022,17 +5022,56 @@ def parse_concepts(concepts: str, *, max_concepts: int = 8) -> list[str]:
     return parsed
 
 
+def split_top_level_commas(value: str) -> list[str]:
+    """Split a list on commas that are not enclosed in parentheses."""
+
+    items: list[str] = []
+    start = 0
+    depth = 0
+    text = str(value or "")
+    for index, character in enumerate(text):
+        if character == "(":
+            depth += 1
+        elif character == ")" and depth:
+            depth -= 1
+        elif character == "," and depth == 0:
+            items.append(text[start:index])
+            start = index + 1
+    items.append(text[start:])
+    return items
+
+
 def parse_weighted_terms(weighted_terms: str, *, max_terms: int = 12) -> list[tuple[str, float]]:
     parsed: list[tuple[str, float]] = []
     seen: set[str] = set()
-    for item in weighted_terms.split(","):
-        cleaned = normalize_concept_text(re.sub(r"\s+", " ", item).strip())
+    normalized_input = re.sub(
+        r"(?i)^\s*(?:prominent\s+visual\s+elements|weighted\s+(?:visual\s+)?"
+        r"(?:terms|words|priorities|emphasis))\s*:\s*",
+        "",
+        str(weighted_terms or ""),
+    )
+    normalized_input = re.sub(
+        r"(?<=\d)\s*\.\s*(?=\d)",
+        ".",
+        normalized_input,
+    )
+    for item in split_top_level_commas(normalized_input):
+        cleaned = normalize_concept_text(
+            re.sub(r"\s+", " ", item).strip()
+        ).rstrip(" .;")
         if not cleaned:
             continue
 
         term = cleaned
         weight = 1.25
         match = re.match(r"^(.+?)\s*(?::|=|\*)\s*([0-9]+(?:\.[0-9]+)?)$", cleaned)
+        if not match:
+            match = re.match(
+                r"^(.+?)\s*\(\s*(?:(?:dominant|strong|clear|mild|secondary)\s+"
+                r"visual\s+priority\s*,\s*)?([0-9]+(?:\.[0-9]+)?)\s*\)$",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
         if match:
             term = match.group(1).strip()
             try:
@@ -5066,6 +5105,14 @@ def strip_weighted_term_syntax(prompt: str, weighted_terms: str) -> str:
             flexible_term = r"\s+".join(
                 re.escape(part)
                 for part in term.split()
+            )
+            segment = re.sub(
+                rf"(?<!\w)({flexible_term})\s*\(\s*"
+                r"(?:dominant|strong|clear|mild|secondary)\s+visual\s+priority\s*,\s*"
+                r"[0-9]+(?:\s*\.\s*[0-9]+)?\s*\)",
+                lambda match: match.group(1),
+                segment,
+                flags=re.IGNORECASE,
             )
             segment = re.sub(
                 rf"(?<!\w)({flexible_term})\s*(?::|=|\*)\s*"
@@ -8077,15 +8124,25 @@ def build_all_comic_panels_suggestion_messages(
     ]
 
 
-def limit_creative_field_suggestion(value: str, field: str) -> str:
+def limit_creative_field_suggestion(
+    value: str,
+    field: str,
+    *,
+    truncate_prose: bool = True,
+) -> str:
     """Keep an invented value within its field-specific size contract."""
 
     normalized_field = str(field).strip().casefold()
-    if normalized_field in {"concepts", "concept_mix", "weighted_terms"}:
+    if normalized_field == "weighted_terms":
+        parsed = parse_weighted_terms(value, max_terms=5)
+        return ", ".join(
+            f"{term}:{max(1.1, min(1.8, weight)):g}"
+            for term, weight in parsed
+        )
+    if normalized_field in {"concepts", "concept_mix"}:
         item_limit = {
             "concepts": 6,
             "concept_mix": 3,
-            "weighted_terms": 5,
         }[normalized_field]
         item_word_limit = 4 if normalized_field == "concepts" else 5
         items: list[str] = []
@@ -8108,12 +8165,21 @@ def limit_creative_field_suggestion(value: str, field: str) -> str:
         else CREATIVE_FIELD_WORD_LIMITS.get(normalized_field)
     )
     words = str(value or "").split()
-    if word_limit is None or len(words) <= word_limit:
+    if (
+        word_limit is None
+        or len(words) <= word_limit
+        or not truncate_prose
+    ):
         return str(value or "").strip()
     return " ".join(words[:word_limit]).strip(" \t\r\n,;:-")
 
 
-def normalize_creative_field_suggestion(text: str, field: str) -> str:
+def normalize_creative_field_suggestion(
+    text: str,
+    field: str,
+    *,
+    truncate_prose: bool = True,
+) -> str:
     """Extract one usable Single Image or Comic Story field value."""
 
     normalized_field = str(field).strip().casefold()
@@ -8156,7 +8222,11 @@ def normalize_creative_field_suggestion(text: str, field: str) -> str:
         "new field value",
     }:
         return ""
-    return limit_creative_field_suggestion(raw, normalized_field)
+    return limit_creative_field_suggestion(
+        raw,
+        normalized_field,
+        truncate_prose=truncate_prose,
+    )
 
 
 def enforce_comic_speech_bubble_contract(
@@ -8202,7 +8272,11 @@ def normalize_all_comic_panel_suggestions(
         return []
     normalized: list[str] = []
     for number, description in descriptions:
-        beat = normalize_creative_field_suggestion(description, f"panel_{number}")
+        beat = normalize_and_validate_invent(
+            "comic",
+            f"panel_{number}",
+            description,
+        )
         beat = enforce_comic_speech_bubble_contract(
             beat,
             speech_bubbles=speech_bubbles,
@@ -8328,7 +8402,12 @@ def build_meme_field_suggestion_messages(
     ]
 
 
-def normalize_meme_field_suggestion(text: str, field: str) -> str:
+def normalize_meme_field_suggestion(
+    text: str,
+    field: str,
+    *,
+    truncate_prose: bool = True,
+) -> str:
     """Extract one usable non-caption field value from a model response."""
 
     normalized_field = str(field).strip().casefold()
@@ -8358,7 +8437,7 @@ def normalize_meme_field_suggestion(text: str, field: str) -> str:
         return ""
     words = raw.split()
     word_limit = MEME_FIELD_WORD_LIMITS[normalized_field]
-    if len(words) > word_limit:
+    if truncate_prose and len(words) > word_limit:
         raw = " ".join(words[:word_limit]).strip(" \t\r\n,;:-")
     return raw
 
@@ -8398,6 +8477,297 @@ def normalize_meme_caption_suggestion(text: str) -> str:
         caption = first_sentence.group(1)
     caption = re.sub(r"\s{2,}", " ", caption)
     return caption.strip()
+
+
+INVENT_FORBIDDEN_OUTPUT_PATTERNS: tuple[tuple[str, str], ...] = (
+    (
+        r"(?i)\bprominent\s+visual\s+elements\s*:",
+        "internal weighted-term label",
+    ),
+    (
+        r"(?i)\b(?:dominant|strong|clear|mild|secondary)\s+visual\s+priority\b",
+        "internal priority description",
+    ),
+    (
+        r"(?i)^\s*(?:answer|output|new\s+field\s+value)\s*:",
+        "response label",
+    ),
+    (r"```", "Markdown fence"),
+)
+
+
+def invent_field_issues(
+    workspace: str,
+    field: str,
+    value: str,
+    *,
+    seed_value: str = "",
+) -> list[str]:
+    """Return hard schema failures for one normalized Invent field."""
+
+    normalized_workspace = str(workspace).strip().casefold()
+    normalized_field = str(field).strip().casefold()
+    cleaned = str(value or "").strip()
+    issues: list[str] = []
+    if not cleaned:
+        return ["Invented field is empty"]
+    for pattern, label in INVENT_FORBIDDEN_OUTPUT_PATTERNS:
+        if re.search(pattern, cleaned):
+            issues.append(f"Invented field contains {label}")
+
+    if normalized_workspace in {"single", "comic"}:
+        word_limit = (
+            COMIC_PANEL_BEAT_WORD_LIMIT
+            if re.fullmatch(r"panel_\d+", normalized_field)
+            else CREATIVE_FIELD_WORD_LIMITS.get(normalized_field)
+        )
+    elif normalized_workspace == "meme" and normalized_field in {"top", "bottom"}:
+        word_limit = 8
+    elif normalized_workspace == "meme":
+        word_limit = MEME_FIELD_WORD_LIMITS.get(normalized_field)
+    else:
+        return ["Unsupported Invent workspace or field"]
+    if word_limit is None:
+        return ["Unsupported Invent workspace or field"]
+    if len(cleaned.split()) > word_limit:
+        issues.append(f"Invented field exceeds {word_limit} words")
+    prose_fields = {
+        "draft",
+        "visual_direction",
+        "goal_headline",
+        "focus",
+        "story_elements",
+        "model_instructions",
+        "generation_feedback",
+        "premise",
+        "continuity",
+        "dialogue_direction",
+        "response_context",
+        "response_goal",
+        "scene",
+    }
+    if (
+        normalized_field in prose_fields
+        or re.fullmatch(r"panel_\d+", normalized_field)
+    ) and re.search(
+        r"(?i)\b(?:a|an|the|of|with|and|or|to|in|on|as|like|while|that|its|their)$",
+        cleaned.rstrip(" \t\r\n,;:-"),
+    ):
+        issues.append("Invented prose ends with an incomplete phrase")
+    if (
+        normalized_workspace == "meme"
+        and normalized_field in {"scene", "focus", "visual_direction"}
+        and quoted_phrases(cleaned)
+    ):
+        issues.append("Meme visual field invents extra visible text")
+
+    if normalized_field == "concepts":
+        concepts = [item.strip() for item in cleaned.split(",") if item.strip()]
+        if not 3 <= len(concepts) <= 6:
+            issues.append("Concepts must contain three to six entries")
+        if any(len(item.split()) > 4 for item in concepts):
+            issues.append("Each concept must contain at most four words")
+    elif normalized_field == "concept_mix":
+        mixture = parse_concept_mix(cleaned, max_items=3)
+        if not 2 <= len(mixture) <= 3:
+            issues.append("Concept mix must contain two or three entries")
+        elif sum(percentage for _name, percentage in mixture) != 100:
+            issues.append("Concept mix percentages must total 100")
+    elif normalized_field == "weighted_terms":
+        weighted = parse_weighted_terms(cleaned, max_terms=5)
+        if not 2 <= len(weighted) <= 5:
+            issues.append("Weighted words must contain two to five entries")
+        if any(weight < 1.1 or weight > 1.8 for _term, weight in weighted):
+            issues.append("Invented weights must stay between 1.1 and 1.8")
+        canonical = ", ".join(f"{term}:{weight:g}" for term, weight in weighted)
+        if canonical != cleaned:
+            issues.append("Weighted words are not in canonical term:weight form")
+    seed_locked_fields = {
+        "draft",
+        "concepts",
+        "concept_mix",
+        "goal_headline",
+        "focus",
+        "story_elements",
+        "weighted_terms",
+        "premise",
+        "continuity",
+        "scene",
+        "response_context",
+        "top",
+        "bottom",
+    }
+    if seed_value.strip() and (
+        normalized_field in seed_locked_fields
+        or re.fullmatch(r"panel_\d+", normalized_field)
+    ):
+        seed_terms = top_significant_terms(seed_value, limit=6)
+        searchable = normalize_concept_text(cleaned).casefold()
+        candidate_words = set(significant_words(searchable))
+
+        def comparison_root(word: str) -> str:
+            rooted = word.casefold()
+            for suffix in ("fulness", "lessly", "fully", "ful", "ing", "ed", "es", "s"):
+                if rooted.endswith(suffix) and len(rooted) - len(suffix) >= 4:
+                    return rooted[: -len(suffix)]
+            return rooted
+
+        candidate_roots = {comparison_root(word) for word in candidate_words}
+        represented = sum(
+            bool(
+                re.search(rf"\b{re.escape(term.casefold())}\b", searchable)
+                or comparison_root(term) in candidate_roots
+            )
+            for term in seed_terms
+        )
+        required = max(1, (len(seed_terms) + 2) // 3)
+        if seed_terms and represented < required:
+            issues.append("Invented field weakened or replaced its mandatory seed")
+    return issues
+
+
+def normalize_and_validate_invent(
+    workspace: str,
+    field: str,
+    text: str,
+    *,
+    seed_value: str = "",
+) -> str:
+    """Return one canonical Invent value, or empty text when its schema fails."""
+
+    normalized_workspace = str(workspace).strip().casefold()
+    normalized_field = str(field).strip().casefold()
+    if normalized_workspace in {"single", "comic"}:
+        value = normalize_creative_field_suggestion(
+            text,
+            normalized_field,
+            truncate_prose=False,
+        )
+        if normalized_field == "concept_mix":
+            mixture = parse_concept_mix(value, max_items=3)
+            value = ", ".join(
+                f"{name}:{percentage}%"
+                for name, percentage in mixture
+            )
+    elif normalized_workspace == "meme" and normalized_field in {"top", "bottom"}:
+        value = normalize_meme_caption_suggestion(text)
+    elif normalized_workspace == "meme":
+        value = normalize_meme_field_suggestion(
+            text,
+            normalized_field,
+            truncate_prose=False,
+        )
+    else:
+        return ""
+    return "" if invent_field_issues(
+        normalized_workspace,
+        normalized_field,
+        value,
+        seed_value=seed_value,
+    ) else value
+
+
+def invent_field_contract_text(workspace: str, field: str) -> str:
+    """Return the authoritative repair contract for one Invent field."""
+
+    normalized_workspace = str(workspace).strip().casefold()
+    normalized_field = str(field).strip().casefold()
+    if normalized_workspace == "single":
+        rule = SINGLE_IMAGE_FIELD_SUGGESTION_RULES.get(normalized_field)
+        word_limit = CREATIVE_FIELD_WORD_LIMITS.get(normalized_field)
+    elif normalized_workspace == "comic":
+        if re.fullmatch(r"panel_\d+", normalized_field):
+            rule = (
+                "panel beat",
+                "Return one complete chronological still-image beat with no field label.",
+            )
+            word_limit = COMIC_PANEL_BEAT_WORD_LIMIT
+        else:
+            rule = COMIC_FIELD_SUGGESTION_RULES.get(normalized_field)
+            word_limit = CREATIVE_FIELD_WORD_LIMITS.get(normalized_field)
+    elif normalized_workspace == "meme" and normalized_field in {"top", "bottom"}:
+        rule = (
+            f"{normalized_field} caption",
+            "Return one caption under eight words with no label or quotation marks.",
+        )
+        word_limit = 8
+    elif normalized_workspace == "meme":
+        rule = MEME_FIELD_SUGGESTION_RULES.get(normalized_field)
+        word_limit = MEME_FIELD_WORD_LIMITS.get(normalized_field)
+    else:
+        return ""
+    if not rule or word_limit is None:
+        return ""
+    return (
+        f"Field: {rule[0]}. {rule[1]} Hard maximum: {word_limit} words. "
+        "Return one complete value only. Do not add labels, alternatives, notes, "
+        "Markdown, internal priority descriptions, or unfinished phrases."
+    )
+
+
+def build_invent_field_repair_messages(
+    *,
+    workspace: str,
+    field: str,
+    candidate: str,
+    issues: list[str],
+    seed_value: str = "",
+) -> list[dict[str, object]]:
+    """Build one low-fragility repair request for a rejected Invent value."""
+
+    contract = invent_field_contract_text(workspace, field)
+    if not contract:
+        raise ValueError("Unsupported Invent field repair.")
+    seed_rule = (
+        "Preserve the recognizable subject, action, constraints, and important wording "
+        f"from this mandatory original field value: {seed_value.strip()}"
+        if seed_value.strip()
+        else "Do not invent new subjects or requirements while repairing."
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Repair one rejected form-field value. Preserve its usable creative meaning "
+                "while fixing only schema, length, labels, punctuation, and completeness. "
+                f"{contract} {seed_rule}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Validation failures:\n- "
+                + "\n- ".join(issues or ["invalid field shape"])
+                + "\n\nRejected value:\n"
+                + str(candidate or "").strip()
+                + "\n\nReturn the repaired field value only."
+            ),
+        },
+    ]
+
+
+def canonicalize_saved_invent_value(
+    workspace: str,
+    field: str,
+    value: object,
+) -> str:
+    """Migrate only typed saved fields without rewriting user-authored prose."""
+
+    raw = str(value or "").strip()
+    normalized_field = str(field).strip().casefold()
+    if not raw:
+        return ""
+    if str(workspace).strip().casefold() == "single":
+        if normalized_field == "weighted_terms":
+            parsed = parse_weighted_terms(raw, max_terms=12)
+            return ", ".join(f"{term}:{weight:g}" for term, weight in parsed)
+        if normalized_field == "concept_mix":
+            mixture = parse_concept_mix(raw, max_items=6)
+            return ", ".join(
+                f"{name}:{percentage}%"
+                for name, percentage in mixture
+            )
+    return raw
 
 
 def meme_hard_issues(issues: list[str]) -> list[str]:

@@ -382,6 +382,236 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertEqual(len(normalized_meme_focus.split()), 14)
 
+    def test_invented_weighted_words_repair_priority_prose_and_spaced_decimals(self):
+        leaked = (
+            "Prominent visual elements: cooking "
+            "(clear visual priority, 1. 55), performing "
+            "(strong visual priority, 1. 95)."
+        )
+
+        normalized = corrector.normalize_creative_field_suggestion(
+            leaked,
+            "weighted_terms",
+        )
+
+        self.assertEqual(normalized, "cooking:1.55, performing:1.8")
+        self.assertEqual(
+            corrector.parse_weighted_terms(leaked),
+            [("cooking", 1.55), ("performing", 1.95)],
+        )
+        visible = corrector.strip_weighted_term_syntax(
+            (
+                "Prominent visual elements: cooking "
+                "(clear visual priority, 1. 55), performing "
+                "(strong visual priority, 1. 95)."
+            ),
+            leaked,
+        )
+        self.assertEqual(
+            visible,
+            "Prominent visual elements: cooking, performing.",
+        )
+
+    def test_central_invent_boundary_is_canonical_idempotent_and_rejects_bad_shapes(self):
+        cases = (
+            (
+                "single",
+                "concepts",
+                "Concepts: wet concrete, red raincoat, luminous algae",
+                "wet concrete, red raincoat, luminous algae",
+            ),
+            (
+                "single",
+                "concept_mix",
+                "watercolor: 70%, ink: 30%",
+                "watercolor:70%, ink:30%",
+            ),
+            (
+                "single",
+                "weighted_terms",
+                (
+                    "Prominent visual elements: cooking "
+                    "(clear visual priority, 1. 55), performing "
+                    "(strong visual priority, 1. 95)"
+                ),
+                "cooking:1.55, performing:1.8",
+            ),
+            (
+                "single",
+                "focus",
+                "Focus: the courier's dry medicine satchel",
+                "the courier's dry medicine satchel",
+            ),
+            (
+                "comic",
+                "title",
+                "Working title: The Last Delivery",
+                "The Last Delivery",
+            ),
+            (
+                "meme",
+                "focus",
+                "Primary focus: the cat's completely calm expression",
+                "the cat's completely calm expression",
+            ),
+            (
+                "meme",
+                "top",
+                "Top caption: THIS COULD BE AN EMAIL",
+                "THIS COULD BE AN EMAIL",
+            ),
+        )
+        for workspace, field, raw, expected in cases:
+            with self.subTest(workspace=workspace, field=field):
+                normalized = corrector.normalize_and_validate_invent(
+                    workspace,
+                    field,
+                    raw,
+                )
+                self.assertEqual(normalized, expected)
+                self.assertEqual(
+                    corrector.normalize_and_validate_invent(
+                        workspace,
+                        field,
+                        normalized,
+                    ),
+                    normalized,
+                )
+
+        rejected = (
+            ("single", "concepts", "only one concept"),
+            ("single", "concept_mix", "watercolor:100%"),
+            ("single", "focus", "Prominent visual elements: the courier"),
+            (
+                "single",
+                "focus",
+                "one two three four five six seven eight nine ten eleven twelve "
+                "thirteen fourteen fifteen",
+            ),
+            (
+                "meme",
+                "scene",
+                'A tired employee stares at a glowing sign reading "MEETING".',
+            ),
+            (
+                "meme",
+                "top",
+                "THIS CAPTION CONTAINS FAR TOO MANY WORDS FOR ONE MEME CAPTION",
+            ),
+            ("unknown", "focus", "the courier"),
+        )
+        for workspace, field, raw in rejected:
+            with self.subTest(workspace=workspace, field=field, raw=raw):
+                self.assertEqual(
+                    corrector.normalize_and_validate_invent(
+                        workspace,
+                        field,
+                        raw,
+                    ),
+                    "",
+                )
+
+        repair_messages = corrector.build_invent_field_repair_messages(
+            workspace="single",
+            field="focus",
+            candidate=(
+                "The courier's brass medicine satchel remains dry while the "
+                "flood wave crashes across the clinic entrance behind it."
+            ),
+            issues=["Invented field exceeds 14 words"],
+            seed_value="the courier's brass medicine satchel",
+        )
+        self.assertIn("Hard maximum: 14 words", repair_messages[0]["content"])
+        self.assertIn("mandatory original field value", repair_messages[0]["content"])
+        self.assertIn("exceeds 14 words", repair_messages[1]["content"])
+        self.assertEqual(
+            corrector.normalize_and_validate_invent(
+                "single",
+                "goal_headline",
+                (
+                    "Courier lifts medicine bag as flood surges, hope saved "
+                    "and city submerged."
+                ),
+                seed_value=(
+                    "A tense but hopeful medicine delivery through a flooded city."
+                ),
+            ),
+            (
+                "Courier lifts medicine bag as flood surges, hope saved "
+                "and city submerged."
+            ),
+        )
+        self.assertEqual(
+            corrector.normalize_and_validate_invent(
+                "single",
+                "focus",
+                "a completely unrelated mountain observatory",
+                seed_value="the courier's brass medicine satchel",
+            ),
+            "",
+        )
+
+    def test_saved_typed_invent_values_migrate_without_rewriting_manual_prose(self):
+        self.assertEqual(
+            corrector.canonicalize_saved_invent_value(
+                "single",
+                "weighted_terms",
+                (
+                    "Prominent visual elements: cooking "
+                    "(clear visual priority, 1. 55), performing "
+                    "(strong visual priority, 1. 95)"
+                ),
+            ),
+            "cooking:1.55, performing:1.95",
+        )
+        self.assertEqual(
+            corrector.canonicalize_saved_invent_value(
+                "single",
+                "concept_mix",
+                "watercolor=7, ink=3",
+            ),
+            "watercolor:70%, ink:30%",
+        )
+        manual_focus = (
+            "Keep this intentionally long manually authored focus exactly as written "
+            "because it is an explicit user instruction."
+        )
+        self.assertEqual(
+            corrector.canonicalize_saved_invent_value(
+                "single",
+                "focus",
+                manual_focus,
+            ),
+            manual_focus,
+        )
+
+    def test_weighted_invent_boundary_handles_adversarial_model_formats(self):
+        variants = (
+            "cooking:1.55, performing:1.8",
+            "Weighted words: cooking = 1.55, performing * 1.8",
+            "Weighted visual priorities: cooking:1. 55, performing:1. 8",
+            (
+                "cooking (clear visual priority, 1.55), "
+                "performing (strong visual priority, 1.8)"
+            ),
+            (
+                "Prominent visual elements: cooking "
+                "(clear visual priority, 1. 55), performing "
+                "(strong visual priority, 1. 8)"
+            ),
+            "```text\nWeighted words: cooking:1.55, performing:1.8\n```",
+        )
+        for raw in variants:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    corrector.normalize_and_validate_invent(
+                        "single",
+                        "weighted_terms",
+                        raw,
+                    ),
+                    "cooking:1.55, performing:1.8",
+                )
+
     def test_comic_panel_suggestion_uses_neighboring_panels_and_normalizes_one_value(self):
         messages = corrector.build_comic_field_suggestion_messages(
             field="panel_2",

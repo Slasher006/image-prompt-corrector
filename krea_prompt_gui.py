@@ -81,6 +81,7 @@ from krea_prompt_corrector import (
     concept_mix_to_weighted_terms,
     build_all_comic_panels_suggestion_messages,
     build_comic_field_suggestion_messages,
+    build_invent_field_repair_messages,
     build_meme_caption_suggestion_messages,
     build_meme_field_suggestion_messages,
     build_single_image_field_suggestion_messages,
@@ -94,10 +95,9 @@ from krea_prompt_corrector import (
     list_lm_studio_models,
     is_small_model,
     normalize_all_comic_panel_suggestions,
+    normalize_and_validate_invent,
+    canonicalize_saved_invent_value,
     normalize_lm_studio_base_url,
-    normalize_creative_field_suggestion,
-    normalize_meme_caption_suggestion,
-    normalize_meme_field_suggestion,
     parse_concepts,
     parse_concept_mix,
     parse_weighted_terms,
@@ -1343,6 +1343,7 @@ class PromptCorrectorApp:
         self.workflow_profile_var.subscribe(self._apply_workflow_profile)
         self.meme_preset_var.subscribe(self._apply_meme_preset)
         self._build_ui()
+        self._refresh_invent_recall_buttons()
         if self.recovered_draft:
             self.draft_text.setPlainText(self.recovered_draft)
             self.status_var.set("Recovered autosaved draft")
@@ -1404,6 +1405,8 @@ class PromptCorrectorApp:
             "prompt_history": self.prompt_history,
             "activity_log": self.activity_log[-500:],
             "custom_presets": self.custom_presets,
+            "invent_recall_values": self.invent_recall_values,
+            "invent_recall_groups": self.invent_recall_groups,
             "draft_prompt": self.draft_text.toPlainText() if hasattr(self, "draft_text") else self.recovered_draft,
             "corrected_prompt": self.corrected_text.toPlainText() if hasattr(self, "corrected_text") else self.recovered_corrected,
             "local_reference_paths": self.local_reference_paths,
@@ -1527,6 +1530,12 @@ class PromptCorrectorApp:
         except (OSError, json.JSONDecodeError):
             return
 
+        self.invent_recall_values = self._invent_recall_values_setting(
+            settings.get("invent_recall_values")
+        )
+        self.invent_recall_groups = self._invent_recall_groups_setting(
+            settings.get("invent_recall_groups")
+        )
         self.model_var.set(str(settings.get("model", self.model_var.get())))
         self.generator_target_var.set(
             self._choice_setting(
@@ -1728,13 +1737,25 @@ class PromptCorrectorApp:
             self._int_setting(settings.get("lm_timeout"), 30, 3600, self.lm_timeout_var.get())
         )
         self.concepts_var.set(str(settings.get("concepts", self.concepts_var.get())))
-        self.concept_mix_var.set(str(settings.get("concept_mix", self.concept_mix_var.get())))
+        self.concept_mix_var.set(
+            canonicalize_saved_invent_value(
+                "single",
+                "concept_mix",
+                settings.get("concept_mix", self.concept_mix_var.get()),
+            )
+        )
         self.visual_direction_var.set(
             str(settings.get("visual_direction", self.visual_direction_var.get()))
         )
         self.goal_headline_var.set(str(settings.get("goal_headline", self.goal_headline_var.get())))
         self.focus_var.set(str(settings.get("focus", self.focus_var.get())))
-        self.weighted_terms_var.set(str(settings.get("weighted_terms", self.weighted_terms_var.get())))
+        self.weighted_terms_var.set(
+            canonicalize_saved_invent_value(
+                "single",
+                "weighted_terms",
+                settings.get("weighted_terms", self.weighted_terms_var.get()),
+            )
+        )
         self.story_elements_var.set(str(settings.get("story_elements", self.story_elements_var.get())))
         self.model_instructions_var.set(
             str(settings.get("model_instructions", self.model_instructions_var.get()))
@@ -1969,6 +1990,95 @@ class PromptCorrectorApp:
 
     def _choice_setting(self, value: object, choices: tuple[str, ...], default: str) -> str:
         return value if isinstance(value, str) and value in choices else default
+
+    @staticmethod
+    def _valid_invent_recall_keys() -> set[str]:
+        return {
+            *(
+                f"single:{field}"
+                for field in (
+                    "draft",
+                    "concepts",
+                    "concept_mix",
+                    "visual_direction",
+                    "goal_headline",
+                    "focus",
+                    "story_elements",
+                    "weighted_terms",
+                    "model_instructions",
+                    "generation_feedback",
+                )
+            ),
+            *(
+                f"comic:{field}"
+                for field in (
+                    "title",
+                    "premise",
+                    "continuity",
+                    "concepts",
+                    "visual_direction",
+                    "dialogue_direction",
+                )
+            ),
+            *(f"comic:panel_{index}" for index in range(1, 13)),
+            *(
+                f"meme:{field}"
+                for field in (
+                    "response_context",
+                    "response_goal",
+                    "scene",
+                    "focus",
+                    "top",
+                    "bottom",
+                    "visual_direction",
+                )
+            ),
+        }
+
+    def _invent_recall_values_setting(self, value: object) -> dict[str, str]:
+        """Load only recognized, bounded Recall values from settings."""
+
+        if not isinstance(value, dict):
+            return {}
+        valid_keys = self._valid_invent_recall_keys()
+        restored: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key)
+            if (
+                key in valid_keys
+                and isinstance(raw_value, str)
+                and len(raw_value) <= 100_000
+            ):
+                restored[key] = raw_value
+        return restored
+
+    def _invent_recall_groups_setting(
+        self,
+        value: object,
+    ) -> dict[str, dict[str, str]]:
+        """Load recognized grouped Recall snapshots without cross-workspace keys."""
+
+        if not isinstance(value, dict):
+            return {}
+        restored: dict[str, dict[str, str]] = {}
+        panel_keys = {
+            f"comic:panel_{index}"
+            for index in range(1, 13)
+        }
+        raw_panels = value.get("comic:all_panels")
+        if isinstance(raw_panels, dict):
+            panels = {
+                str(key): raw_value
+                for key, raw_value in raw_panels.items()
+                if (
+                    str(key) in panel_keys
+                    and isinstance(raw_value, str)
+                    and len(raw_value) <= 100_000
+                )
+            }
+            if panels:
+                restored["comic:all_panels"] = panels
+        return restored
 
     def _model_list_setting(self, value: object) -> list[str]:
         if not isinstance(value, list):
@@ -6179,6 +6289,55 @@ class PromptCorrectorApp:
             stage="Invent field",
         )
 
+    def _normalize_or_repair_invent(
+        self,
+        *,
+        request_id: int,
+        base_url: str,
+        model: str,
+        workspace: str,
+        field: str,
+        response: str,
+        seed_value: str,
+        temperature: float,
+        seed: int | None,
+    ) -> str:
+        """Apply the central Invent gate and make at most one repair request."""
+
+        canonical = normalize_and_validate_invent(
+            workspace,
+            field,
+            response,
+            seed_value=seed_value,
+        )
+        if canonical:
+            return canonical
+        repair_response = chat_completion(
+            base_url=base_url,
+            model=model,
+            messages=build_invent_field_repair_messages(
+                workspace=workspace,
+                field=field,
+                candidate=response,
+                issues=["The value failed its field schema or semantic contract."],
+                seed_value=seed_value,
+            ),
+            temperature=min(0.2, max(0.0, float(temperature))),
+            max_tokens=192,
+            timeout=self._lm_timeout_seconds(),
+            api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+            seed=(None if seed is None else (int(seed) + 1) % 2_147_483_648),
+            ttl=CREATIVE_SESSION_TTL_SECONDS,
+            cancel_check=lambda: self._raise_if_cancelled(request_id),
+        )
+        self._raise_if_cancelled(request_id)
+        return normalize_and_validate_invent(
+            workspace,
+            field,
+            repair_response,
+            seed_value=seed_value,
+        )
+
     def invent_single_image_field(self, field: str) -> None:
         normalized_field = str(field).strip().casefold()
         field_labels = {
@@ -6260,7 +6419,17 @@ class PromptCorrectorApp:
             )
             self._raise_if_cancelled(request_id)
             suggestion = strip_unexpected_scripts(
-                normalize_creative_field_suggestion(response, field),
+                self._normalize_or_repair_invent(
+                    request_id=request_id,
+                    base_url=base_url,
+                    model=model,
+                    workspace="single",
+                    field=field,
+                    response=response,
+                    seed_value=str(context.get(field, "")),
+                    temperature=self._temperature_value(),
+                    seed=seed,
+                ),
                 json.dumps(context, ensure_ascii=False, default=str),
             )
             if not suggestion:
@@ -6665,8 +6834,29 @@ class PromptCorrectorApp:
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
             )
             self._raise_if_cancelled(request_id)
+            panel_match = re.fullmatch(r"panel_(\d+)", field)
+            if panel_match:
+                panel_index = int(panel_match.group(1)) - 1
+                panels = suggestion_context.get("panels", [])
+                seed_value = (
+                    str(panels[panel_index])
+                    if isinstance(panels, list) and 0 <= panel_index < len(panels)
+                    else ""
+                )
+            else:
+                seed_value = str(suggestion_context.get(field, ""))
             suggestion = strip_unexpected_scripts(
-                normalize_creative_field_suggestion(response, field),
+                self._normalize_or_repair_invent(
+                    request_id=request_id,
+                    base_url=base_url,
+                    model=model,
+                    workspace="comic",
+                    field=field,
+                    response=response,
+                    seed_value=seed_value,
+                    temperature=self._temperature_value(),
+                    seed=seed,
+                ),
                 json.dumps(suggestion_context, ensure_ascii=False, default=str),
             )
             if field.startswith("panel_"):
@@ -7029,7 +7219,17 @@ class PromptCorrectorApp:
             )
             self._raise_if_cancelled(request_id)
             suggestion = strip_unexpected_scripts(
-                normalize_meme_field_suggestion(response, field),
+                self._normalize_or_repair_invent(
+                    request_id=request_id,
+                    base_url=base_url,
+                    model=model,
+                    workspace="meme",
+                    field=field,
+                    response=response,
+                    seed_value=str(context.get(field, "")),
+                    temperature=self._meme_temperature(),
+                    seed=seed,
+                ),
                 json.dumps(context, ensure_ascii=False, default=str),
             )
             if not suggestion:
@@ -7195,7 +7395,17 @@ class PromptCorrectorApp:
             )
             self._raise_if_cancelled(request_id)
             caption = strip_unexpected_scripts(
-                normalize_meme_caption_suggestion(response),
+                self._normalize_or_repair_invent(
+                    request_id=request_id,
+                    base_url=base_url,
+                    model=model,
+                    workspace="meme",
+                    field=position,
+                    response=response,
+                    seed_value=current_caption,
+                    temperature=self._meme_temperature(),
+                    seed=seed,
+                ),
                 "\n".join(
                     (
                         response_context,

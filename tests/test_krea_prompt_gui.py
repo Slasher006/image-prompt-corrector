@@ -1,5 +1,6 @@
 import os
 import inspect
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -184,6 +185,38 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "A red knight stands at an ancient castle gate.",
         )
         second_root.close()
+
+    def test_settings_load_migrates_typed_invent_fields_only(self):
+        manual_focus = (
+            "Keep this intentionally long manually authored focus exactly as written "
+            "because it is an explicit user instruction."
+        )
+        gui.SETTINGS_PATH.write_text(
+            json.dumps(
+                {
+                    "weighted_terms": (
+                        "Prominent visual elements: cooking "
+                        "(clear visual priority, 1. 55), performing "
+                        "(strong visual priority, 1. 95)"
+                    ),
+                    "concept_mix": "watercolor=7, ink=3",
+                    "focus": manual_focus,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.controller._load_settings()
+
+        self.assertEqual(
+            self.controller.weighted_terms_var.get(),
+            "cooking:1.55, performing:1.95",
+        )
+        self.assertEqual(
+            self.controller.concept_mix_var.get(),
+            "watercolor:70%, ink:30%",
+        )
+        self.assertEqual(self.controller.focus_var.get(), manual_focus)
 
     def test_custom_presets_and_searchable_pinned_history(self):
         self.controller.focus_var.set("sharp armor")
@@ -1851,6 +1884,122 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "Recalled input from before Invent",
         )
 
+    def test_recall_state_survives_full_app_restart_for_fields_and_panel_groups(self):
+        self.controller.focus_var.set("")
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.invent_single_image_field("focus")
+        focus_request_id = thread_class.call_args.kwargs["args"][0]
+        self.controller._show_invented_single_image_field(
+            focus_request_id,
+            "focus",
+            "generated brass medicine satchel",
+        )
+
+        original_panels = [
+            "The courier reaches the clinic gate.",
+            "",
+            "The doctor receives the medicine.",
+        ]
+        self.controller.comic_panel_count_var.set(3)
+        for index, value in enumerate(original_panels):
+            self.controller.comic_panel_vars[index].set(value)
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.invent_all_comic_panels()
+        panels_request_id = thread_class.call_args.kwargs["args"][0]
+        self.controller._show_invented_all_comic_panels(
+            panels_request_id,
+            [
+                "Generated panel one.",
+                "Generated panel two.",
+                "Generated panel three.",
+            ],
+        )
+
+        with mock.patch.object(
+            gui.PromptCorrectorApp,
+            "_refresh_model_list_in_background",
+        ):
+            restarted_root = gui.PromptCorrectorWindow()
+            restarted = gui.PromptCorrectorApp(restarted_root)
+            restarted_root.controller = restarted
+        restarted_root.show()
+        self.application.processEvents()
+
+        self.assertEqual(
+            restarted.focus_var.get(),
+            "generated brass medicine satchel",
+        )
+        self.assertTrue(
+            restarted.invent_recall_buttons["single:focus"].isEnabled()
+        )
+        self.assertTrue(
+            restarted.invent_recall_buttons["comic:all_panels"].isEnabled()
+        )
+        self.assertTrue(
+            all(
+                restarted.invent_recall_buttons[
+                    f"comic:panel_{index}"
+                ].isEnabled()
+                for index in range(1, 4)
+            )
+        )
+
+        restarted.invent_recall_buttons["single:focus"].click()
+        restarted.invent_recall_buttons["comic:all_panels"].click()
+        self.application.processEvents()
+
+        self.assertEqual(restarted.focus_var.get(), "")
+        self.assertEqual(
+            [
+                restarted.comic_panel_vars[index].get()
+                for index in range(3)
+            ],
+            original_panels,
+        )
+        self.assertFalse(
+            restarted.invent_recall_buttons["single:focus"].isEnabled()
+        )
+        self.assertFalse(
+            restarted.invent_recall_buttons["comic:all_panels"].isEnabled()
+        )
+        restarted_root.close()
+
+    def test_recall_settings_filter_unknown_keys_types_and_cross_workspace_groups(self):
+        self.assertEqual(
+            self.controller._invent_recall_values_setting(
+                {
+                    "single:focus": "",
+                    "comic:panel_12": "valid panel",
+                    "comic:panel_13": "outside supported range",
+                    "unknown:focus": "wrong workspace",
+                    "meme:top": 123,
+                }
+            ),
+            {
+                "single:focus": "",
+                "comic:panel_12": "valid panel",
+            },
+        )
+        self.assertEqual(
+            self.controller._invent_recall_groups_setting(
+                {
+                    "comic:all_panels": {
+                        "comic:panel_1": "valid panel",
+                        "single:focus": "cross-workspace leak",
+                        "comic:panel_13": "outside supported range",
+                    },
+                    "single:all_fields": {
+                        "single:focus": "unsupported group",
+                    },
+                }
+            ),
+            {
+                "comic:all_panels": {
+                    "comic:panel_1": "valid panel",
+                }
+            },
+        )
+
     def test_failed_invent_keeps_the_previous_successful_recall_value(self):
         self.controller.focus_var.set("original brass medicine satchel")
         with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
@@ -1875,6 +2024,63 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(
             self.controller.focus_var.get(),
             "original brass medicine satchel",
+        )
+
+    def test_schema_rejected_invent_result_never_reaches_gui_or_recall_state(self):
+        original = "the courier's brass medicine satchel"
+        self.controller.focus_var.set(original)
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.invent_single_image_field("focus")
+        worker_args = thread_class.call_args.kwargs["args"]
+
+        with mock.patch(
+            "krea_prompt_gui.chat_completion",
+            return_value=(
+                "Prominent visual elements: medicine satchel "
+                "(clear visual priority, 1. 55)"
+            ),
+        ) as completion:
+            with mock.patch.object(gui.messagebox, "showerror"):
+                self.controller._invent_single_image_field_worker(*worker_args)
+                self.application.processEvents()
+
+        self.assertEqual(completion.call_count, 2)
+        self.assertEqual(self.controller.focus_var.get(), original)
+        self.assertFalse(
+            self.controller.invent_recall_buttons["single:focus"].isEnabled()
+        )
+
+    def test_schema_repair_runs_once_and_applies_only_the_valid_second_value(self):
+        original = "the courier's brass medicine satchel"
+        self.controller.focus_var.set(original)
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.invent_single_image_field("focus")
+        worker_args = thread_class.call_args.kwargs["args"]
+
+        with mock.patch(
+            "krea_prompt_gui.chat_completion",
+            side_effect=(
+                (
+                    "The courier's brass medicine satchel remains dry and brightly "
+                    "lit while a towering flood wave crashes behind the clinic gate."
+                ),
+                "The courier's dry brass medicine satchel above the flood wave.",
+            ),
+        ) as completion:
+            self.controller._invent_single_image_field_worker(*worker_args)
+            self.application.processEvents()
+
+        self.assertEqual(completion.call_count, 2)
+        self.assertIn(
+            "Hard maximum: 14 words",
+            completion.call_args_list[1].kwargs["messages"][0]["content"],
+        )
+        self.assertEqual(
+            self.controller.focus_var.get(),
+            "The courier's dry brass medicine satchel above the flood wave.",
+        )
+        self.assertTrue(
+            self.controller.invent_recall_buttons["single:focus"].isEnabled()
         )
 
     def test_comic_invent_buttons_fill_one_panel_and_keep_model_loaded(self):
