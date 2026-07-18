@@ -322,6 +322,23 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertIn("Current field value: blank", messages[1]["content"])
 
+    def test_invent_prompt_research_is_glossary_only_inside_the_invent_pass(self):
+        messages = corrector.build_single_image_field_suggestion_messages(
+            field="draft",
+            draft="A courier reaches a flooded city gate.",
+            concepts="Art Nouveau",
+            research_context="Grounded fact: whiplash curves are characteristic.",
+            concept_context="Allowed concept facts: organic linework.",
+        )
+
+        self.assertIn("Never copy a research source's subject", messages[0]["content"])
+        self.assertIn(
+            "Grounded research for this Invent pass",
+            messages[1]["content"],
+        )
+        self.assertIn("whiplash curves", messages[1]["content"])
+        self.assertIn("organic linework", messages[1]["content"])
+
     def test_invented_form_fields_have_explicit_and_enforced_length_limits(self):
         focus_messages = corrector.build_single_image_field_suggestion_messages(
             field="focus",

@@ -1287,6 +1287,7 @@ class PromptCorrectorApp:
         self.invent_recall_groups: dict[str, dict[str, str]] = {}
         self.pending_invent_recall: dict[int, dict[str, str]] = {}
         self.pending_invent_recall_groups: dict[int, str] = {}
+        self.single_invent_research_cache: dict[str, object] | None = None
         self.comic_panel_groups: list[QGroupBox] = []
         self.comic_panel_editors: list[QtTextEdit] = []
         self.comic_invent_buttons: list[QtButton] = []
@@ -6085,6 +6086,23 @@ class PromptCorrectorApp:
             ),
         }
 
+    def _single_image_invent_research_options(self) -> dict[str, object]:
+        reference_image_analysis = bool(self.reference_images_var.get())
+        effective_concepts, _, _, _ = self._effective_mix_inputs()
+        return {
+            "live_research": bool(self.live_research_var.get()),
+            "search_engine": self.search_engine_var.get().strip(),
+            "concepts": effective_concepts,
+            "reference_image_analysis": reference_image_analysis,
+            "reference_image_source": self.reference_image_source_var.get().strip(),
+            "local_reference_candidates": (
+                self._local_reference_candidates("prompt")
+                if reference_image_analysis
+                else []
+            ),
+            "enhance_actions": bool(self.enhance_actions_var.get()),
+        }
+
     def _make_invent_recall_button(
         self,
         key: str,
@@ -6386,11 +6404,178 @@ class PromptCorrectorApp:
                 model,
                 normalized_field,
                 self._single_image_field_context(),
+                self._single_image_invent_research_options(),
                 self._sampling_seed(),
             ),
             daemon=True,
         )
         thread.start()
+
+    def _collect_single_image_invent_research(
+        self,
+        *,
+        request_id: int,
+        base_url: str,
+        model: str,
+        context: dict[str, object],
+        options: dict[str, object],
+    ) -> dict[str, object]:
+        """Collect the research selected for a user-seeded Invent prompt pass."""
+
+        draft = str(context.get("draft", "")).strip()
+        concepts = str(
+            options.get("concepts") or context.get("concepts", "")
+        ).strip()
+        story_elements = str(context.get("story_elements", "")).strip()
+        weighted_terms = str(context.get("weighted_terms", "")).strip()
+        local_candidates = list(options.get("local_reference_candidates") or [])
+        research_prompt = draft or (
+            "Invent a still-image prompt using these requested concepts: " + concepts
+            if concepts
+            else ""
+        )
+        image_prompt = research_prompt or (
+            "Use only identity, material, technique, and concept facts from the "
+            "user-provided reference images."
+            if local_candidates
+            else ""
+        )
+        result: dict[str, object] = {
+            "research_context": "",
+            "image_context": "",
+            "concept_context": "",
+            "web_completed": bool(
+                options.get("live_research") and research_prompt
+            ),
+            "image_completed": bool(
+                options.get("reference_image_analysis") and image_prompt
+            ),
+        }
+        if options.get("live_research") and research_prompt:
+            self._set_status_threadsafe("Researching before Invent...")
+            self._log_activity_threadsafe(
+                "Running grounded web research inside the Single Image Invent prompt pass."
+            )
+            model_knowledge = probe_model_visual_knowledge(
+                base_url=base_url or DEFAULT_BASE_URL,
+                model=model or DEFAULT_MODEL,
+                prompt=research_prompt,
+                concept_keywords=concepts,
+                story_elements=story_elements,
+                weighted_terms=weighted_terms,
+                timeout=float(self._lm_timeout_seconds()),
+                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                cancel_check=lambda: self._raise_if_cancelled(request_id),
+            )
+            self._raise_if_cancelled(request_id)
+            targets = prompt_research_targets(
+                research_prompt,
+                model_knowledge,
+                concept_keywords=concepts,
+                weighted_terms=weighted_terms,
+            )
+            web_research = collect_targeted_prompt_research(
+                targets,
+                max_results=2,
+                timeout=10.0,
+                search_engine=str(options.get("search_engine", "")),
+            )
+            self._raise_if_cancelled(request_id)
+            if (
+                vague_prompt_issues(research_prompt)
+                and vague_prompt_needs_clarification_research(research_prompt)
+            ):
+                vague_context = collect_vague_prompt_research(
+                    research_prompt,
+                    timeout=10.0,
+                    search_engine=str(options.get("search_engine", "")),
+                )
+                if vague_context:
+                    web_research = (
+                        f"{web_research}\n\n{vague_context}"
+                        if web_research
+                        else vague_context
+                    )
+            self._raise_if_cancelled(request_id)
+            if options.get("enhance_actions"):
+                action_context = collect_action_pose_research(
+                    research_prompt,
+                    timeout=10.0,
+                    search_engine=str(options.get("search_engine", "")),
+                )
+                if action_context:
+                    web_research = (
+                        f"{web_research}\n\n{action_context}"
+                        if web_research
+                        else action_context
+                    )
+            self._raise_if_cancelled(request_id)
+            reconciled = reconcile_model_knowledge_with_web(
+                base_url=base_url or DEFAULT_BASE_URL,
+                model=model or DEFAULT_MODEL,
+                prompt=research_prompt,
+                model_probe=model_knowledge,
+                web_research=web_research,
+                timeout=float(self._lm_timeout_seconds()),
+                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                cancel_check=lambda: self._raise_if_cancelled(request_id),
+            )
+            result["research_context"] = (
+                "Grounded concept glossary and factual verification only:\n"
+                + reconciled.strip()
+            )
+            self._log_activity_threadsafe("Invent-pass grounded web research result:")
+            self._log_activity_threadsafe(str(result["research_context"]))
+
+        if options.get("reference_image_analysis") and image_prompt:
+            if local_candidates:
+                self._set_status_threadsafe("Analyzing images before Invent...")
+                image_candidates, diagnostics = self._collect_reference_images_for_prompt(
+                    image_prompt,
+                    str(options.get("reference_image_source", "")),
+                    local_candidates,
+                )
+                self._after_threadsafe(
+                    0,
+                    self._set_reference_candidates,
+                    request_id,
+                    "prompt",
+                    image_candidates,
+                )
+                for diagnostic in diagnostics:
+                    self._log_activity_threadsafe(diagnostic)
+                result["image_context"] = analyze_reference_images(
+                    base_url=base_url or DEFAULT_BASE_URL,
+                    model=model or DEFAULT_MODEL,
+                    concept=image_prompt,
+                    image_candidates=image_candidates,
+                    timeout=float(self._lm_timeout_seconds()),
+                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    max_images=2,
+                    cancel_check=lambda: self._raise_if_cancelled(request_id),
+                )
+            elif concepts:
+                self._set_status_threadsafe("Researching concept images before Invent...")
+                result["concept_context"] = collect_integrated_concept_research(
+                    concepts,
+                    timeout=15.0,
+                    text_research=False,
+                    search_engine=str(options.get("search_engine", "")),
+                    image_analysis=True,
+                    image_source=str(options.get("reference_image_source", "")),
+                    image_timeout=float(self._lm_timeout_seconds()),
+                    base_url=base_url or DEFAULT_BASE_URL,
+                    model=model or DEFAULT_MODEL,
+                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    cancel_check=lambda: self._raise_if_cancelled(request_id),
+                )
+            self._raise_if_cancelled(request_id)
+            self._log_activity_threadsafe("Invent-pass image research result:")
+            self._log_activity_threadsafe(
+                str(result["image_context"] or result["concept_context"])
+                or "No applicable image research target was found."
+            )
+        return result
 
     def _invent_single_image_field_worker(
         self,
@@ -6399,14 +6584,34 @@ class PromptCorrectorApp:
         model: str,
         field: str,
         context: dict[str, object],
+        research_options: dict[str, object],
         seed: int | None,
     ) -> None:
         try:
+            research_bundle: dict[str, object] = {}
+            if field == "draft" and (
+                research_options.get("live_research")
+                or research_options.get("reference_image_analysis")
+            ):
+                research_bundle = self._collect_single_image_invent_research(
+                    request_id=request_id,
+                    base_url=base_url,
+                    model=model,
+                    context=context,
+                    options=research_options,
+                )
             response = chat_completion(
                 base_url=base_url,
                 model=model,
                 messages=build_single_image_field_suggestion_messages(
                     field=field,
+                    research_context=str(
+                        research_bundle.get("research_context", "")
+                    ),
+                    image_context=str(research_bundle.get("image_context", "")),
+                    concept_context=str(
+                        research_bundle.get("concept_context", "")
+                    ),
                     **context,
                 ),
                 temperature=self._temperature_value(),
@@ -6456,6 +6661,8 @@ class PromptCorrectorApp:
             request_id,
             field,
             suggestion,
+            research_bundle,
+            str(research_options.get("concepts", "")).strip(),
         )
 
     def _show_invented_single_image_field(
@@ -6463,6 +6670,8 @@ class PromptCorrectorApp:
         request_id: int,
         field: str,
         suggestion: str,
+        research_bundle: dict[str, object] | None = None,
+        source_concepts: str = "",
     ) -> None:
         if request_id != self.active_request_id or self.cancel_event.is_set():
             self._discard_pending_invent_recall(request_id)
@@ -6470,6 +6679,15 @@ class PromptCorrectorApp:
         self._commit_invent_recall(request_id)
         if field == "draft":
             self.draft_text.setPlainText(suggestion)
+            self.single_invent_research_cache = (
+                {
+                    **(research_bundle or {}),
+                    "draft": suggestion.strip(),
+                    "concepts": source_concepts.strip(),
+                }
+                if research_bundle
+                else None
+            )
         else:
             targets = {
                 "concepts": self.concepts_var,
@@ -7552,6 +7770,30 @@ class PromptCorrectorApp:
                 if effective_reference_image_analysis
                 else []
             )
+        precomputed_research: dict[str, object] = {}
+        if destination == "prompt" and self.single_invent_research_cache:
+            cache = self.single_invent_research_cache
+            if (
+                str(cache.get("draft", "")).strip() == requested_prompt.strip()
+                and str(cache.get("concepts", "")).strip()
+                == effective_concepts.strip()
+            ):
+                if self.live_research_var.get() and cache.get("web_completed"):
+                    precomputed_research["research_context"] = str(
+                        cache.get("research_context", "")
+                    )
+                    precomputed_research["web_completed"] = True
+                if (
+                    effective_reference_image_analysis
+                    and cache.get("image_completed")
+                ):
+                    precomputed_research["image_context"] = str(
+                        cache.get("image_context", "")
+                    )
+                    precomputed_research["concept_context"] = str(
+                        cache.get("concept_context", "")
+                    )
+                    precomputed_research["image_completed"] = True
         self.active_request_id += 1
         request_id = self.active_request_id
         self.active_request_workspace = destination
@@ -7661,6 +7903,10 @@ class PromptCorrectorApp:
                 self._log_activity(
                     "Prompt is vague enough for clarification research, but grounded web verification is disabled."
                 )
+        if precomputed_research:
+            self._log_activity(
+                "Reusing grounded research completed in the Invent prompt pass."
+            )
 
         thread = threading.Thread(
             target=self._correct_prompt_worker,
@@ -7720,6 +7966,7 @@ class PromptCorrectorApp:
                 slider_value(self.movement_var.get()),
                 requested_prompt,
                 destination,
+                precomputed_research,
             ),
             daemon=True,
         )
@@ -8682,12 +8929,22 @@ class PromptCorrectorApp:
         movement: int,
         requested_prompt: str,
         destination: str,
+        precomputed_research: dict[str, object] | None = None,
     ) -> None:
         try:
             self._raise_if_cancelled(request_id)
-            research_context = ""
-            image_context = ""
-            if live_research:
+            precomputed_research = precomputed_research or {}
+            research_context = str(
+                precomputed_research.get("research_context", "")
+            )
+            image_context = str(precomputed_research.get("image_context", ""))
+            web_already_completed = bool(
+                precomputed_research.get("web_completed")
+            )
+            image_already_completed = bool(
+                precomputed_research.get("image_completed")
+            )
+            if live_research and not web_already_completed:
                 self._set_status_threadsafe("Checking model knowledge...")
                 self._set_progress_threadsafe(10.0, "Checking model knowledge")
                 self._log_activity_threadsafe(
@@ -8792,8 +9049,16 @@ class PromptCorrectorApp:
                     f"{reconciled_knowledge}"
                 )
                 self._set_status_threadsafe("Correcting...")
+            elif live_research:
+                self._log_activity_threadsafe(
+                    "Using grounded web research from the Invent prompt pass."
+                )
 
-            if reference_image_analysis and local_reference_candidates:
+            if (
+                reference_image_analysis
+                and local_reference_candidates
+                and not image_already_completed
+            ):
                 self._raise_if_cancelled(request_id)
                 self._set_status_threadsafe("Analyzing reference images...")
                 self._set_progress_threadsafe(45.0, "Analyzing main reference images")
@@ -8836,15 +9101,19 @@ class PromptCorrectorApp:
                 self._log_activity_threadsafe("Main prompt reference image analysis:")
                 self._log_activity_threadsafe(image_context)
                 self._set_status_threadsafe("Correcting...")
-            elif reference_image_analysis:
+            elif reference_image_analysis and not image_already_completed:
                 self._log_activity_threadsafe(
                     "Whole-prompt web image matching is disabled. Automatic web images are searched only "
                     "for explicit concept keywords and reduced to concept-only glossary facts."
                 )
 
-            concept_context = ""
+            concept_context = str(
+                precomputed_research.get("concept_context", "")
+            )
             concept_image_analysis = reference_image_analysis and not local_reference_candidates
-            concept_research_enabled = bool(concepts and concept_image_analysis)
+            concept_research_enabled = bool(
+                concepts and concept_image_analysis and not image_already_completed
+            )
             if concept_research_enabled:
                 self._raise_if_cancelled(request_id)
                 self._set_status_threadsafe("Researching concept keywords...")
@@ -8873,6 +9142,10 @@ class PromptCorrectorApp:
                 self._log_activity_threadsafe("Concept keyword research result:")
                 self._log_activity_threadsafe(concept_context)
                 self._set_status_threadsafe("Correcting...")
+            elif reference_image_analysis and image_already_completed:
+                self._log_activity_threadsafe(
+                    "Using grounded image research from the Invent prompt pass."
+                )
             elif concepts:
                 if reference_image_analysis and local_reference_candidates:
                     self._log_activity_threadsafe(

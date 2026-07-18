@@ -7629,6 +7629,9 @@ def build_single_image_field_suggestion_messages(
     generator_target: str = "Krea 2",
     camera_direction: str = "",
     artistic_detail_freedom: bool = False,
+    research_context: str = "",
+    image_context: str = "",
+    concept_context: str = "",
 ) -> list[dict[str, object]]:
     """Build a focused request for one Single Image input field."""
 
@@ -7655,12 +7658,25 @@ def build_single_image_field_suggestion_messages(
         if camera_direction.strip()
         else ""
     )
+    grounded_research = "\n\n".join(
+        context.strip()
+        for context in (research_context, image_context, concept_context)
+        if context.strip()
+    )
+    research_rule = (
+        "Use the supplied research only as a glossary for facts, identity traits, "
+        "materials, techniques, and requested visual concepts. Never copy a research "
+        "source's subject, pose, camera, composition, setting, scene, or story. "
+        if grounded_research
+        else ""
+    )
     system = (
         "You are an inventive image-prompt creative director filling exactly one form field. "
         f"{field_rule} Use at most {word_limit} words. "
         "Use every supplied field as context and keep the concept internally consistent. "
         + creative_field_seed_instruction(field_label, current_value)
         + camera_rule
+        + research_rule
         + (
             ARTISTIC_DETAIL_FREEDOM_INSTRUCTION + " "
             if artistic_detail_freedom
@@ -7687,6 +7703,11 @@ def build_single_image_field_suggestion_messages(
             f"Weighted words: {weighted_terms.strip() or 'not supplied'}",
             f"Model instructions: {model_instructions.strip() or 'not supplied'}",
             f"Generation feedback: {generation_feedback.strip() or 'not supplied'}",
+            (
+                "Grounded research for this Invent pass:\n" + grounded_research
+                if grounded_research
+                else "Grounded research for this Invent pass: not supplied"
+            ),
             f"Write only the new {field_label}.",
         )
     )

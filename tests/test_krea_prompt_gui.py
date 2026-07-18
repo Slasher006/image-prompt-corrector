@@ -1809,6 +1809,78 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             )
         )
 
+    def test_invent_prompt_runs_research_then_correct_reuses_that_pass(self):
+        self.controller.draft_text.setPlainText(
+            "A courier reaches a flooded city gate."
+        )
+        self.controller.concepts_var.set("Art Nouveau")
+        self.controller.live_research_var.set(True)
+        self.controller.reference_images_var.set(True)
+        self.controller.audit_repair_var.set(False)
+
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.invent_single_image_field("draft")
+        invent_args = thread_class.call_args.kwargs["args"]
+
+        research_bundle = {
+            "research_context": "Grounded glossary: Art Nouveau uses organic curves.",
+            "image_context": "",
+            "concept_context": "Allowed concept facts: flowing botanical linework.",
+            "web_completed": True,
+            "image_completed": True,
+        }
+        with mock.patch.object(
+            self.controller,
+            "_collect_single_image_invent_research",
+            return_value=research_bundle,
+        ) as invent_research:
+            with mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value=(
+                    "A red-coated courier raises a brass medicine satchel above "
+                    "floodwater at an Art Nouveau city gate."
+                ),
+            ) as invent_completion:
+                self.controller._invent_single_image_field_worker(*invent_args)
+        self.application.processEvents()
+
+        invent_research.assert_called_once()
+        invent_user_message = invent_completion.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Grounded glossary", invent_user_message)
+        self.assertIn("flowing botanical linework", invent_user_message)
+
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+        correct_args = thread_class.call_args.kwargs["args"]
+        bound = inspect.signature(self.controller._correct_prompt_worker).bind(
+            *correct_args
+        )
+        self.assertTrue(bound.arguments["precomputed_research"]["web_completed"])
+        self.assertTrue(bound.arguments["precomputed_research"]["image_completed"])
+
+        with mock.patch(
+            "krea_prompt_gui.probe_model_visual_knowledge"
+        ) as web_probe:
+            with mock.patch(
+                "krea_prompt_gui.collect_integrated_concept_research"
+            ) as image_research:
+                with mock.patch(
+                    "krea_prompt_gui.post_chat_completion",
+                    return_value="A corrected researched courier prompt.",
+                ) as completion:
+                    self.controller._correct_prompt_worker(*correct_args)
+
+        web_probe.assert_not_called()
+        image_research.assert_not_called()
+        self.assertIn(
+            "Grounded glossary",
+            completion.call_args.kwargs["research_context"],
+        )
+        self.assertIn(
+            "flowing botanical linework",
+            completion.call_args.kwargs["concept_context"],
+        )
+
     def test_every_inventable_input_has_a_disabled_recall_button_initially(self):
         expected = {
             "single:draft",
