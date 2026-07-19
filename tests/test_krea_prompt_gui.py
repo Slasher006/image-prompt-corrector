@@ -398,6 +398,11 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 "The model returned no usable result",
             ),
             (
+                'HTTP 400: Failed to load model "test-model".',
+                "model",
+                "The selected model is not loaded",
+            ),
+            (
                 "url field must be a base64 encoded image",
                 "reference",
                 "Reference-image analysis failed",
@@ -1788,6 +1793,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
         unload.assert_not_called()
         self.assertEqual(completion.call_args.kwargs["temperature"], 0.32)
+        self.assertEqual(completion.call_args.kwargs["max_tokens"], 768)
         self.assertIn(
             "Artistic detail freedom is enabled",
             completion.call_args.kwargs["messages"][0]["content"],
@@ -1807,6 +1813,103 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 button.isEnabled()
                 for button in self.controller.single_image_invent_buttons
             )
+        )
+
+    def test_invent_repair_reports_exact_contract_issues_and_uses_full_budget(self):
+        oversized = (
+            "one two three four five six seven eight nine ten eleven twelve "
+            "thirteen fourteen fifteen"
+        )
+        with mock.patch(
+            "krea_prompt_gui.chat_completion",
+            return_value=oversized,
+        ) as repair:
+            with mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    r"Invent field contract failed for single\.focus after repair: "
+                    r"Invented field exceeds 14 words",
+                ):
+                    self.controller._normalize_or_repair_invent(
+                        request_id=self.controller.active_request_id,
+                        base_url="http://127.0.0.1:1234/v1",
+                        model="test-model",
+                        workspace="single",
+                        field="focus",
+                        response=oversized,
+                        seed_value="",
+                        temperature=0.7,
+                        seed=None,
+                    )
+
+        self.assertEqual(repair.call_args.kwargs["max_tokens"], 768)
+        repair_user_message = repair.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Invented field exceeds 14 words", repair_user_message)
+        logged = "\n".join(call.args[0] for call in activity.call_args_list)
+        self.assertIn("Invent candidate rejected for single.focus", logged)
+        self.assertIn("Invent repair rejected for single.focus", logged)
+
+    def test_concepts_invent_deterministically_keeps_the_existing_seed(self):
+        with mock.patch("krea_prompt_gui.chat_completion") as repair:
+            result = self.controller._normalize_or_repair_invent(
+                request_id=self.controller.active_request_id,
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-model",
+                workspace="single",
+                field="concepts",
+                response=(
+                    "exploration, wet reflections, neon machinery, cinematic realism"
+                ),
+                seed_value="discovering",
+                temperature=0.7,
+                seed=None,
+            )
+
+        repair.assert_not_called()
+        self.assertEqual(
+            result,
+            (
+                "discovering, exploration, wet reflections, neon machinery, "
+                "cinematic realism"
+            ),
+        )
+
+    def test_story_invent_keeps_seed_and_trims_before_contract_validation(self):
+        response = (
+            "The pair exchange a quiet glance beneath cascading water while reflected "
+            "neon ripples across chrome walls and drifting steam softens the surrounding "
+            "machinery as their synchronized posture establishes a calm emotional center "
+            "within the otherwise chaotic industrial setting."
+        )
+        with mock.patch("krea_prompt_gui.chat_completion") as repair:
+            result = self.controller._normalize_or_repair_invent(
+                request_id=self.controller.active_request_id,
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-model",
+                workspace="single",
+                field="story_elements",
+                response=response,
+                seed_value="mutual trust shown through relaxed proximity",
+                temperature=0.7,
+                seed=None,
+            )
+
+        repair.assert_not_called()
+        self.assertTrue(
+            result.startswith("mutual trust shown through relaxed proximity.")
+        )
+        self.assertLessEqual(len(result.split()), 30)
+        self.assertEqual(
+            gui.invent_field_issues(
+                "single",
+                "story_elements",
+                result,
+                seed_value="mutual trust shown through relaxed proximity",
+            ),
+            [],
         )
 
     def test_invent_prompt_runs_research_then_correct_reuses_that_pass(self):

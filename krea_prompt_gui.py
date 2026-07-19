@@ -82,6 +82,7 @@ from krea_prompt_corrector import (
     build_all_comic_panels_suggestion_messages,
     build_comic_field_suggestion_messages,
     build_invent_field_repair_messages,
+    invent_field_issues,
     build_meme_caption_suggestion_messages,
     build_meme_field_suggestion_messages,
     build_single_image_field_suggestion_messages,
@@ -95,7 +96,8 @@ from krea_prompt_corrector import (
     list_lm_studio_models,
     is_small_model,
     normalize_all_comic_panel_suggestions,
-    normalize_and_validate_invent,
+    normalize_invent_candidate,
+    preserve_invent_seed_value,
     canonicalize_saved_invent_value,
     normalize_lm_studio_base_url,
     parse_concepts,
@@ -897,6 +899,7 @@ def classify_workflow_error(
         category = "reference"
         next_step = "Use a vision-capable loaded model, remove the failing reference, or disable reference analysis and retry."
     elif any(marker in lowered for marker in (
+        "failed to load model",
         "model not found",
         "no model",
         "not loaded",
@@ -905,6 +908,10 @@ def classify_workflow_error(
         title = "The selected model is not loaded"
         category = "model"
         next_step = "Load the selected language or vision model in LM Studio, refresh the model list, then retry."
+    elif "invent field contract" in lowered:
+        title = "The Invent field contract could not be repaired"
+        category = "contract"
+        next_step = "The input is preserved. Review the named field and validation failures in Activity, then retry with the corrected model output."
     elif any(marker in lowered for marker in (
         "not allowed",
         "requires unambiguously adult",
@@ -6322,26 +6329,37 @@ class PromptCorrectorApp:
     ) -> str:
         """Apply the central Invent gate and make at most one repair request."""
 
-        canonical = normalize_and_validate_invent(
+        candidate = preserve_invent_seed_value(
             workspace,
             field,
-            response,
+            normalize_invent_candidate(workspace, field, response),
             seed_value=seed_value,
         )
-        if canonical:
-            return canonical
+        issues = invent_field_issues(
+            workspace,
+            field,
+            candidate,
+            seed_value=seed_value,
+        )
+        if not issues:
+            return candidate
+        field_name = f"{workspace}.{field}"
+        self._log_activity_threadsafe(
+            f"Invent candidate rejected for {field_name}: "
+            + "; ".join(issues)
+        )
         repair_response = chat_completion(
             base_url=base_url,
             model=model,
             messages=build_invent_field_repair_messages(
                 workspace=workspace,
                 field=field,
-                candidate=response,
-                issues=["The value failed its field schema or semantic contract."],
+                candidate=candidate or response,
+                issues=issues,
                 seed_value=seed_value,
             ),
             temperature=min(0.2, max(0.0, float(temperature))),
-            max_tokens=192,
+            max_tokens=768,
             timeout=self._lm_timeout_seconds(),
             api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
             seed=(None if seed is None else (int(seed) + 1) % 2_147_483_648),
@@ -6349,12 +6367,32 @@ class PromptCorrectorApp:
             cancel_check=lambda: self._raise_if_cancelled(request_id),
         )
         self._raise_if_cancelled(request_id)
-        return normalize_and_validate_invent(
+        repaired_candidate = preserve_invent_seed_value(
             workspace,
             field,
-            repair_response,
+            normalize_invent_candidate(
+                workspace,
+                field,
+                repair_response,
+            ),
             seed_value=seed_value,
         )
+        repaired_issues = invent_field_issues(
+            workspace,
+            field,
+            repaired_candidate,
+            seed_value=seed_value,
+        )
+        if repaired_issues:
+            self._log_activity_threadsafe(
+                f"Invent repair rejected for {field_name}: "
+                + "; ".join(repaired_issues)
+            )
+            raise RuntimeError(
+                f"Invent field contract failed for {field_name} after repair: "
+                + "; ".join(repaired_issues)
+            )
+        return repaired_candidate
 
     def invent_single_image_field(self, field: str) -> None:
         normalized_field = str(field).strip().casefold()
@@ -6615,7 +6653,7 @@ class PromptCorrectorApp:
                     **context,
                 ),
                 temperature=self._temperature_value(),
-                max_tokens=384 if field in {"draft", "story_elements"} else 192,
+                max_tokens=768,
                 timeout=self._lm_timeout_seconds(),
                 api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
                 seed=seed,

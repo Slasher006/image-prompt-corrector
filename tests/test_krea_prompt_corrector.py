@@ -527,6 +527,24 @@ class PromptCorrectorTests(unittest.TestCase):
                     ),
                     "",
                 )
+        oversized_focus = (
+            "one two three four five six seven eight nine ten eleven twelve "
+            "thirteen fourteen fifteen"
+        )
+        normalized_oversized = corrector.normalize_invent_candidate(
+            "single",
+            "focus",
+            oversized_focus,
+        )
+        self.assertEqual(normalized_oversized, oversized_focus)
+        self.assertIn(
+            "Invented field exceeds 14 words",
+            corrector.invent_field_issues(
+                "single",
+                "focus",
+                normalized_oversized,
+            ),
+        )
 
         repair_messages = corrector.build_invent_field_repair_messages(
             workspace="single",
@@ -541,6 +559,82 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("Hard maximum: 14 words", repair_messages[0]["content"])
         self.assertIn("mandatory original field value", repair_messages[0]["content"])
         self.assertIn("exceeds 14 words", repair_messages[1]["content"])
+        preserved_concepts = corrector.preserve_invent_seed_value(
+            "single",
+            "concepts",
+            "exploration, wet reflections, neon machinery, cinematic realism",
+            seed_value="discovering",
+        )
+        self.assertEqual(
+            preserved_concepts,
+            (
+                "discovering, exploration, wet reflections, neon machinery, "
+                "cinematic realism"
+            ),
+        )
+        self.assertEqual(
+            corrector.normalize_and_validate_invent(
+                "single",
+                "concepts",
+                "exploration, wet reflections, neon machinery",
+                seed_value="discovering",
+            ),
+            "discovering, exploration, wet reflections, neon machinery",
+        )
+        concept_repair = corrector.build_invent_field_repair_messages(
+            workspace="single",
+            field="concepts",
+            candidate="exploration, wet reflections, neon machinery",
+            issues=["Invented field weakened or replaced its mandatory seed"],
+            seed_value="discovering",
+        )
+        self.assertIn(
+            "Keep every existing concept verbatim",
+            concept_repair[0]["content"],
+        )
+        concept_messages = corrector.build_single_image_field_suggestion_messages(
+            field="concepts",
+            concepts="discovering",
+        )
+        self.assertIn(
+            "Keep every existing concept verbatim",
+            concept_messages[0]["content"],
+        )
+        expanded_story = (
+            "The pair exchange a quiet glance beneath cascading water while reflected "
+            "neon ripples across chrome walls and drifting steam softens the surrounding "
+            "machinery as their synchronized posture establishes a calm emotional center "
+            "within the otherwise chaotic industrial setting."
+        )
+        preserved_story = corrector.preserve_invent_seed_value(
+            "single",
+            "story_elements",
+            expanded_story,
+            seed_value="mutual trust shown through relaxed proximity",
+        )
+        self.assertTrue(
+            preserved_story.startswith(
+                "mutual trust shown through relaxed proximity."
+            )
+        )
+        self.assertLessEqual(len(preserved_story.split()), 30)
+        self.assertEqual(
+            corrector.invent_field_issues(
+                "single",
+                "story_elements",
+                preserved_story,
+                seed_value="mutual trust shown through relaxed proximity",
+            ),
+            [],
+        )
+        story_messages = corrector.build_single_image_field_suggestion_messages(
+            field="story_elements",
+            story_elements="mutual trust shown through relaxed proximity",
+        )
+        self.assertIn(
+            "Keep the existing story beat verbatim",
+            story_messages[0]["content"],
+        )
         self.assertEqual(
             corrector.normalize_and_validate_invent(
                 "single",

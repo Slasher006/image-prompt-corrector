@@ -7993,6 +7993,17 @@ def build_single_image_field_suggestion_messages(
         if grounded_research
         else ""
     )
+    seed_format_rule = (
+        "Keep every existing concept verbatim as its own comma-separated entry, then "
+        "add compatible entries around it. "
+        if normalized_field == "concepts" and current_value
+        else (
+            "Keep the existing story beat verbatim, then add only compatible visible "
+            "detail within the field's word limit. "
+            if normalized_field == "story_elements" and current_value
+            else ""
+        )
+    )
     system = (
         "You are an inventive image-prompt creative director filling exactly one form field. "
         f"{field_rule} Use at most {word_limit} words. "
@@ -8000,6 +8011,7 @@ def build_single_image_field_suggestion_messages(
         + creative_field_seed_instruction(field_label, current_value)
         + camera_rule
         + research_rule
+        + seed_format_rule
         + (
             ARTISTIC_DETAIL_FREEDOM_INSTRUCTION + " "
             if artistic_detail_freedom
@@ -8972,14 +8984,12 @@ def invent_field_issues(
     return issues
 
 
-def normalize_and_validate_invent(
+def normalize_invent_candidate(
     workspace: str,
     field: str,
     text: str,
-    *,
-    seed_value: str = "",
 ) -> str:
-    """Return one canonical Invent value, or empty text when its schema fails."""
+    """Normalize one Invent response without hiding its validation failures."""
 
     normalized_workspace = str(workspace).strip().casefold()
     normalized_field = str(field).strip().casefold()
@@ -9005,9 +9015,120 @@ def normalize_and_validate_invent(
         )
     else:
         return ""
+    return value
+
+
+def preserve_invent_seed_value(
+    workspace: str,
+    field: str,
+    candidate: str,
+    *,
+    seed_value: str = "",
+) -> str:
+    """Deterministically retain structured Invent seeds where merging is safe."""
+
+    normalized_workspace = str(workspace).strip().casefold()
+    normalized_field = str(field).strip().casefold()
+    cleaned = str(candidate or "").strip()
+    if (
+        normalized_workspace in {"single", "comic"}
+        and normalized_field == "concepts"
+        and seed_value.strip()
+    ):
+        merged: list[str] = []
+        seen: set[str] = set()
+        for concept in (
+            parse_concepts(seed_value, max_concepts=6)
+            + parse_concepts(cleaned, max_concepts=6)
+        ):
+            key = normalize_concept_text(concept).casefold()
+            if key and key not in seen:
+                merged.append(concept)
+                seen.add(key)
+            if len(merged) >= 6:
+                break
+        return ", ".join(merged)
+    if (
+        normalized_workspace in {"single", "comic"}
+        and (
+            normalized_field == "story_elements"
+            or re.fullmatch(r"panel_\d+", normalized_field)
+        )
+        and seed_value.strip()
+    ):
+        word_limit = (
+            COMIC_PANEL_BEAT_WORD_LIMIT
+            if re.fullmatch(r"panel_\d+", normalized_field)
+            else CREATIVE_FIELD_WORD_LIMITS["story_elements"]
+        )
+
+        def trim_prose(value: str) -> str:
+            words = re.sub(r"\s+", " ", value).strip().split()
+            trimmed = " ".join(words[:word_limit]).strip(" \t\r\n,;:-")
+            incomplete_endings = {
+                "a",
+                "an",
+                "and",
+                "as",
+                "at",
+                "for",
+                "from",
+                "in",
+                "into",
+                "of",
+                "on",
+                "or",
+                "the",
+                "to",
+                "with",
+            }
+            trimmed_words = trimmed.split()
+            while (
+                trimmed_words
+                and trimmed_words[-1].strip(".,!?").casefold()
+                in incomplete_endings
+            ):
+                trimmed_words.pop()
+            return " ".join(trimmed_words).strip(" \t\r\n,;:-")
+
+        trimmed_candidate = trim_prose(cleaned)
+        seed_issue = "Invented field weakened or replaced its mandatory seed"
+        if seed_issue in invent_field_issues(
+            normalized_workspace,
+            normalized_field,
+            trimmed_candidate,
+            seed_value=seed_value,
+        ):
+            separator = (
+                " "
+                if seed_value.rstrip().endswith((".", "!", "?"))
+                else ". "
+            )
+            trimmed_candidate = trim_prose(
+                seed_value.strip() + separator + cleaned
+            )
+        return trimmed_candidate
+    return cleaned
+
+
+def normalize_and_validate_invent(
+    workspace: str,
+    field: str,
+    text: str,
+    *,
+    seed_value: str = "",
+) -> str:
+    """Return one canonical Invent value, or empty text when its schema fails."""
+
+    value = preserve_invent_seed_value(
+        workspace,
+        field,
+        normalize_invent_candidate(workspace, field, text),
+        seed_value=seed_value,
+    )
     return "" if invent_field_issues(
-        normalized_workspace,
-        normalized_field,
+        workspace,
+        field,
         value,
         seed_value=seed_value,
     ) else value
@@ -9061,15 +9182,31 @@ def build_invent_field_repair_messages(
 ) -> list[dict[str, object]]:
     """Build one low-fragility repair request for a rejected Invent value."""
 
+    normalized_field = str(field).strip().casefold()
     contract = invent_field_contract_text(workspace, field)
     if not contract:
         raise ValueError("Unsupported Invent field repair.")
-    seed_rule = (
-        "Preserve the recognizable subject, action, constraints, and important wording "
-        f"from this mandatory original field value: {seed_value.strip()}"
-        if seed_value.strip()
-        else "Do not invent new subjects or requirements while repairing."
-    )
+    if seed_value.strip() and normalized_field == "concepts":
+        seed_rule = (
+            "Keep every existing concept verbatim as its own comma-separated entry: "
+            f"{seed_value.strip()}. Add compatible entries without renaming or replacing it."
+        )
+    elif seed_value.strip() and (
+        normalized_field == "story_elements"
+        or re.fullmatch(r"panel_\d+", normalized_field)
+    ):
+        seed_rule = (
+            "Keep the mandatory original beat verbatim at the start, then retain only "
+            "compatible visible detail within the hard word limit: "
+            f"{seed_value.strip()}"
+        )
+    elif seed_value.strip():
+        seed_rule = (
+            "Preserve the recognizable subject, action, constraints, and important wording "
+            f"from this mandatory original field value: {seed_value.strip()}"
+        )
+    else:
+        seed_rule = "Do not invent new subjects or requirements while repairing."
     return [
         {
             "role": "system",
