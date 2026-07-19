@@ -4,6 +4,8 @@ from concept_presets import (
     CONCEPT_PRESET_KEYS,
     CONCEPT_PRESETS,
     CONCEPT_SELECTION_LIMIT,
+    EXPLICIT_ADULT_CONCEPT_PRESETS,
+    concept_preset_catalog,
     concept_preset_key,
     format_concept_presets,
     merge_concept_text,
@@ -64,6 +66,25 @@ class ConceptPresetTests(unittest.TestCase):
                 "courier, antique compass",
             ),
             "custom sky city, Courier, antique compass",
+        )
+
+    def test_explicit_adult_concepts_are_only_formatted_when_enabled(self):
+        self.assertGreaterEqual(len(EXPLICIT_ADULT_CONCEPT_PRESETS), 8)
+        self.assertGreaterEqual(
+            sum(map(len, EXPLICIT_ADULT_CONCEPT_PRESETS.values())),
+            140,
+        )
+        self.assertFalse(
+            any(category.startswith("NSFW") for category in concept_preset_catalog())
+        )
+        adult_catalog = concept_preset_catalog(explicit_nsfw=True)
+        self.assertTrue(any(category.startswith("NSFW") for category in adult_catalog))
+        category, values = next(iter(EXPLICIT_ADULT_CONCEPT_PRESETS.items()))
+        key = concept_preset_key(category, values[0])
+        self.assertEqual(format_concept_presets([key]), "")
+        self.assertEqual(
+            format_concept_presets([key], explicit_nsfw=True),
+            values[0],
         )
 
 

@@ -5,9 +5,14 @@ from action_emotion_presets import (
     ACTION_PRESETS,
     EMOTION_PRESET_KEYS,
     EMOTION_PRESETS,
+    EXPLICIT_ADULT_ACTION_PRESET_KEYS,
+    EXPLICIT_ADULT_ACTION_PRESETS,
+    EXPLICIT_ADULT_EMOTION_PRESET_KEYS,
+    EXPLICIT_ADULT_EMOTION_PRESETS,
     NARRATIVE_PRESET_LIMIT,
     format_narrative_presets,
     merge_narrative_text,
+    narrative_preset_catalog,
     narrative_preset_key,
 )
 
@@ -82,6 +87,45 @@ class ActionEmotionPresetTests(unittest.TestCase):
             ),
             "A courier reaches the gate; running uphill while glancing back; "
             "opening a long-forgotten archive",
+        )
+
+    def test_explicit_adult_narrative_categories_are_opt_in(self):
+        self.assertTrue(EXPLICIT_ADULT_ACTION_PRESET_KEYS)
+        self.assertTrue(EXPLICIT_ADULT_EMOTION_PRESET_KEYS)
+        self.assertGreaterEqual(len(EXPLICIT_ADULT_ACTION_PRESETS), 9)
+        self.assertGreaterEqual(
+            sum(map(len, EXPLICIT_ADULT_ACTION_PRESETS.values())),
+            100,
+        )
+        self.assertGreaterEqual(len(EXPLICIT_ADULT_EMOTION_PRESETS), 6)
+        self.assertGreaterEqual(
+            sum(map(len, EXPLICIT_ADULT_EMOTION_PRESETS.values())),
+            70,
+        )
+        self.assertFalse(
+            set(EXPLICIT_ADULT_ACTION_PRESETS).intersection(ACTION_PRESETS)
+        )
+        self.assertFalse(
+            set(EXPLICIT_ADULT_EMOTION_PRESETS).intersection(EMOTION_PRESETS)
+        )
+        self.assertFalse(
+            any(
+                category.startswith("NSFW")
+                for category in narrative_preset_catalog("action")
+            )
+        )
+        adult_catalog = narrative_preset_catalog("action", explicit_nsfw=True)
+        self.assertTrue(any(category.startswith("NSFW") for category in adult_catalog))
+        adult_category, adult_values = next(iter(EXPLICIT_ADULT_ACTION_PRESETS.items()))
+        adult_key = narrative_preset_key("action", adult_category, adult_values[0])
+        self.assertEqual(format_narrative_presets("action", [adult_key]), "")
+        self.assertIn(
+            "consenting adult",
+            format_narrative_presets(
+                "action",
+                [adult_key],
+                explicit_nsfw=True,
+            ),
         )
 
 

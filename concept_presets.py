@@ -586,6 +586,188 @@ CONCEPT_PRESETS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+EXPLICIT_ADULT_CONCEPT_PRESETS: dict[str, tuple[str, ...]] = {
+    "NSFW — Adult subjects and relationships": _items(
+        """
+        consenting adult lovers
+        established adult couple
+        newly intimate adult partners
+        adult friends becoming lovers
+        adult strangers sharing mutual attraction
+        confident adult seducer
+        shy but willing adult partner
+        mutually adventurous adult couple
+        emotionally connected adult partners
+        playful adult lovers
+        married adult partners rediscovering intimacy
+        long-distance adult lovers reunited
+        confident adult dominant and willing adult submissive
+        three consenting adult partners
+        multiple consenting adult lovers
+        clearly adult solo subject
+        mature adult lovers
+        queer adult couple
+        bisexual adult partners
+        polyamorous adult partners
+        adult partners exploring a shared fantasy
+        adult performers in a consensual erotic production
+        """
+    ),
+    "NSFW — Seduction and erotic situations": _items(
+        """
+        mutual seduction between consenting adults
+        consensual adult erotic encounter
+        adult seduction after a formal event
+        spontaneous adult intimacy in a private room
+        romantic adult getaway
+        adult roleplay between consenting partners
+        adult lovers interrupted just before intimacy
+        adult partners reuniting after a long separation
+        adult rivals giving in to mutual attraction
+        adult friends acknowledging hidden desire
+        adult strangers sharing a consensual private encounter
+        adult couple experimenting together
+        adult lovers escalating from teasing to urgency
+        adult partners changing who takes the lead
+        adult couple sharing a secret fantasy
+        adult lovers recovering from an intense encounter
+        """
+    ),
+    "NSFW — Sexual acts and intimate moments": _items(
+        """
+        passionate adult kissing
+        consensual adult foreplay
+        mutual adult masturbation
+        solo adult masturbation
+        consensual adult oral sex
+        face-to-face adult intercourse
+        seated adult intercourse
+        rear-entry adult intercourse
+        standing adult intercourse
+        side-by-side adult intercourse
+        consensual adult anal sex
+        adult toy play
+        consensual adult bondage
+        consensual adult dominance and submission
+        multiple consenting adults sharing intimacy
+        adult climax
+        shared adult orgasm
+        intimate adult aftercare
+        erotic adult afterglow
+        adult lovers falling asleep together
+        """
+    ),
+    "NSFW — Private erotic environments": _items(
+        """
+        private adult bedroom encounter
+        intimate boudoir suite
+        luxury hotel bedroom
+        secluded romantic cabin
+        candlelit private apartment
+        private dressing room
+        locked office after hours
+        secluded rooftop at night
+        private garden pavilion
+        adult nightclub private room
+        intimate photography studio
+        mirrored adult bedroom
+        velvet-lined erotic salon
+        private spa suite
+        secluded beach cabana
+        warm attic bedroom
+        modern penthouse bedroom
+        rustic honeymoon suite
+        private library after dark
+        soundproof adult playroom
+        """
+    ),
+    "NSFW — Water shower and outdoor settings": _items(
+        """
+        intimate adult shower scene
+        adult lovers in a deep bathtub
+        private hot tub intimacy
+        secluded swimming pool encounter
+        moonlit beach intimacy
+        hidden forest clearing encounter
+        secluded lakeside intimacy
+        private waterfall scene
+        warm rain on adult lovers
+        adult partners in a steamy sauna
+        private yacht cabin intimacy
+        secluded desert camp encounter
+        adult lovers beneath an outdoor shower
+        private tropical lagoon
+        snowbound hot-spring intimacy
+        """
+    ),
+    "NSFW — Lingerie wardrobe and body styling": _items(
+        """
+        elegant adult lingerie
+        sheer adult nightwear
+        open formal clothing
+        partially removed evening wear
+        tailored adult fetish fashion
+        leather adult harness
+        silk adult robe
+        lace adult bodysuit
+        stockings and garter belt
+        shirt worn open over bare skin
+        jewelry against bare adult skin
+        high heels with adult lingerie
+        adult roleplay costume
+        minimalist body straps
+        wet translucent clothing
+        post-intimacy rumpled clothing
+        tasteful adult body jewelry
+        theatrical erotic makeup
+        """
+    ),
+    "NSFW — Adult toys restraints and accessories": _items(
+        """
+        handheld adult vibrator
+        adult wand massager
+        adult dildo
+        adult anal toy
+        adult couples toy
+        silk blindfold
+        soft wrist restraints
+        leather cuffs
+        consensual bondage rope
+        padded adult collar
+        adult harness and straps
+        feather teaser
+        massage oil
+        body-safe lubricant
+        satin bed restraints
+        adult toy collection
+        discreet bedside adult accessory
+        aftercare blanket and water
+        """
+    ),
+    "NSFW — Erotic narrative beats": _items(
+        """
+        first consensual adult encounter
+        long-awaited adult reunion
+        playful adult seduction
+        slow adult escalation
+        sudden adult urgency
+        mutual adult experimentation
+        adult trust deepening through intimacy
+        adult confidence turning into vulnerability
+        adult partners discovering a shared preference
+        adult lovers negotiating control
+        adult partners switching roles
+        adult pleasure building toward climax
+        one adult partner reaching climax first
+        shared adult climax
+        adult reassurance after vulnerability
+        affectionate adult aftercare
+        quiet adult morning after
+        adult lovers reflecting in afterglow
+        """
+    ),
+}
+
 
 def concept_preset_key(category: str, value: str) -> str:
     """Return the stable serialized identity for one catalog entry."""
@@ -598,15 +780,37 @@ CONCEPT_PRESET_KEYS = frozenset(
     for category, values in CONCEPT_PRESETS.items()
     for value in values
 )
+EXPLICIT_ADULT_CONCEPT_PRESET_KEYS = frozenset(
+    concept_preset_key(category, value)
+    for category, values in EXPLICIT_ADULT_CONCEPT_PRESETS.items()
+    for value in values
+)
+ALL_CONCEPT_PRESET_KEYS = CONCEPT_PRESET_KEYS | EXPLICIT_ADULT_CONCEPT_PRESET_KEYS
 
 
-def format_concept_presets(keys: list[str] | tuple[str, ...] | set[str]) -> str:
+def concept_preset_catalog(
+    *,
+    explicit_nsfw: bool = False,
+) -> dict[str, tuple[str, ...]]:
+    """Return content concepts visible under the active content mode."""
+
+    if not explicit_nsfw:
+        return CONCEPT_PRESETS
+    return {**CONCEPT_PRESETS, **EXPLICIT_ADULT_CONCEPT_PRESETS}
+
+
+def format_concept_presets(
+    keys: list[str] | tuple[str, ...] | set[str],
+    *,
+    explicit_nsfw: bool = False,
+) -> str:
     """Format selected keys as the comma-separated concept field contract."""
 
+    catalog = concept_preset_catalog(explicit_nsfw=explicit_nsfw)
     selected = set(keys)
     values: list[str] = []
     seen: set[str] = set()
-    for category, category_values in CONCEPT_PRESETS.items():
+    for category, category_values in catalog.items():
         for value in category_values:
             if concept_preset_key(category, value) not in selected:
                 continue

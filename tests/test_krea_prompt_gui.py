@@ -753,6 +753,139 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertTrue(bound.arguments["explicit_nsfw"])
         self.assertFalse(bound.arguments["safe_for_work"])
 
+    def test_nsfw_preset_categories_are_hidden_until_explicit_mode_is_enabled(self):
+        pickers = (
+            (
+                "Action preset library",
+                lambda: self.controller._open_narrative_preset_picker(
+                    "prompt",
+                    "action",
+                ),
+            ),
+            (
+                "Emotion preset library",
+                lambda: self.controller._open_narrative_preset_picker(
+                    "prompt",
+                    "emotion",
+                ),
+            ),
+            (
+                "Content concept library",
+                lambda: self.controller._open_concept_preset_picker("prompt"),
+            ),
+            (
+                "Creative direction presets",
+                lambda: self.controller._open_visual_preset_picker("prompt"),
+            ),
+            (
+                "Mixer ingredient library",
+                lambda: self.controller._open_mix_ingredient_picker([]),
+            ),
+        )
+
+        def collect_categories(title, open_picker):
+            captured = set()
+
+            def inspect_dialog():
+                dialog = next(
+                    widget
+                    for widget in self.application.topLevelWidgets()
+                    if (
+                        isinstance(widget, gui.QDialog)
+                        and widget.parent() is self.root
+                        and widget.windowTitle() == title
+                    )
+                )
+                category_combo = dialog.findChildren(gui.QComboBox)[0]
+                captured.update(
+                    category_combo.itemText(index)
+                    for index in range(category_combo.count())
+                )
+                dialog.setParent(None)
+                return gui.QDialog.DialogCode.Rejected
+
+            with mock.patch.object(
+                gui.QDialog,
+                "exec",
+                side_effect=inspect_dialog,
+            ):
+                open_picker()
+            return captured
+
+        self.controller.explicit_nsfw_var.set(False)
+        for title, open_picker in pickers:
+            with self.subTest(title=title, mode="off"):
+                categories = collect_categories(title, open_picker)
+                self.assertFalse(
+                    any("NSFW" in category for category in categories)
+                )
+
+        self.controller.explicit_nsfw_var.set(True)
+        for title, open_picker in pickers:
+            with self.subTest(title=title, mode="on"):
+                categories = collect_categories(title, open_picker)
+                self.assertTrue(
+                    any("NSFW" in category for category in categories)
+                )
+
+    def test_nsfw_action_preset_applies_and_persists_in_its_workspace(self):
+        self.controller.explicit_nsfw_var.set(True)
+        adult_catalog = gui.narrative_preset_catalog(
+            "action",
+            explicit_nsfw=True,
+        )
+        adult_category = next(
+            category for category in adult_catalog if category.startswith("NSFW")
+        )
+        adult_value = adult_catalog[adult_category][0]
+        adult_key = gui.narrative_preset_key(
+            "action",
+            adult_category,
+            adult_value,
+        )
+
+        def choose_adult_action():
+            dialog = next(
+                widget
+                for widget in self.application.topLevelWidgets()
+                if (
+                    isinstance(widget, gui.QDialog)
+                    and widget.parent() is self.root
+                    and widget.windowTitle() == "Action preset library"
+                )
+            )
+            preset_list = dialog.findChild(gui.QListWidget)
+            item = next(
+                preset_list.item(index)
+                for index in range(preset_list.count())
+                if preset_list.item(index).text().endswith(adult_value)
+            )
+            item.setCheckState(gui.Qt.CheckState.Checked)
+            return gui.QDialog.DialogCode.Accepted
+
+        with mock.patch.object(
+            gui.QDialog,
+            "exec",
+            side_effect=choose_adult_action,
+        ):
+            self.controller._open_narrative_preset_picker("prompt", "action")
+
+        self.assertIn(adult_value, self.controller.story_elements_var.get())
+        self.assertIn(
+            adult_key,
+            self.controller.narrative_preset_selections["prompt"]["action"],
+        )
+        second_root = gui.PromptCorrectorWindow()
+        second_controller = gui.PromptCorrectorApp(second_root)
+        second_root.controller = second_controller
+        self.assertTrue(second_controller.explicit_nsfw_var.get())
+        self.assertIn(
+            adult_key,
+            second_controller.narrative_preset_selections["prompt"]["action"],
+        )
+        self.assertIn(adult_value, second_controller.story_elements_var.get())
+        second_root.close()
+
     def test_generator_target_switches_krea_and_flux_guidance(self):
         self.assertEqual(self.controller.generator_target_var.get(), "Krea 2")
         self.assertTrue(self.controller.generator_controls_page.isEnabled())

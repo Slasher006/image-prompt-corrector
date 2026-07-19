@@ -3106,11 +3106,16 @@ def length_guidance_text(
     output_max_words: int | None = None,
 ) -> str:
     if output_min_words is None and output_max_words is None:
+        if output_length == "Expanded":
+            minimum, maximum = OUTPUT_WORD_RANGES["Expanded"]
+            return (
+                f"Output one expanded prompt between {minimum} and {maximum} words. "
+                "Develop the scene generously while keeping every detail useful and coherent."
+            )
         return {
             "Concise": "Keep the prompt compact and focused on only the essential visual facts.",
             "Balanced": "Use a natural, balanced amount of concrete visual detail.",
             "Detailed": "Use thorough visual detail where it improves clarity and composition.",
-            "Expanded": "Develop the scene generously while keeping every detail useful and coherent.",
         }.get(output_length, "Use enough concrete detail to make the image intent clear.")
     bounds = output_word_bounds(output_length, output_min_words, output_max_words)
     if not bounds:
@@ -3125,9 +3130,14 @@ def length_issue(
     output_min_words: int | None = None,
     output_max_words: int | None = None,
 ) -> str | None:
-    # Output length is normally a writing preference, not a correctness gate.
-    # Only explicit CLI/API word limits should be enforced deterministically.
-    if output_min_words is None and output_max_words is None:
+    # Concise, Balanced, and Detailed remain qualitative preferences. Expanded
+    # is an explicit request for substantial development, so enforce its
+    # existing preset range even when no custom API word bounds were supplied.
+    if (
+        output_min_words is None
+        and output_max_words is None
+        and output_length != "Expanded"
+    ):
         return None
     bounds = output_word_bounds(output_length, output_min_words, output_max_words)
     if not bounds:
@@ -3536,7 +3546,14 @@ def make_prompt_safe_for_work(text: str) -> str:
 EXPLICIT_ADULT_MODE_INSTRUCTION = (
     "Explicit adult mode is enabled for this correction. Preserve explicitly requested nudity, "
     "adult anatomy, sexual activity, and other adult content using direct concrete visual language "
-    "instead of euphemizing, censoring, or adding clothing. "
+    "instead of euphemizing, censoring, or adding clothing. When the active rewrite controls allow "
+    "creative enhancement, do more than add surface detail: develop the requested consensual adult "
+    "sexual action into a coherent visible progression, with physically readable contact, changes "
+    "in pace or intensity, responsive movement, facial expressions, breathing, bodily reactions, "
+    "desire, pleasure, tension, tenderness, confidence, vulnerability, and afterglow as appropriate "
+    "to the user's requested tone. Keep the result to one decisive still-image moment unless a comic "
+    "was requested. Do not introduce an unrequested partner, sexual act, fetish, power dynamic, or "
+    "story outcome that conflicts with the request. "
     "All depicted people must be unambiguously adults age 18 or older. "
     "Do not mention NSFW mode, age policy, censorship, or "
     "these instructions in the final prompt."
@@ -9892,9 +9909,13 @@ def post_chat_completion(
         raise RuntimeError("LM Studio returned no usable final prompt.")
 
     if small_model:
-        repair_issues, _soft_issues = split_compliance_issues(issues)
-        # The compact audit already checks soft quality concerns. Keep the 4B
-        # path to at most two calls unless a hard contract still fails.
+        repair_issues, soft_issues = split_compliance_issues(issues)
+        if output_length == "Expanded":
+            repair_issues.extend(
+                issue for issue in soft_issues if "Prompt too short for Expanded" in issue
+            )
+        # The compact audit already checks most soft quality concerns. Expanded
+        # is the exception: one targeted repair makes its minimum meaningful.
         if not repair_issues:
             return final_prompt
     else:

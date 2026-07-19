@@ -116,6 +116,8 @@ from krea_prompt_corrector import (
     vague_prompt_needs_clarification_research,
 )
 from action_emotion_presets import (
+    ALL_ACTION_PRESET_KEYS,
+    ALL_EMOTION_PRESET_KEYS,
     ACTION_PRESET_KEYS,
     ACTION_PRESETS,
     EMOTION_PRESET_KEYS,
@@ -123,12 +125,15 @@ from action_emotion_presets import (
     NARRATIVE_PRESET_LIMIT,
     format_narrative_presets,
     merge_narrative_text,
+    narrative_preset_catalog,
     narrative_preset_key,
 )
 from concept_presets import (
+    ALL_CONCEPT_PRESET_KEYS,
     CONCEPT_PRESET_KEYS,
     CONCEPT_PRESETS,
     CONCEPT_SELECTION_LIMIT,
+    concept_preset_catalog,
     concept_preset_key,
     format_concept_presets,
     merge_concept_text,
@@ -140,11 +145,14 @@ from mix_ingredient_presets import (
     format_mix_ingredient_names,
     mix_ingredient_key,
     mix_ingredient_keys_for_names,
+    mix_ingredient_preset_catalog,
 )
 from visual_direction_presets import (
+    ALL_VISUAL_DIRECTION_PRESET_KEYS,
     VISUAL_DIRECTION_PRESET_KEYS,
     VISUAL_DIRECTION_PRESETS,
     format_visual_direction_presets,
+    visual_direction_preset_catalog,
     visual_preset_key,
 )
 from workbench_gui import PromptWorkbench
@@ -1671,7 +1679,7 @@ class PromptCorrectorApp:
                     self.visual_preset_selections[destination] = [
                         str(value)
                         for value in values
-                        if str(value) in VISUAL_DIRECTION_PRESET_KEYS
+                        if str(value) in ALL_VISUAL_DIRECTION_PRESET_KEYS
                     ]
         stored_concept_presets = settings.get("concept_preset_selections", {})
         if isinstance(stored_concept_presets, dict):
@@ -1681,13 +1689,13 @@ class PromptCorrectorApp:
                     self.concept_preset_selections[destination] = [
                         str(value)
                         for value in values
-                        if str(value) in CONCEPT_PRESET_KEYS
+                        if str(value) in ALL_CONCEPT_PRESET_KEYS
                     ][:CONCEPT_SELECTION_LIMIT]
         stored_narrative_presets = settings.get("narrative_preset_selections", {})
         if isinstance(stored_narrative_presets, dict):
             valid_keys = {
-                "action": ACTION_PRESET_KEYS,
-                "emotion": EMOTION_PRESET_KEYS,
+                "action": ALL_ACTION_PRESET_KEYS,
+                "emotion": ALL_EMOTION_PRESET_KEYS,
             }
             for destination in self.narrative_preset_selections:
                 stored_destination = stored_narrative_presets.get(destination, {})
@@ -2787,10 +2795,20 @@ class PromptCorrectorApp:
         self,
         current_names: list[str],
     ) -> tuple[list[str], bool] | None:
+        explicit_nsfw = bool(self.explicit_nsfw_var.get())
+        catalog = mix_ingredient_preset_catalog(explicit_nsfw=explicit_nsfw)
+        available_keys = {
+            mix_ingredient_key(category, value)
+            for category, values in catalog.items()
+            for value in values
+        }
         selected = {
             key
-            for key in mix_ingredient_keys_for_names(current_names)
-            if key in MIX_INGREDIENT_KEYS
+            for key in mix_ingredient_keys_for_names(
+                current_names,
+                explicit_nsfw=explicit_nsfw,
+            )
+            if key in available_keys
         }
 
         dialog = QDialog(self.root)
@@ -2800,7 +2818,12 @@ class PromptCorrectorApp:
         intro = QLabel(
             "Choose up to six ingredients from the combined concept and visual-style catalogs. "
             "The library includes content concepts, rendering media, genres, mood, lighting, "
-            "palette, atmosphere, composition, texture, finish, and presentation."
+            "palette, atmosphere, composition, texture, finish, and presentation. "
+            + (
+                "Adult-only ingredients are available."
+                if explicit_nsfw
+                else "Adult-only ingredients appear only while Explicit adult (NSFW) is enabled."
+            )
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
@@ -2808,7 +2831,7 @@ class PromptCorrectorApp:
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Category"))
         category_combo = QComboBox()
-        category_combo.addItems(("All categories", *MIX_INGREDIENT_PRESETS.keys()))
+        category_combo.addItems(("All categories", *catalog.keys()))
         self._set_help(
             category_combo,
             "Filters the mixer library to content concepts, media, or one visual direction.",
@@ -2822,7 +2845,7 @@ class PromptCorrectorApp:
         )
         self._set_help(
             search_entry,
-            f"Searches category names and all {len(MIX_INGREDIENT_KEYS)} mixer ingredients.",
+            f"Searches category names and all {len(available_keys)} visible mixer ingredients.",
             "Type watercolor to find the watercolor rendering medium.",
         )
         filters.addWidget(search_entry, 1)
@@ -2901,7 +2924,10 @@ class PromptCorrectorApp:
                     selected.discard(key)
 
         def refresh_preview() -> None:
-            names = format_mix_ingredient_names(selected)
+            names = format_mix_ingredient_names(
+                selected,
+                explicit_nsfw=explicit_nsfw,
+            )
             selection_label.setText(
                 f"{len(names)} of {MIX_INGREDIENT_LIMIT} ingredients selected"
             )
@@ -2915,7 +2941,7 @@ class PromptCorrectorApp:
             rebuilding = True
             preset_list.blockSignals(True)
             preset_list.clear()
-            for category, values in MIX_INGREDIENT_PRESETS.items():
+            for category, values in catalog.items():
                 if category_filter != "All categories" and category != category_filter:
                     continue
                 for value in values:
@@ -2938,7 +2964,10 @@ class PromptCorrectorApp:
 
         def on_item_changed(item: QListWidgetItem) -> None:
             key = str(item.data(Qt.ItemDataRole.UserRole))
-            names = format_mix_ingredient_names(selected)
+            names = format_mix_ingredient_names(
+                selected,
+                explicit_nsfw=explicit_nsfw,
+            )
             selected_name = item.text().split("  ·  ", 1)[-1].casefold()
             already_represented = any(
                 name.casefold() == selected_name for name in names
@@ -2982,7 +3011,10 @@ class PromptCorrectorApp:
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
         sync_visible_selection()
-        names = format_mix_ingredient_names(selected)[:MIX_INGREDIENT_LIMIT]
+        names = format_mix_ingredient_names(
+            selected,
+            explicit_nsfw=explicit_nsfw,
+        )[:MIX_INGREDIENT_LIMIT]
         return names, apply_mode.currentText() == "Replace all mixer rows"
 
     def _open_concept_mix_editor(self, _checked: bool = False) -> None:
@@ -3176,13 +3208,21 @@ class PromptCorrectorApp:
     def _open_narrative_preset_picker(self, destination: str, kind: str) -> None:
         destination = destination if destination in {"prompt", "comic", "meme"} else "prompt"
         kind = "emotion" if kind == "emotion" else "action"
-        catalog = EMOTION_PRESETS if kind == "emotion" else ACTION_PRESETS
-        valid_keys = EMOTION_PRESET_KEYS if kind == "emotion" else ACTION_PRESET_KEYS
+        explicit_nsfw = bool(self.explicit_nsfw_var.get())
+        catalog = narrative_preset_catalog(kind, explicit_nsfw=explicit_nsfw)
+        valid_keys = (
+            ALL_EMOTION_PRESET_KEYS if kind == "emotion" else ALL_ACTION_PRESET_KEYS
+        )
+        available_keys = {
+            narrative_preset_key(kind, category, value)
+            for category, values in catalog.items()
+            for value in values
+        }
         target = self._narrative_preset_target(destination)
         selected = {
             key
             for key in self.narrative_preset_selections[destination][kind]
-            if key in valid_keys
+            if key in valid_keys and key in available_keys
         }
         library_name = "Emotion" if kind == "emotion" else "Action"
 
@@ -3201,7 +3241,12 @@ class PromptCorrectorApp:
                 "work, discovery, conflict, rescue, performance, daily life, and ceremony."
             )
         intro = QLabel(
-            f"{intro_text} Select up to {NARRATIVE_PRESET_LIMIT} presets."
+            f"{intro_text} Select up to {NARRATIVE_PRESET_LIMIT} presets. "
+            + (
+                "Adult-only action and expression categories are available."
+                if explicit_nsfw
+                else "Adult-only categories appear only while Explicit adult (NSFW) is enabled."
+            )
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
@@ -3315,7 +3360,13 @@ class PromptCorrectorApp:
             selection_label.setText(
                 f"{len(selected)} of {NARRATIVE_PRESET_LIMIT} presets selected"
             )
-            preview.setPlainText(format_narrative_presets(kind, selected))
+            preview.setPlainText(
+                format_narrative_presets(
+                    kind,
+                    selected,
+                    explicit_nsfw=explicit_nsfw,
+                )
+            )
 
         def rebuild_list() -> None:
             nonlocal rebuilding
@@ -3392,7 +3443,11 @@ class PromptCorrectorApp:
             for value in values
             if narrative_preset_key(kind, category, value) in selected
         ][:NARRATIVE_PRESET_LIMIT]
-        narrative_text = format_narrative_presets(kind, ordered_selection)
+        narrative_text = format_narrative_presets(
+            kind,
+            ordered_selection,
+            explicit_nsfw=explicit_nsfw,
+        )
         if apply_mode.currentText() == "Append to current narrative":
             narrative_text = merge_narrative_text(str(target.get()), narrative_text)
         target.set(narrative_text)
@@ -3432,11 +3487,18 @@ class PromptCorrectorApp:
 
     def _open_concept_preset_picker(self, destination: str) -> None:
         destination = destination if destination in {"prompt", "comic"} else "prompt"
+        explicit_nsfw = bool(self.explicit_nsfw_var.get())
+        catalog = concept_preset_catalog(explicit_nsfw=explicit_nsfw)
+        available_keys = {
+            concept_preset_key(category, value)
+            for category, values in catalog.items()
+            for value in values
+        }
         target = self._concept_target(destination)
         selected = {
             key
             for key in self.concept_preset_selections.get(destination, [])
-            if key in CONCEPT_PRESET_KEYS
+            if key in ALL_CONCEPT_PRESET_KEYS and key in available_keys
         }
 
         dialog = QDialog(self.root)
@@ -3447,7 +3509,12 @@ class PromptCorrectorApp:
             "Build the content of the image from a broad catalog of subjects, roles, "
             "relationships, actions, creatures, environments, objects, narrative motifs, "
             f"eras, crafts, and design ideas. Select up to {CONCEPT_SELECTION_LIMIT} concepts "
-            "so every selected concept remains active in the generation contract."
+            "so every selected concept remains active in the generation contract. "
+            + (
+                "Adult-only subject and situation categories are available."
+                if explicit_nsfw
+                else "Adult-only categories appear only while Explicit adult (NSFW) is enabled."
+            )
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
@@ -3455,7 +3522,7 @@ class PromptCorrectorApp:
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Category"))
         category_combo = QComboBox()
-        category_combo.addItems(("All categories", *CONCEPT_PRESETS.keys()))
+        category_combo.addItems(("All categories", *catalog.keys()))
         self._set_help(
             category_combo,
             "Filters the content-concept library to one subject or story dimension.",
@@ -3469,7 +3536,7 @@ class PromptCorrectorApp:
         )
         self._set_help(
             search_entry,
-            f"Searches category names and all {len(CONCEPT_PRESET_KEYS)} concept entries.",
+            f"Searches category names and all {len(available_keys)} visible concept entries.",
             "Type observatory to find architectural and interior concepts.",
         )
         filters.addWidget(search_entry, 1)
@@ -3549,7 +3616,12 @@ class PromptCorrectorApp:
             selection_label.setText(
                 f"{len(selected)} of {CONCEPT_SELECTION_LIMIT} concepts selected"
             )
-            preview.setPlainText(format_concept_presets(tuple(selected)))
+            preview.setPlainText(
+                format_concept_presets(
+                    tuple(selected),
+                    explicit_nsfw=explicit_nsfw,
+                )
+            )
 
         def rebuild_list() -> None:
             nonlocal rebuilding
@@ -3559,7 +3631,7 @@ class PromptCorrectorApp:
             rebuilding = True
             preset_list.blockSignals(True)
             preset_list.clear()
-            for category, values in CONCEPT_PRESETS.items():
+            for category, values in catalog.items():
                 if category_filter != "All categories" and category != category_filter:
                     continue
                 for value in values:
@@ -3622,11 +3694,14 @@ class PromptCorrectorApp:
         sync_visible_selection()
         ordered_selection = [
             concept_preset_key(category, value)
-            for category, values in CONCEPT_PRESETS.items()
+            for category, values in catalog.items()
             for value in values
             if concept_preset_key(category, value) in selected
         ][:CONCEPT_SELECTION_LIMIT]
-        concept_text = format_concept_presets(ordered_selection)
+        concept_text = format_concept_presets(
+            ordered_selection,
+            explicit_nsfw=explicit_nsfw,
+        )
         current = str(target.get()).strip()
         if apply_mode.currentText() == "Append to current concepts":
             concept_text = merge_concept_text(current, concept_text)
@@ -3665,11 +3740,18 @@ class PromptCorrectorApp:
 
     def _open_visual_preset_picker(self, destination: str) -> None:
         destination = destination if destination in {"prompt", "comic", "meme"} else "prompt"
+        explicit_nsfw = bool(self.explicit_nsfw_var.get())
+        catalog = visual_direction_preset_catalog(explicit_nsfw=explicit_nsfw)
+        available_keys = {
+            visual_preset_key(category, value)
+            for category, values in catalog.items()
+            for value in values
+        }
         target = self._visual_direction_target(destination)
         selected = {
             key
             for key in self.visual_preset_selections.get(destination, [])
-            if key in VISUAL_DIRECTION_PRESET_KEYS
+            if key in ALL_VISUAL_DIRECTION_PRESET_KEYS and key in available_keys
         }
 
         dialog = QDialog(self.root)
@@ -3678,7 +3760,12 @@ class PromptCorrectorApp:
         outer = QVBoxLayout(dialog)
         intro = QLabel(
             "Combine any number of concrete visual directions. Camera and lens choices remain "
-            "in the global Camera control, so this library focuses on the complementary art direction."
+            "in the global Camera control, so this library focuses on the complementary art direction. "
+            + (
+                "Adult-only erotic-tone and presentation categories are available."
+                if explicit_nsfw
+                else "Adult-only categories appear only while Explicit adult (NSFW) is enabled."
+            )
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
@@ -3686,7 +3773,7 @@ class PromptCorrectorApp:
         filters = QHBoxLayout()
         filters.addWidget(QLabel("Category"))
         category_combo = QComboBox()
-        category_combo.addItems(("All categories", *VISUAL_DIRECTION_PRESETS.keys()))
+        category_combo.addItems(("All categories", *catalog.keys()))
         self._set_help(
             category_combo,
             "Filters the creative-direction library to one visual dimension.",
@@ -3698,7 +3785,7 @@ class PromptCorrectorApp:
         search_entry.setPlaceholderText("Search lighting, fog, nostalgic, texture, noir…")
         self._set_help(
             search_entry,
-            "Searches category names and all 420 preset descriptions.",
+            f"Searches category names and all {len(available_keys)} visible preset descriptions.",
             "Type fog to find atmospheric fog and fog-related optical effects.",
         )
         filters.addWidget(search_entry, 1)
@@ -3775,7 +3862,10 @@ class PromptCorrectorApp:
                 f"{len(selected)} preset{'s' if len(selected) != 1 else ''} selected"
             )
             preview.setPlainText(
-                format_visual_direction_presets(tuple(selected))
+                format_visual_direction_presets(
+                    tuple(selected),
+                    explicit_nsfw=explicit_nsfw,
+                )
             )
 
         def rebuild_list() -> None:
@@ -3786,7 +3876,7 @@ class PromptCorrectorApp:
             rebuilding = True
             preset_list.blockSignals(True)
             preset_list.clear()
-            for category, values in VISUAL_DIRECTION_PRESETS.items():
+            for category, values in catalog.items():
                 if category_filter != "All categories" and category != category_filter:
                     continue
                 for value in values:
@@ -3836,11 +3926,14 @@ class PromptCorrectorApp:
         sync_visible_selection()
         ordered_selection = [
             visual_preset_key(category, value)
-            for category, values in VISUAL_DIRECTION_PRESETS.items()
+            for category, values in catalog.items()
             for value in values
             if visual_preset_key(category, value) in selected
         ]
-        direction = format_visual_direction_presets(ordered_selection)
+        direction = format_visual_direction_presets(
+            ordered_selection,
+            explicit_nsfw=explicit_nsfw,
+        )
         current = str(target.get()).strip()
         if (
             apply_mode.currentText() == "Append to current visual direction"
@@ -3953,20 +4046,20 @@ class PromptCorrectorApp:
             self.visual_preset_selections["prompt"] = [
                 str(value)
                 for value in stored_visual_presets
-                if str(value) in VISUAL_DIRECTION_PRESET_KEYS
+                if str(value) in ALL_VISUAL_DIRECTION_PRESET_KEYS
             ]
         stored_concept_presets = snapshot.get("concept_preset_selection", [])
         if isinstance(stored_concept_presets, list):
             self.concept_preset_selections["prompt"] = [
                 str(value)
                 for value in stored_concept_presets
-                if str(value) in CONCEPT_PRESET_KEYS
+                if str(value) in ALL_CONCEPT_PRESET_KEYS
             ][:CONCEPT_SELECTION_LIMIT]
         stored_narrative_presets = snapshot.get("narrative_preset_selection", {})
         if isinstance(stored_narrative_presets, dict):
             for kind, valid_keys in (
-                ("action", ACTION_PRESET_KEYS),
-                ("emotion", EMOTION_PRESET_KEYS),
+                ("action", ALL_ACTION_PRESET_KEYS),
+                ("emotion", ALL_EMOTION_PRESET_KEYS),
             ):
                 values = stored_narrative_presets.get(kind, [])
                 if isinstance(values, list):

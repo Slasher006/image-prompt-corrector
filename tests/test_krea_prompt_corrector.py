@@ -1315,6 +1315,9 @@ class PromptCorrectorTests(unittest.TestCase):
         sent_message = completion.call_args.kwargs["messages"][1]["content"]
         self.assertIn("Explicit adult mode is enabled", sent_message)
         self.assertIn("unambiguously adults age 18 or older", sent_message)
+        self.assertIn("facial expressions", sent_message)
+        self.assertIn("changes in pace or intensity", sent_message)
+        self.assertIn("Do not introduce an unrequested partner", sent_message)
         self.assertEqual(result, completed_prompt)
         self.assertNotIn("NSFW mode", result)
         self.assertNotIn("age policy", result)
@@ -1667,7 +1670,7 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertTrue(any("expected at least 60" in issue for issue in issues))
 
-    def test_output_length_preference_does_not_force_word_count_repair(self):
+    def test_expanded_output_enforces_its_existing_word_range(self):
         guidance = corrector.length_guidance_text("Expanded")
         issues = corrector.final_compliance_issues(
             "A knight stands in a castle.",
@@ -1675,7 +1678,45 @@ class PromptCorrectorTests(unittest.TestCase):
         )
 
         self.assertIn("Develop the scene generously", guidance)
-        self.assertFalse(any("Prompt too short" in issue for issue in issues))
+        self.assertIn("between 115 and 260 words", guidance)
+        self.assertTrue(any("Prompt too short" in issue for issue in issues))
+
+    def test_compact_model_gets_one_targeted_expanded_length_repair(self):
+        source = "A red car crosses a stone bridge at dawn."
+        short = "A red car crosses a stone bridge at dawn."
+        expanded = (
+            "A red car crosses a weathered stone bridge at dawn as the first warm sunlight "
+            "reaches the road. The low front three-quarter viewpoint keeps the red car "
+            "dominant while revealing its wheels following the damp curve of the bridge. "
+            "Fine mist hangs above the river below and catches pale gold light between the "
+            "arches. Moisture darkens the old masonry and creates broken reflections beneath "
+            "the moving car. The driver remains only a subtle silhouette so the vehicle and "
+            "its journey stay central. Long shadows from the parapet repeat across the road "
+            "and lead toward distant hills emerging from blue morning haze. A few loose "
+            "leaves lift behind the rear tires to make the forward motion visible. Natural "
+            "paint reflections follow the car's curved panels without becoming glossy or "
+            "artificial. The composition balances crisp foreground stone texture against a "
+            "soft atmospheric background and preserves a calm purposeful sense of arrival."
+        )
+        self.assertGreaterEqual(corrector.word_count(expanded), 115)
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[short, expanded],
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                output_length="Expanded",
+                audit_repair=False,
+            )
+
+        self.assertEqual(completion.call_count, 2)
+        self.assertEqual(result, expanded)
 
     def test_user_message_preserves_messy_draft_for_model_inspection(self):
         draft = random_bad_prompt()

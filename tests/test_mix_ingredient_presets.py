@@ -7,6 +7,7 @@ from mix_ingredient_presets import (
     format_mix_ingredient_names,
     mix_ingredient_key,
     mix_ingredient_keys_for_names,
+    mix_ingredient_preset_catalog,
 )
 
 
@@ -70,6 +71,27 @@ class MixIngredientPresetTests(unittest.TestCase):
         self.assertEqual(
             format_mix_ingredient_names(keys),
             ["Watercolor", "courier"],
+        )
+
+    def test_explicit_adult_mixer_categories_are_opt_in_and_exhaustive(self):
+        base = mix_ingredient_preset_catalog()
+        adult = mix_ingredient_preset_catalog(explicit_nsfw=True)
+        self.assertFalse(any("NSFW" in category for category in base))
+        adult_categories = [
+            category for category in adult if "NSFW" in category
+        ]
+        self.assertGreaterEqual(len(adult_categories), 31)
+        self.assertGreaterEqual(
+            sum(len(adult[category]) for category in adult_categories),
+            450,
+        )
+        category = adult_categories[0]
+        value = adult[category][0]
+        key = mix_ingredient_key(category, value)
+        self.assertEqual(format_mix_ingredient_names([key]), [])
+        self.assertEqual(
+            format_mix_ingredient_names([key], explicit_nsfw=True),
+            [value],
         )
 
 

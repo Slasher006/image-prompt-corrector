@@ -322,6 +322,154 @@ ACTION_PRESETS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+EXPLICIT_ADULT_ACTION_PRESETS: dict[str, tuple[str, ...]] = {
+    "NSFW — Seduction and anticipation": _items(
+        """
+        consenting adult partners closing the distance with deliberate eye contact
+        one adult partner inviting the other closer with open body language
+        consenting adult partners exchanging a lingering first kiss
+        adult lovers teasing each other through almost-touching proximity
+        one adult partner tracing a hand slowly along the other's clothed body
+        adult partners whispering intimately while maintaining close eye contact
+        consenting adult partners dancing slowly with growing physical tension
+        one adult partner guiding the other toward a private space
+        adult lovers pausing inches apart before giving in to a kiss
+        consenting adult partners building anticipation through restrained touch
+        adult partners exchanging a playful challenge before becoming intimate
+        consenting adult lovers revealing mutual desire through mirrored movement
+        """
+    ),
+    "NSFW — Kissing touching and undressing": _items(
+        """
+        consenting adult partners undressing one another with visible anticipation
+        consenting adult partners moving from a deep kiss into intimate touch
+        consenting adult partners guiding each other's hands with clear mutual intent
+        consenting adult partners exploring each other's bodies with unhurried touch
+        adult lovers kissing while one partner opens the other's clothing
+        consenting adult partners caressing each other's chest waist and thighs
+        one adult partner kissing along the other's neck and shoulder
+        adult partners pressing together while their hands explore bare skin
+        consenting adult lovers removing the final layer of clothing together
+        one adult partner drawing the other closer by the hips during a kiss
+        adult partners alternating tender kisses with more urgent touch
+        consenting adult lovers maintaining eye contact while becoming fully nude
+        """
+    ),
+    "NSFW — Manual and oral intimacy": _items(
+        """
+        consenting adult partners pleasuring each other with coordinated hand movement
+        one adult partner using deliberate manual stimulation while watching the other's response
+        adult lovers alternating manual stimulation with close affectionate contact
+        consenting adult partners engaging in mutual masturbation face to face
+        one adult partner giving oral pleasure while the other reacts visibly
+        consenting adult partners shifting into mutually responsive oral intimacy
+        adult lovers combining oral and manual stimulation in one coherent action
+        one adult partner guiding rhythm and pressure through clear physical feedback
+        consenting adults pausing oral intimacy for a breathless kiss
+        adult partners maintaining affectionate touch during oral pleasure
+        one adult partner changing pace in response to the other's expression
+        consenting adult lovers reaching a peak through focused oral and manual contact
+        """
+    ),
+    "NSFW — Intercourse positions and movement": _items(
+        """
+        consenting adult partners beginning face-to-face intercourse with close body contact
+        adult lovers sustaining a physically coherent missionary position
+        consenting adult partners moving together in a seated face-to-face position
+        one consenting adult partner riding the other with balanced posture
+        adult lovers maintaining rear-entry intercourse with clear weight-bearing contact
+        consenting adult partners shifting from side-by-side intimacy into intercourse
+        adult lovers holding a standing intercourse position against a stable surface
+        consenting adult partners adjusting hip angle and leverage without breaking contact
+        adult lovers changing positions while preserving a continuous shared rhythm
+        consenting adult partners combining intercourse with kissing and attentive touch
+        adult lovers slowing their movement to sustain close eye contact
+        consenting adult partners intensifying their rhythm toward a shared climax
+        """
+    ),
+    "NSFW — Anal intimacy": _items(
+        """
+        consenting adult partners preparing for anal intimacy with patient touch
+        one adult partner guiding careful anal penetration with clear mutual communication
+        consenting adult lovers beginning slow anal intercourse in a stable position
+        adult partners adjusting angle and pace during mutually desired anal sex
+        one adult partner riding the other during consensual anal intercourse
+        consenting adult lovers maintaining close touch during rear-entry anal sex
+        adult partners combining anal intercourse with manual stimulation
+        one adult partner responding visibly as anal movement becomes more intense
+        consenting adults changing leverage while preserving comfortable body mechanics
+        adult lovers pausing to reconnect through touch before continuing anal intimacy
+        consenting adult partners building a steady anal rhythm toward climax
+        adult lovers relaxing into affectionate contact after anal intimacy
+        """
+    ),
+    "NSFW — Solo pleasure and adult toys": _items(
+        """
+        a clearly adult subject beginning slow solo masturbation
+        a clearly adult subject increasing manual rhythm while reacting visibly
+        a clearly adult subject using an adult toy with deliberate control
+        a clearly adult subject combining a vibrator with manual stimulation
+        a clearly adult subject changing position to intensify solo pleasure
+        a clearly adult subject watching their own expression in a mirror while masturbating
+        a clearly adult subject pausing with breathless anticipation before continuing
+        a clearly adult subject reaching climax with a distinct full-body reaction
+        consenting adult partners introducing a toy into shared intimacy
+        one adult partner using a toy while the other provides attentive touch
+        consenting adult partners exchanging control of an adult toy
+        adult lovers cleaning up and reconnecting after shared toy play
+        """
+    ),
+    "NSFW — Consensual power exchange and restraint": _items(
+        """
+        consenting adult partners negotiating control through clear eye contact and gesture
+        one adult partner taking a confident leading role while the other responds willingly
+        consenting adult partners using soft wrist restraint with visible trust
+        one adult partner guiding the other's posture through deliberate touch
+        consenting adult lovers incorporating a blindfold while maintaining reassuring contact
+        one adult partner teasing the other while delaying further stimulation
+        consenting adult partners using light bondage with stable safe positioning
+        one adult partner giving a clear command that the other follows eagerly
+        consenting adults alternating dominant and receptive roles
+        adult partners intensifying consensual restraint without obscuring expressions
+        one adult partner releasing a restraint and immediately offering close contact
+        consenting adult lovers transitioning from power play into attentive aftercare
+        """
+    ),
+    "NSFW — Multiple consenting adults": _items(
+        """
+        three consenting adults closing into a mutually attentive embrace
+        multiple consenting adults kissing and touching with every participant visibly engaged
+        three adult partners coordinating hand and body contact without obscuring anyone
+        multiple adult lovers shifting positions while preserving clear participation
+        one adult partner receiving attention from two equally engaged adult partners
+        three consenting adults exchanging focus through eye contact and touch
+        multiple adult partners combining oral and manual pleasure coherently
+        three adult lovers sustaining a shared sexual rhythm with distinct reactions
+        multiple consenting adults alternating roles without leaving anyone passive
+        adult partners using a shared toy with coordinated movement
+        three consenting adults reaching an intense shared peak
+        multiple adult lovers settling into close group aftercare
+        """
+    ),
+    "NSFW — Pacing climax and aftercare": _items(
+        """
+        consenting adult partners shifting from teasing contact into urgent intimacy
+        consenting adult partners pressing together while their breathing quickens
+        consenting adult partners changing position without breaking eye contact
+        consenting adults sustaining a mutually responsive sexual rhythm
+        consenting adults reacting visibly to a sudden change in pace and pressure
+        adult lovers slowing almost to stillness before intensifying again
+        consenting adult partners coordinating hips hands and breath toward climax
+        consenting adult partners building from restrained desire to an intense climax
+        adult lovers reaching climax at different moments with distinct reactions
+        consenting adults holding one another firmly through the final peak
+        adult partners easing from intense movement into quiet physical closeness
+        consenting adult partners relaxing together in an intimate afterglow
+        one adult partner offering water a blanket and reassuring touch after intimacy
+        """
+    ),
+}
+
 
 EMOTION_PRESETS: dict[str, tuple[str, ...]] = {
     "Joy delight and amusement": _items(
@@ -590,6 +738,105 @@ EMOTION_PRESETS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+EXPLICIT_ADULT_EMOTION_PRESETS: dict[str, tuple[str, ...]] = {
+    "NSFW — Attraction and anticipation": _items(
+        """
+        adult desire conveyed through sustained eye contact and parted lips
+        eager adult anticipation with quickened breath and an inviting posture
+        restrained adult arousal breaking through a controlled expression
+        playful adult seduction with a knowing smile and deliberate proximity
+        shy adult attraction with flushed cheeks and an expectant glance
+        confident adult invitation with steady eye contact and open posture
+        mutual adult attraction visible in mirrored movement and lingering attention
+        adult longing sharpened by almost-touching distance
+        nervous adult excitement with a small smile and shallow breath
+        patient adult desire with deliberate stillness and focused eyes
+        adult anticipation turning into relief at reciprocated touch
+        adult curiosity and desire mixed in an attentive expression
+        """
+    ),
+    "NSFW — Arousal and mounting pleasure": _items(
+        """
+        urgent adult desire with tense posture and focused attention on a partner
+        mutual adult attraction visible in mirrored posture and lingering touch
+        adult pleasure building through tightened muscles and unsteady breath
+        surprised adult pleasure interrupting a composed expression
+        intense adult arousal with closed eyes and a loss of guarded posture
+        adult longing answered by visible relief and immediate closeness
+        adult arousal shown through flushed skin and increasingly urgent movement
+        controlled adult pleasure beginning to overwhelm steady breathing
+        adult concentration on a partner's response with an intent expression
+        adult pleasure deepening as the body relaxes into contact
+        rising adult excitement shown through gripping hands and lifted posture
+        adult vulnerability emerging as pleasure becomes harder to conceal
+        """
+    ),
+    "NSFW — Sexual intensity and abandon": _items(
+        """
+        urgent adult passion with open expression and forceful responsive movement
+        adult pleasure breaking composure through gasping breath and tense posture
+        uninhibited adult desire with direct eye contact and confident movement
+        adult intensity expressed through clenched hands and fully engaged posture
+        breathless adult urgency with flushed faces and close body contact
+        adult surrender to pleasure with willing open body language
+        adult dominance expressed through calm focus and controlled movement
+        adult receptiveness expressed through trust and eager physical response
+        shared adult intensity with synchronized rhythm and mirrored expressions
+        adult pleasure mixed with emotional vulnerability at close range
+        adult confidence turning into an unguarded full-body response
+        raw adult passion balanced by attentive awareness of a partner
+        """
+    ),
+    "NSFW — Playfulness seduction and confidence": _items(
+        """
+        playful adult teasing with a crooked smile and withheld touch
+        confident adult seduction with deliberate posture and unwavering eye contact
+        adult mischief visible in a private smile during intimate contact
+        flirtatious adult challenge answered by immediate physical closeness
+        amused adult pleasure shared through laughter and relaxed touch
+        adult pride in a partner's visible reaction
+        daring adult confidence with an inviting gesture
+        adult anticipation sharpened by playful delay
+        affectionate adult teasing without breaking intimate rhythm
+        adult self-assurance softening into genuine tenderness
+        mutual adult confidence expressed through equal initiative
+        playful adult satisfaction exchanged after an intense moment
+        """
+    ),
+    "NSFW — Trust tenderness and vulnerability": _items(
+        """
+        trusting adult vulnerability with relaxed open body language
+        affectionate adult intimacy shown through protective touch and softened eyes
+        emotionally charged adult surrender with clear willing participation
+        shared adult pleasure with synchronized breath and responsive expressions
+        adult confidence turning into unguarded pleasure
+        adult tenderness persisting through an intense sexual moment
+        adult trust conveyed through closed eyes and complete bodily relaxation
+        adult reassurance expressed through steady touch during vulnerable intimacy
+        emotionally connected adult desire with attentive eye contact
+        adult gratitude and affection visible after receiving pleasure
+        protective adult care woven into an intense erotic moment
+        adult vulnerability answered by patience and responsive closeness
+        """
+    ),
+    "NSFW — Climax release and afterglow": _items(
+        """
+        adult climax shown through a sudden full-body contraction and open expression
+        shared adult climax with distinct but connected physical reactions
+        adult pleasure cresting into breathless stillness
+        adult release followed by loosened posture and unfocused eyes
+        overwhelming adult satisfaction with trembling limbs and softened expression
+        one adult partner watching the other's climax with focused affection
+        adult relief and pleasure mingling after prolonged tension
+        breathless adult satisfaction with loosened posture and flushed expressions
+        warm adult afterglow with close contact and quiet contentment
+        playful adult satisfaction exchanged through a private smile
+        emotionally connected adult intimacy with attentive eye contact after climax
+        sleepy adult contentment while remaining physically close
+        """
+    ),
+}
+
 
 def narrative_preset_key(kind: str, category: str, value: str) -> str:
     """Return the stable serialized identity for an action or emotion preset."""
@@ -607,12 +854,47 @@ EMOTION_PRESET_KEYS = frozenset(
     for category, values in EMOTION_PRESETS.items()
     for value in values
 )
+EXPLICIT_ADULT_ACTION_PRESET_KEYS = frozenset(
+    narrative_preset_key("action", category, value)
+    for category, values in EXPLICIT_ADULT_ACTION_PRESETS.items()
+    for value in values
+)
+EXPLICIT_ADULT_EMOTION_PRESET_KEYS = frozenset(
+    narrative_preset_key("emotion", category, value)
+    for category, values in EXPLICIT_ADULT_EMOTION_PRESETS.items()
+    for value in values
+)
+ALL_ACTION_PRESET_KEYS = ACTION_PRESET_KEYS | EXPLICIT_ADULT_ACTION_PRESET_KEYS
+ALL_EMOTION_PRESET_KEYS = EMOTION_PRESET_KEYS | EXPLICIT_ADULT_EMOTION_PRESET_KEYS
 
 
-def format_narrative_presets(kind: str, keys: list[str] | tuple[str, ...] | set[str]) -> str:
+def narrative_preset_catalog(
+    kind: str,
+    *,
+    explicit_nsfw: bool = False,
+) -> dict[str, tuple[str, ...]]:
+    """Return the visible action or emotion catalog for the active content mode."""
+
+    base = EMOTION_PRESETS if kind == "emotion" else ACTION_PRESETS
+    if not explicit_nsfw:
+        return base
+    adult = (
+        EXPLICIT_ADULT_EMOTION_PRESETS
+        if kind == "emotion"
+        else EXPLICIT_ADULT_ACTION_PRESETS
+    )
+    return {**base, **adult}
+
+
+def format_narrative_presets(
+    kind: str,
+    keys: list[str] | tuple[str, ...] | set[str],
+    *,
+    explicit_nsfw: bool = False,
+) -> str:
     """Format selected action or emotion entries as a compact narrative direction."""
 
-    catalog = ACTION_PRESETS if kind == "action" else EMOTION_PRESETS
+    catalog = narrative_preset_catalog(kind, explicit_nsfw=explicit_nsfw)
     selected = set(keys)
     values: list[str] = []
     for category, category_values in catalog.items():

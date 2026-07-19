@@ -454,6 +454,171 @@ VISUAL_DIRECTION_PRESETS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+EXPLICIT_ADULT_VISUAL_DIRECTION_PRESETS: dict[str, tuple[str, ...]] = {
+    "NSFW — Adult erotic tone": (
+        "openly erotic and mutually desirous",
+        "intimate and emotionally connected",
+        "playfully seductive",
+        "urgent and uninhibited",
+        "tender adult sensuality",
+        "raw adult passion",
+        "luxurious boudoir eroticism",
+        "quiet intimate afterglow",
+        "romantic adult sensuality",
+        "confident and provocative",
+        "voyeuristic yet consensual",
+        "softly vulnerable adult intimacy",
+        "athletic and energetic adult eroticism",
+        "decadent and hedonistic",
+        "dreamlike erotic fantasy",
+        "dark and mysterious adult desire",
+        "candid spontaneous adult intimacy",
+        "polished editorial eroticism",
+        "gritty documentary adult intimacy",
+        "surreal symbolic adult eroticism",
+    ),
+    "NSFW — Adult subject presentation": (
+        "consenting adult partners with equally readable participation",
+        "desire conveyed through eye contact expression and body response",
+        "intimate touch and physical reactions emphasized",
+        "sexual action shown with clear body mechanics and contact",
+        "faces expressions and emotional connection kept visible",
+        "adult anatomy described directly without euphemism",
+        "mutual pleasure and responsive movement emphasized",
+        "close observational framing of adult intimacy",
+        "both adult faces visible during intimate contact",
+        "distinct adult reactions and changing expressions emphasized",
+        "hands contact points and body mechanics kept readable",
+        "equal initiative between consenting adult partners",
+        "one confident adult lead with clear willing response",
+        "adult vulnerability balanced by visible trust",
+        "solo adult pleasure centered without an implied observer",
+        "multiple consenting adults arranged with no obscured participant",
+        "adult climax shown through expression posture and muscle tension",
+        "aftercare and emotional reconnection emphasized",
+        "natural adult body variation presented without idealization",
+        "stylized adult anatomy with coherent proportions",
+    ),
+    "NSFW — Erotic composition and hierarchy": (
+        "adult faces and intimate contact share the focal hierarchy",
+        "one decisive erotic action centered clearly",
+        "layered adult bodies with unambiguous limb ownership",
+        "diagonal composition following the direction of intimate movement",
+        "triangular arrangement for three consenting adult participants",
+        "close body framing with every critical contact point visible",
+        "wide environmental intimacy with privacy cues around the adults",
+        "mirror used to reveal a second adult expression",
+        "foreground touch leading toward the partners' faces",
+        "balanced two-person composition with equal visual agency",
+        "negative space isolating the adult lovers from the setting",
+        "overhead composition clarifying intertwined adult posture",
+        "profile composition emphasizing kiss breath and proximity",
+        "silhouette composition preserving clear adult body relationships",
+        "centered symmetrical boudoir presentation",
+        "off-center candid composition suggesting spontaneous intimacy",
+        "afterglow composition built around relaxed connected posture",
+        "solo adult composition focused on expression and hand movement",
+    ),
+    "NSFW — Erotic lighting": (
+        "soft boudoir window light across bare adult skin",
+        "warm bedside practical lighting with gentle falloff",
+        "low-key chiaroscuro shaping intertwined adult bodies",
+        "candlelight reflecting across flushed adult skin",
+        "moonlight and warm interior light mixed across adult lovers",
+        "soft clamshell beauty light for polished erotic portraiture",
+        "narrow rim light tracing adult silhouettes",
+        "diffused morning light for intimate afterglow",
+        "neon magenta and cyan edge light for adult nightclub eroticism",
+        "hard single-source light for raw adult intensity",
+        "projected window-blind shadows across adult bodies",
+        "steamy shower backlight with visible droplets",
+        "golden-hour light for secluded outdoor adult intimacy",
+        "soft overhead hotel light with warm reflected fill",
+        "red practical light with controlled neutral skin highlights",
+        "flickering fireplace light across relaxed adult lovers",
+        "high-key editorial erotic lighting",
+        "dark ambient light with selective highlights on contact and expression",
+    ),
+    "NSFW — Erotic palette and atmosphere": (
+        "warm skin tones with deep burgundy accents",
+        "black red and gold erotic palette",
+        "soft blush cream and rose boudoir palette",
+        "cool moonlit blue with warm skin contrast",
+        "deep violet and amber adult nightclub palette",
+        "neutral linen and natural skin palette",
+        "high-contrast monochrome erotic treatment",
+        "warm sepia intimate nostalgia",
+        "desaturated documentary palette with natural skin color",
+        "jewel-toned decadent erotic palette",
+        "dark near-monochrome with red highlights",
+        "bright airy morning-after palette",
+        "humid steamy atmosphere around adult lovers",
+        "fine haze catching erotic rim light",
+        "rain and wet reflective surfaces around adult intimacy",
+        "candle smoke and warm enclosed atmosphere",
+        "clean studio atmosphere with controlled skin rendering",
+        "dreamlike diffusion with pastel erotic color",
+    ),
+    "NSFW — Skin material and tactile detail": (
+        "natural adult skin texture and subtle flush",
+        "soft perspiration catching edge light",
+        "massage oil creating controlled skin highlights",
+        "water droplets tracking across adult skin",
+        "fabric compression and rumpled bedding around adult bodies",
+        "lace silk leather and bare skin shown as distinct materials",
+        "goosebumps and fine body hair visible in close detail",
+        "hand pressure and temporary skin indentation visible",
+        "warm reflected color moving across adult skin",
+        "wet hair and damp skin after shower intimacy",
+        "smudged makeup and loosened hair after intense activity",
+        "jewelry reflecting small highlights against bare skin",
+        "soft focus transitions without plastic skin smoothing",
+        "physically believable muscle tension and relaxation",
+        "breath condensation in cold-air adult intimacy",
+        "subtle post-climax trembling conveyed through posture",
+    ),
+    "NSFW — Erotic genre and finish": (
+        "luxury boudoir photography",
+        "candid adult lifestyle photography",
+        "editorial erotic fashion photography",
+        "fine-art adult nude photography",
+        "gritty analog erotic photography",
+        "soft-focus vintage adult cinema",
+        "high-contrast monochrome erotic film still",
+        "glossy adult magazine finish",
+        "naturalistic documentary adult intimacy",
+        "romantic painterly erotic illustration",
+        "graphic-novel adult intimacy",
+        "stylized anime-inspired adult erotic art",
+        "surreal adult fantasy painting",
+        "dark gothic adult eroticism",
+        "futuristic neon adult eroticism",
+        "classical sculpture-inspired adult study",
+        "instant-film adult snapshot",
+        "clean hyperreal adult rendering",
+    ),
+    "NSFW — Expression action and story emphasis": (
+        "anticipation developing visibly into adult pleasure",
+        "teasing adult contact escalating into urgent movement",
+        "changing pace reflected in both adult expressions",
+        "adult desire shown through gaze breath hands and posture",
+        "pleasure building through a coherent sequence of body reactions",
+        "adult confidence softening into vulnerable intimacy",
+        "one adult reaction causing an immediate response from the other",
+        "mutual adult initiative preserved throughout the action",
+        "sexual intensity balanced by attentive emotional connection",
+        "adult climax treated as a distinct expressive story beat",
+        "contrasting adult reactions during a shared peak",
+        "post-climax stillness following visible exertion",
+        "adult aftercare completing the intimate narrative",
+        "playful adult teasing continuing into afterglow",
+        "adult trust deepening through a consensual power exchange",
+        "solo adult pleasure progressing from restraint to release",
+        "three adult participants maintaining readable reciprocal attention",
+        "environmental details quietly implying what happened before",
+    ),
+}
+
 
 def visual_preset_key(category: str, value: str) -> str:
     """Return the stable serialized key for one catalog entry."""
@@ -466,14 +631,38 @@ VISUAL_DIRECTION_PRESET_KEYS = frozenset(
     for category, values in VISUAL_DIRECTION_PRESETS.items()
     for value in values
 )
+EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_KEYS = frozenset(
+    visual_preset_key(category, value)
+    for category, values in EXPLICIT_ADULT_VISUAL_DIRECTION_PRESETS.items()
+    for value in values
+)
+ALL_VISUAL_DIRECTION_PRESET_KEYS = (
+    VISUAL_DIRECTION_PRESET_KEYS | EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_KEYS
+)
 
 
-def format_visual_direction_presets(selected_keys: list[str] | tuple[str, ...]) -> str:
+def visual_direction_preset_catalog(
+    *,
+    explicit_nsfw: bool = False,
+) -> dict[str, tuple[str, ...]]:
+    """Return creative-direction presets visible under the active content mode."""
+
+    if not explicit_nsfw:
+        return VISUAL_DIRECTION_PRESETS
+    return {**VISUAL_DIRECTION_PRESETS, **EXPLICIT_ADULT_VISUAL_DIRECTION_PRESETS}
+
+
+def format_visual_direction_presets(
+    selected_keys: list[str] | tuple[str, ...],
+    *,
+    explicit_nsfw: bool = False,
+) -> str:
     """Format selected catalog keys as compact, category-bound direction text."""
 
+    catalog = visual_direction_preset_catalog(explicit_nsfw=explicit_nsfw)
     selected = set(selected_keys)
     parts: list[str] = []
-    for category, values in VISUAL_DIRECTION_PRESETS.items():
+    for category, values in catalog.items():
         chosen = [
             value
             for value in values
