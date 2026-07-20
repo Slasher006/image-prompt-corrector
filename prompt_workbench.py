@@ -29,6 +29,7 @@ from krea_prompt_corrector import (
     final_compliance_issues,
     validate_explicit_adult_mode,
 )
+from nsfw_scene_contract import nsfw_image_audit_contract
 
 
 PROJECT_SCHEMA_VERSION = 1
@@ -311,7 +312,10 @@ def build_result_review_messages(
         "You are a strict visual result inspector. Compare generated images with the source request, "
         "generator prompt, and intentional reference roles. Do not reward beauty when a requirement is wrong. "
         "Return JSON only with keys score (0-100), summary, passed (array), failed (array), warnings (array), "
-        "and repair_prompt. The repair_prompt must preserve successful content and change only failed items. "
+        "and repair_prompt. When explicit adult mode is enabled, also return nsfw_fidelity as an object "
+        "with participant_count, action_roles, contact_targets, object_separation, visible_phase, reactions, "
+        "and discrepancies; each check value must be pass, fail, or not_applicable, and discrepancies must "
+        "be an array. The repair_prompt must preserve successful content and change only failed items. "
         "Check counts, identity, pose and viewpoint, spatial side, props, exact text, exclusions, composition, "
         "style, and panel-to-beat mapping."
     )
@@ -330,6 +334,12 @@ def build_result_review_messages(
         text += (
             "\n\nExplicit adult mode: evaluate requested adult content directly without censoring or "
             "penalizing explicitness. Every sexualized subject must be unambiguously age 18 or older."
+            "\n\n"
+            + nsfw_image_audit_contract(
+                original_prompt,
+                corrected_prompt,
+                content_format=content_format,
+            )
         )
     content: list[dict[str, object]] = [{"type": "text", "text": text}]
     for data_url in image_data_urls:
@@ -364,6 +374,28 @@ def parse_review_response(text: str) -> dict[str, object]:
         value = parsed.get(key, [])
         result[key] = [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
     result["repair_prompt"] = str(parsed.get("repair_prompt", "")).strip()
+    nsfw_fidelity = parsed.get("nsfw_fidelity", {})
+    if isinstance(nsfw_fidelity, dict):
+        normalized_fidelity: dict[str, object] = {}
+        for key in (
+            "participant_count",
+            "action_roles",
+            "contact_targets",
+            "object_separation",
+            "visible_phase",
+            "reactions",
+        ):
+            value = str(nsfw_fidelity.get(key, "not_applicable")).strip().lower()
+            normalized_fidelity[key] = (
+                value if value in {"pass", "fail", "not_applicable"} else "not_applicable"
+            )
+        discrepancies = nsfw_fidelity.get("discrepancies", [])
+        normalized_fidelity["discrepancies"] = (
+            [str(item).strip() for item in discrepancies if str(item).strip()]
+            if isinstance(discrepancies, list)
+            else []
+        )
+        result["nsfw_fidelity"] = normalized_fidelity
     return result
 
 
@@ -432,11 +464,25 @@ def targeted_repair_prompt(review: dict[str, object], current_prompt: str) -> st
     if explicit:
         return explicit
     failed = review.get("failed", [])
-    if not isinstance(failed, list) or not failed:
+    failures = (
+        [str(item) for item in failed if str(item).strip()]
+        if isinstance(failed, list)
+        else []
+    )
+    nsfw_fidelity = review.get("nsfw_fidelity", {})
+    if isinstance(nsfw_fidelity, dict):
+        discrepancies = nsfw_fidelity.get("discrepancies", [])
+        if isinstance(discrepancies, list):
+            failures.extend(
+                "NSFW fidelity: " + str(item)
+                for item in discrepancies
+                if str(item).strip()
+            )
+    if not failures:
         return current_prompt.strip()
     return (
         "Preserve every successful visual element and the existing composition. Correct only these failures: "
-        + "; ".join(str(item) for item in failed)
+        + "; ".join(failures)
         + ". Updated prompt: "
         + current_prompt.strip()
     )

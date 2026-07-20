@@ -1,5 +1,6 @@
 import json
 import random
+import re
 import ssl
 import threading
 import urllib.error
@@ -1314,13 +1315,98 @@ class PromptCorrectorTests(unittest.TestCase):
 
         sent_message = completion.call_args.kwargs["messages"][1]["content"]
         self.assertIn("Explicit adult mode is enabled", sent_message)
-        self.assertIn("unambiguously adults age 18 or older", sent_message)
-        self.assertIn("facial expressions", sent_message)
-        self.assertIn("changes in pace or intensity", sent_message)
-        self.assertIn("Do not introduce an unrequested partner", sent_message)
+        self.assertIn("unambiguously adult", sent_message)
+        self.assertIn("short, literal image-generator wording", sent_message)
+        self.assertIn("clear direct phrase", sent_message)
+        self.assertNotIn("dildo in vagina", sent_message)
+        self.assertIn("State the core action once", sent_message)
+        self.assertIn("Balanced improvement", sent_message)
+        self.assertIn("one compact compatible visual cluster", sent_message)
+        self.assertIn("must not dilute the core action", sent_message)
         self.assertEqual(result, completed_prompt)
         self.assertNotIn("NSFW mode", result)
         self.assertNotIn("age policy", result)
+
+    def test_explicit_adult_mode_sends_a_small_literal_core_privately(self):
+        source = "A solo adult woman uses a dildo vaginally during active intimacy."
+        completed_prompt = (
+            "A solo adult woman uses a dildo vaginally during active intimacy. "
+            "The dildo is a separate manufactured sex toy with a visible base, outer "
+            "contour, orientation, and contact boundary against the woman's body."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=completed_prompt,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="qwen3-vl-4b-instruct",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+                audit_repair=False,
+                final_gate_repair=False,
+            )
+
+        sent_message = completion.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Private literal adult-scene core", sent_message)
+        self.assertIn("adult count=1", sent_message)
+        self.assertIn("action=toy use", sent_message)
+        self.assertIn("contact=vaginal", sent_message)
+        self.assertIn("object=dildo", sent_message)
+        self.assertNotIn("rounded insertion tip", sent_message)
+        self.assertNotIn("base or handle stays outside", sent_message)
+        self.assertNotIn("Private literal adult-scene core", result)
+
+    def test_nsfw_scene_fidelity_is_a_hard_final_contract(self):
+        source = "The adult woman kisses the adult man."
+        candidate = (
+            "The adult man on image-left kisses the adult woman on image-right."
+        )
+        issues = corrector.final_compliance_issues(
+            candidate,
+            original_prompt=source,
+            output_length="Concise",
+            explicit_nsfw=True,
+        )
+
+        contract_issue = next(
+            issue
+            for issue in issues
+            if issue.startswith("NSFW scene fidelity contract")
+        )
+        self.assertIn("missing or reversed sexual role binding", contract_issue)
+        self.assertTrue(corrector.is_hard_compliance_issue(contract_issue))
+
+    def test_post_completion_strips_nsfw_catalog_labels_for_krea(self):
+        source = "Two adult partners share an intimate kiss."
+        candidate = (
+            "Two adult partners share an intimate kiss. Visual direction: "
+            "NSFW — Adult erotic tone: candid spontaneous adult intimacy."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=candidate,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+                audit_repair=False,
+                final_gate_repair=False,
+            )
+
+        self.assertNotIn("NSFW", result)
+        self.assertIn("candid spontaneous adult intimacy", result)
+        self.assertNotIn("Visual direction:", result)
 
     def test_explicit_adult_mode_rejects_underage_and_ambiguous_age_terms(self):
         for prompt in (
@@ -1350,6 +1436,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
     def test_minor_sexual_content_is_rejected_in_every_mode_before_model_call(self):
         invalid_prompt = "A nude 17-year-old character in an erotic scene."
+        diagnostics = []
 
         self.assertTrue(corrector.minor_sexual_content_issues(invalid_prompt))
         with patch("krea_prompt_corrector.chat_completion") as completion:
@@ -1363,8 +1450,10 @@ class PromptCorrectorTests(unittest.TestCase):
                     timeout=30,
                     api_key="test",
                     explicit_nsfw=False,
+                    diagnostic_callback=diagnostics.append,
                 )
         completion.assert_not_called()
+        self.assertEqual(diagnostics, [])
 
     def test_minor_subjects_remain_allowed_in_nonsexual_scenes(self):
         prompt = "Two children in winter coats build a snowman in a public park."
@@ -1798,6 +1887,54 @@ class PromptCorrectorTests(unittest.TestCase):
             [],
         )
 
+    def test_single_person_gender_aliases_do_not_become_fake_multi_person_scenes(self):
+        for prompt in (
+            "A woman stands alone while the female subject raises her hands.",
+            "A man stands alone while the male subject raises his hands.",
+            "A solo woman poses while the adult female subject looks into a mirror.",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(corrector.appears_multi_person_scene(prompt))
+                self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
+    def test_same_gender_aliases_still_detect_explicitly_distinct_people(self):
+        for prompt in (
+            "A woman kisses another female beside a window.",
+            "A man stands opposite another male in a boxing ring.",
+            "A woman greets a female doctor in a clinic.",
+            "Two women stand together beneath warm light.",
+            "A woman confronts a queen in the throne room.",
+            "A woman stands beside another female subject.",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertTrue(corrector.appears_multi_person_scene(prompt))
+
+    def test_post_completion_accepts_one_person_rephrased_with_gender_aliases(self):
+        source = "A solo woman raises both hands in warm window light."
+        candidate = (
+            "A solo woman stands in warm window light while the female subject "
+            "raises her hands with an expression of relief."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=candidate,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                audit_repair=False,
+                altered_text_encoder=False,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertEqual(result, candidate)
+        self.assertEqual(corrector.multi_person_role_issues(result), [])
+
     def test_unpositioned_unique_woman_and_man_get_stable_frame_labels(self):
         prompt = (
             "Woman and man, nude in a neon-lit carwash tunnel, locked together "
@@ -1808,16 +1945,9 @@ class PromptCorrectorTests(unittest.TestCase):
         bound = corrector.bind_unpositioned_mixed_gender_pair(prompt)
         resolved = corrector.resolve_unambiguous_multi_person_pronouns(bound)
 
-        self.assertIn("the woman on image-left", resolved)
-        self.assertIn("the man on image-right", resolved)
-        self.assertIn(
-            "the woman on image-left and the man on image-right's forms",
-            resolved,
-        )
-        self.assertNotRegex(
-            resolved.lower(),
-            r"\b(?:he|she|him|her|his|hers|they|their|them)\b",
-        )
+        self.assertIn("Woman on image-left", resolved)
+        self.assertIn("man on image-right", resolved)
+        self.assertIn("their forms", resolved)
         self.assertEqual(corrector.multi_person_role_issues(resolved), [])
 
     def test_mixed_gender_position_binding_leaves_ambiguous_groups_unchanged(self):
@@ -1859,8 +1989,8 @@ class PromptCorrectorTests(unittest.TestCase):
             )
 
         self.assertEqual(completion.call_count, 1)
-        self.assertIn("the woman on image-left", result)
-        self.assertIn("the man on image-right", result)
+        self.assertIn("Woman on image-left", result)
+        self.assertIn("man on image-right", result)
         self.assertEqual(corrector.multi_person_role_issues(result), [])
 
     def test_collective_people_do_not_require_individual_position_labels(self):
@@ -1950,8 +2080,7 @@ class PromptCorrectorTests(unittest.TestCase):
         bound = corrector.bind_unpositioned_distinct_people(prompt)
         resolved = corrector.resolve_unambiguous_multi_person_pronouns(bound)
 
-        self.assertIn("wife on image-left hugs the husband on image-right", resolved)
-        self.assertNotIn("wife on image-left's husband", resolved)
+        self.assertIn("wife on image-left hugs her husband on image-right", resolved)
         self.assertEqual(corrector.multi_person_role_issues(resolved), [])
 
     def test_nonbinary_identity_is_a_hard_source_fidelity_label(self):
@@ -1973,15 +2102,15 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertFalse(any("each other" in issue for issue in issues))
         self.assertFalse(any("other" in issue for issue in issues))
 
-    def test_two_explicit_gendered_roles_still_require_repeated_labels(self):
+    def test_two_positioned_gendered_roles_allow_clear_natural_pronouns(self):
         prompt = (
-            "In the foreground, one female ghost is lifting a blanket while one male sleeper "
-            "rests in the background. Her hand reaches toward him, his posture remains relaxed, "
-            "and both characters keep their established positions as the ghost continues grabbing."
+            "The female ghost in the foreground lifts a blanket while the male sleeper "
+            "in the background rests. Her hand reaches toward him, his posture remains "
+            "relaxed, and they keep their established positions."
         )
 
         issues = corrector.multi_person_role_issues(prompt)
-        self.assertTrue(any("ambiguous person references" in issue for issue in issues))
+        self.assertEqual(issues, [])
         self.assertEqual(
             corrector.multi_person_role_issues(
                 "The female ghost in the foreground lifts a blanket with the female ghost's "
@@ -1995,7 +2124,7 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertTrue(ambiguous)
 
-    def test_resolve_unambiguous_multi_person_pronouns_repeats_unique_label(self):
+    def test_resolve_unambiguous_multi_person_pronouns_keeps_natural_language(self):
         prompt = (
             "The woman on the left reaches toward the man on the right, touching him "
             "while his blue coat catches the light."
@@ -2003,8 +2132,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
         resolved = corrector.resolve_unambiguous_multi_person_pronouns(prompt)
 
-        self.assertIn("touching the man on the right", resolved)
-        self.assertIn("the man on the right's blue coat", resolved)
+        self.assertEqual(resolved, prompt)
         self.assertEqual(corrector.multi_person_role_issues(resolved), [])
 
     def test_resolve_multi_person_pronouns_keeps_same_gender_ambiguity(self):
@@ -2018,7 +2146,7 @@ class PromptCorrectorTests(unittest.TestCase):
             prompt,
         )
 
-    def test_resolve_unambiguous_group_pronouns_for_mixed_gender_pair(self):
+    def test_resolve_unambiguous_group_pronouns_keeps_clear_group_reference(self):
         prompt = (
             "The woman on the left and the man on the right raise their lanterns "
             "while they face the camera, both smiling."
@@ -2026,7 +2154,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
         resolved = corrector.resolve_unambiguous_multi_person_pronouns(prompt)
 
-        self.assertNotRegex(resolved.lower(), r"\b(?:their|they|both)\b")
+        self.assertEqual(resolved, prompt)
         self.assertEqual(corrector.multi_person_role_issues(resolved), [])
 
     def test_gender_identity_contract_preserves_both_source_identities(self):
@@ -2045,6 +2173,557 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertIn("missing explicit female identity label from the source", issues)
         self.assertIn("missing explicit male identity label from the source", issues)
+
+    def test_adult_toy_contract_does_not_reject_omitted_direction(self):
+        source = "A solo adult woman thrusts rhythmically with a large dildo on a bed."
+
+        weak = corrector.adult_toy_object_contract_issues(
+            "A solo adult woman thrusts rhythmically with a large dildo on a bed.",
+            source,
+        )
+        strong = corrector.adult_toy_object_contract_issues(
+            "A solo adult woman uses a large dildo. The dildo is a separate manufactured "
+            "sex toy with a visible base and exposed outer contour. Its rounded insertion "
+            "tip points toward the intended body-contact point; the base or handle remains "
+            "outside on the operator side and points away.",
+            source,
+        )
+
+        self.assertEqual(weak, [])
+        self.assertEqual(strong, [])
+
+    def test_adult_toy_contract_rejects_a_dildo_facing_the_wrong_way(self):
+        source = "A solo adult woman uses a dildo vaginally."
+        candidate = (
+            "The dildo is a separate manufactured sex toy with a visible contour. "
+            "Its wider base faces toward the vaginal opening while its rounded insertion "
+            "tip points away from the woman's body."
+        )
+
+        issues = corrector.adult_toy_object_contract_issues(candidate, source)
+
+        self.assertTrue(any("dildo is reversed" in issue for issue in issues))
+
+    def test_adult_toy_contract_leaves_direct_use_wording_unchanged(self):
+        for source in (
+            "A solo adult woman uses a dildo vaginally.",
+            "A solo adult man uses a dildo anally.",
+            "dildo in vagina",
+        ):
+            with self.subTest(source=source):
+                repaired = corrector.enforce_adult_toy_object_contract(source, source)
+
+                self.assertEqual(repaired, source)
+                self.assertNotIn("rounded insertion tip", repaired)
+                self.assertNotIn("base or handle", repaired)
+                self.assertEqual(
+                    corrector.adult_toy_object_contract_issues(repaired, source),
+                    [],
+                )
+
+    def test_adult_toy_contract_ignores_excluded_objects(self):
+        source = "A solo adult woman poses on a bed with no dildo or other sex toy."
+
+        self.assertEqual(corrector.requested_adult_toy_objects(source), [])
+        self.assertEqual(
+            corrector.enforce_adult_toy_object_contract(
+                "A solo adult woman poses on a bed.",
+                source,
+            ),
+            "A solo adult woman poses on a bed.",
+        )
+
+    def test_adult_toy_direction_ignores_products_props_and_double_ended_designs(self):
+        cases = (
+            "A boxed dildo lies unopened beside a vaginal anatomy textbook.",
+            "A product photograph of a double-ended dildo on a white background.",
+            "A dildo sex toy lies unused on a bedside table.",
+        )
+
+        for source in cases:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    corrector.enforce_adult_toy_object_contract(source, source),
+                    source,
+                )
+                self.assertEqual(
+                    corrector.adult_toy_object_contract_issues(source, source),
+                    [],
+                )
+
+        self.assertEqual(
+            [
+                label
+                for label, _pattern in corrector.requested_adult_toy_objects(
+                    cases[-1]
+                )
+            ],
+            ["dildo"],
+        )
+
+    def test_safe_for_work_product_prompt_is_not_blocked_by_adult_toy_contract(self):
+        source = "A product photograph of a dildo on a white background."
+        candidate = "A clean product photograph on a white background."
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=candidate,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.1,
+                max_tokens=300,
+                timeout=30,
+                api_key="test",
+                safe_for_work=True,
+                audit_repair=False,
+            )
+
+        self.assertEqual(result, candidate)
+
+    def test_adult_toy_contract_does_not_append_object_geometry(self):
+        source = "A solo adult woman thrusts rhythmically with a large dildo on a bed."
+        repaired = corrector.enforce_adult_toy_object_contract(
+            "A solo adult woman thrusts rhythmically with a large dildo on a bed.",
+            source,
+        )
+
+        self.assertEqual(repaired, source)
+        self.assertNotIn("rounded insertion tip", repaired)
+        self.assertNotIn("base or handle", repaired)
+        self.assertEqual(
+            corrector.adult_toy_object_contract_issues(repaired, source),
+            [],
+        )
+
+    def test_adult_toy_contract_validates_later_clarifying_mention_in_expanded_prompt(self):
+        source = "A solo adult woman uses a large dildo on a bed."
+        filler = " ".join(["warm light shapes the room"] * 60)
+        candidate = (
+            f"A solo adult woman uses a large dildo on a bed. {filler}. "
+            "The dildo is a separate manufactured sex toy with a visible base and "
+            "exposed outer contour. Its rounded insertion tip points toward the intended "
+            "body-contact point; the base or handle remains outside on the operator side "
+            "and points away."
+        )
+
+        self.assertGreater(
+            candidate.lower().rfind("dildo") - candidate.lower().find("dildo"),
+            220,
+        )
+        self.assertEqual(
+            corrector.adult_toy_object_contract_issues(candidate, source),
+            [],
+        )
+
+    def test_adult_toy_enforcement_does_not_interrupt_the_first_object_sentence(self):
+        source = "A solo adult woman uses a large dildo on a bed."
+        candidate = (
+            "A solo adult woman uses a large dildo on a bed. "
+            + " ".join(["Warm light shapes the surrounding room."] * 30)
+        )
+
+        repaired = corrector.enforce_adult_toy_object_contract(candidate, source)
+        self.assertEqual(repaired, candidate)
+        self.assertNotIn("Keep the dildo visibly separate from the body", repaired)
+        self.assertEqual(
+            corrector.adult_toy_object_contract_issues(repaired, source),
+            [],
+        )
+
+    def test_inserted_object_contract_leaves_clear_direct_contact_wording_alone(self):
+        for source in (
+            "A solo adult woman inserts a glass bottle into her vagina.",
+            "A solo adult woman slides a peeled cucumber inside her vagina.",
+            "A glass bottle is inserted into the adult woman's vagina.",
+            "A solo adult man puts a smooth object in his anus.",
+        ):
+            with self.subTest(source=source):
+                repaired = corrector.enforce_inserted_object_contract(source, source)
+                self.assertEqual(repaired, source)
+                self.assertNotIn("continuous outer contour", repaired)
+                self.assertEqual(
+                    corrector.inserted_object_contract_issues(repaired, source),
+                    [],
+                )
+
+    def test_inserted_object_contract_does_not_reclassify_body_parts_as_objects(self):
+        for source in (
+            "A solo adult woman inserts two fingers into her vagina.",
+            "A solo adult man slides his tongue inside the other adult's anus.",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    corrector.requested_inserted_object_targets(source),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.enforce_inserted_object_contract(source, source),
+                    source,
+                )
+
+    def test_inserted_object_contract_ignores_negative_constraints(self):
+        source = "A solo adult woman poses with no bottle inserted into her vagina."
+
+        self.assertEqual(corrector.requested_inserted_object_targets(source), [])
+        self.assertEqual(
+            corrector.inserted_object_contract_issues(source, source),
+            [],
+        )
+
+    def test_missing_inserted_object_contact_target_is_a_hard_contract(self):
+        source = "A solo adult woman inserts a glass bottle into her vagina."
+        issues = corrector.final_compliance_issues(
+            "A solo adult woman holds a glass bottle.",
+            original_prompt=source,
+            output_length="Concise",
+            explicit_nsfw=True,
+        )
+
+        contract_issue = next(
+            issue
+            for issue in issues
+            if issue.startswith("Inserted object/body contact contract")
+        )
+        self.assertIn("missing requested contact at the vaginal opening", contract_issue)
+        self.assertTrue(corrector.is_hard_compliance_issue(contract_issue))
+
+    def test_unrequested_gender_and_cross_gender_anatomy_are_hard_failures(self):
+        source = "A solo adult woman uses a large dildo on a bed."
+        issues = corrector.final_compliance_issues(
+            "A solo adult transgender futanari woman with an erect penis uses a large "
+            "dildo. The dildo is a separate manufactured sex toy with a visible base "
+            "and contact boundary.",
+            original_prompt=source,
+            output_length="Concise",
+            explicit_nsfw=True,
+        )
+
+        trait_issue = next(
+            issue
+            for issue in issues
+            if issue.startswith("Unrequested gender/anatomy traits")
+        )
+        self.assertIn("unrequested futanari", trait_issue)
+        self.assertIn("unrequested transgender", trait_issue)
+        self.assertIn("male genital anatomy added to a female-only source", trait_issue)
+        self.assertTrue(corrector.is_hard_compliance_issue(trait_issue))
+
+    def test_explicitly_requested_gender_traits_remain_allowed(self):
+        source = "A solo adult transgender futanari woman with a penis uses a dildo."
+        candidate = (
+            "A solo adult transgender futanari woman with a penis uses a dildo. "
+            "The dildo is a separate manufactured sex toy with a visible base and "
+            "contact boundary."
+        )
+
+        self.assertEqual(
+            corrector.unrequested_gender_trait_issues(candidate, source),
+            [],
+        )
+
+    def test_post_completion_preserves_simple_adult_toy_wording(self):
+        source = "A solo adult woman thrusts rhythmically with a large dildo on a bed."
+        candidate = "A solo adult woman thrusts rhythmically with a large dildo on a bed."
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=candidate,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+            )
+
+        self.assertEqual(result, candidate)
+        self.assertNotIn("rounded insertion tip", result)
+        self.assertNotIn("base or handle", result)
+        self.assertNotRegex(result.lower(), r"\b(?:futanari|futa|transgender|shemale)\b")
+
+    def test_post_completion_keeps_plain_dildo_in_vagina_without_geometry(self):
+        source = "dildo in vagina"
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=source,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=200,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+                audit_repair=False,
+                final_gate_repair=False,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertEqual(result, source)
+        self.assertNotIn("insertion tip", result)
+        self.assertNotIn("base or handle", result)
+        sent_message = completion.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("literal wording=dildo in vagina", sent_message)
+        self.assertNotIn("rounded insertion tip", sent_message)
+        issues = corrector.final_compliance_issues(
+            result,
+            original_prompt=source,
+            output_length="Concise",
+            explicit_nsfw=True,
+        )
+        hard_issues, _soft_issues = corrector.split_compliance_issues(issues)
+        self.assertEqual(hard_issues, [])
+
+    def test_post_completion_translates_explicit_slang_before_final_validation(self):
+        source = (
+            "A solo MILF woman fucking herself with a thick sextoy, hammering "
+            "a dildo inside her wet pussy."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=source,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+                audit_repair=False,
+                final_gate_repair=False,
+            )
+
+        self.assertIn("mature adult woman", result)
+        self.assertIn("performing self-penetration for genital stimulation", result)
+        self.assertIn("repeatedly thrusting a dildo", result)
+        self.assertIn("wet vulva", result)
+        self.assertEqual(corrector.explicit_adult_language_terms(result), [])
+
+    def test_untranslated_explicit_slang_is_a_hard_contract_issue(self):
+        issues = corrector.final_compliance_issues(
+            "A solo adult woman is fucking herself.",
+            original_prompt="A solo adult woman masturbates.",
+            output_length="Concise",
+            explicit_nsfw=True,
+        )
+
+        slang_issue = next(
+            issue
+            for issue in issues
+            if issue.startswith("Untranslated explicit adult slang")
+        )
+        self.assertTrue(corrector.is_hard_compliance_issue(slang_issue))
+
+    def test_explicit_meme_completion_translates_scene_but_preserves_caption(self):
+        brief = (
+            "Create an original single-image meme showing a solo adult woman "
+            "masturbating with a dildo. Keep quoted caption text exact."
+        )
+        response = (
+            "A square reaction meme showing a solo MILF woman fucking herself "
+            "with a thick sextoy while hammering a dildo inside her wet pussy. "
+            'Place the top caption "MILF HAMMER TIME" in bold white text.'
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=response,
+        ) as completion:
+            result = corrector.post_meme_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=brief,
+                generator_target="Krea 2",
+                temperature=0.2,
+                max_tokens=800,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertIn("solo mature adult woman", result)
+        self.assertIn("performing self-penetration for genital stimulation", result)
+        self.assertIn("wet vulva", result)
+        self.assertIn('"MILF HAMMER TIME"', result)
+        self.assertEqual(corrector.explicit_adult_language_terms(result), [])
+
+    def test_post_completion_reports_candidate_rejection_and_repair_difficulty(self):
+        source = "A solo adult woman uses a dildo vaginally."
+        reversed_candidate = (
+            "A solo adult woman uses a dildo vaginally. The dildo is a separate "
+            "manufactured object with a visible contour. Its wider base faces toward "
+            "the vaginal opening while its rounded insertion tip points away from the body."
+        )
+        repaired_candidate = (
+            "A solo adult woman uses a dildo vaginally. The dildo is a separate "
+            "manufactured sex toy with a visible outer contour. Its rounded insertion "
+            "tip points toward the vaginal opening while its wider base or handle "
+            "remains outside on the operator side and points away from the contact point."
+        )
+        diagnostics = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[reversed_candidate, repaired_candidate],
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 2)
+        self.assertIn("tip points toward the vaginal opening", result)
+        self.assertTrue(
+            any(
+                "Initial model candidate rejected by validation" in message
+                and "dildo is reversed" in message
+                for message in diagnostics
+            )
+        )
+        self.assertTrue(
+            any(
+                "Final repair attempt 1/1 is addressing" in message
+                for message in diagnostics
+            )
+        )
+
+    def test_post_completion_reports_optional_audit_failure_and_continues(self):
+        source = (
+            "A red sports car parked beneath warm streetlights on a rainy city street."
+        )
+        diagnostics = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[source, RuntimeError("audit response was empty")],
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                audit_repair=True,
+                final_gate_repair=False,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(result, source)
+        self.assertTrue(
+            any(
+                "Optional audit model call failed" in message
+                and "audit response was empty" in message
+                for message in diagnostics
+            )
+        )
+
+    def test_post_completion_does_not_repeat_advisory_activity_messages(self):
+        source = "A red car."
+        diagnostics = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=source,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.1,
+                max_tokens=100,
+                timeout=30,
+                api_key="test",
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(result, source)
+        self.assertEqual(diagnostics, [])
+
+    def test_expanded_post_completion_does_not_append_toy_geometry(self):
+        source = "A solo adult woman uses a large dildo while posing on a bed."
+        candidate = (
+            "A solo adult woman uses a large dildo while posing on a bed. "
+            + " ".join(
+                [
+                    "Warm window light reveals textured linen, relaxed posture, "
+                    "natural skin detail, and a quiet bedroom atmosphere."
+                ]
+                * 12
+            )
+        )
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=candidate,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=800,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+                output_length="Expanded",
+                audit_repair=False,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertNotIn("Keep the dildo visibly separate from the body", result)
+        self.assertNotIn("rounded insertion tip", result)
+        self.assertEqual(
+            corrector.adult_toy_object_contract_issues(result, source),
+            [],
+        )
+
+    def test_post_completion_preserves_clear_inserted_object_wording(self):
+        source = "A solo adult woman inserts a glass bottle into her vagina."
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=source,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                explicit_nsfw=True,
+            )
+
+        self.assertEqual(result, source)
+        self.assertNotIn("inserted non-anatomical item", result)
+        self.assertNotIn("contact boundary", result)
+        self.assertEqual(
+            corrector.inserted_object_contract_issues(result, source),
+            [],
+        )
 
     def test_user_message_includes_multi_person_role_analysis(self):
         message = corrector.build_user_message(
@@ -2291,6 +2970,259 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn('"lit"', normalized)
         self.assertNotIn(" baddie ", f" {normalized.lower()} ")
         self.assertNotIn(" drip ", f" {normalized.lower()} ")
+
+    def test_explicit_adult_language_translates_slang_to_renderable_terms(self):
+        prompt = (
+            "A solo MILF woman fucking herself with a big thick sextoy while "
+            "hammering a dildo inside her wet pussy, with visible pre-cum."
+        )
+
+        translated = corrector.translate_explicit_adult_language(prompt)
+
+        self.assertIn("mature adult woman", translated)
+        self.assertIn("performing self-penetration for genital stimulation", translated)
+        self.assertIn("sex toy", translated)
+        self.assertIn("repeatedly thrusting a dildo", translated)
+        self.assertIn("wet vulva", translated)
+        self.assertIn("pre-ejaculate fluid", translated)
+        self.assertNotIn("woman woman", translated)
+        self.assertEqual(corrector.explicit_adult_language_terms(translated), [])
+
+    def test_explicit_adult_language_preserves_quoted_rendered_text(self):
+        prompt = 'A mature adult woman beside a sign reading "MILF pussy hammer".'
+
+        translated = corrector.translate_explicit_adult_language(prompt)
+
+        self.assertIn('"MILF pussy hammer"', translated)
+
+    def test_explicit_adult_language_translates_multiword_idioms_first(self):
+        cases = (
+            (
+                "She is getting railed in doggy style.",
+                (
+                    "being penetrated with forceful repeated thrusts",
+                    "a rear-entry penetrative sex position",
+                ),
+            ),
+            (
+                "She is going down on him while he is jerking himself off.",
+                (
+                    "performing oral genital stimulation on him",
+                    "performing manual self-stimulation of the genitals",
+                ),
+            ),
+            (
+                "She is riding his cock in reverse cowgirl.",
+                (
+                    "straddling his penis with rhythmic penetrative motion",
+                    "facing away from the partner",
+                ),
+            ),
+            (
+                "He cums on her face after a money shot.",
+                (
+                    "ejaculates semen onto her face",
+                    "visible ejaculation as the central focal action",
+                ),
+            ),
+            (
+                "A horny adult threesome includes double penetration and a creampie.",
+                (
+                    "sexual scene among three sexually aroused adults",
+                    "simultaneous vaginal and anal penetration",
+                    "internal ejaculation with semen visible at the body opening",
+                ),
+            ),
+            (
+                "A dom/sub scene shows her clit, his balls, her booty, and his taint.",
+                (
+                    "dominant/submissive adult power-exchange",
+                    "her clitoris",
+                    "his testicles",
+                    "her buttocks",
+                    "his perineum",
+                ),
+            ),
+            (
+                "A quickie includes going raw, facesitting, a footjob, and squirting.",
+                (
+                    "brief sexual encounter",
+                    "visible penetration without a condom",
+                    "oral genital stimulation",
+                    "penis stimulated with the feet",
+                    "visible fluid release at peak sexual response",
+                ),
+            ),
+        )
+
+        for source, expected_phrases in cases:
+            with self.subTest(source=source):
+                translated = corrector.translate_explicit_adult_language(source)
+                for phrase in expected_phrases:
+                    self.assertIn(phrase.casefold(), translated.casefold())
+                self.assertEqual(
+                    corrector.explicit_adult_language_terms(translated),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.translate_explicit_adult_language(translated),
+                    translated,
+                )
+
+    def test_explicit_adult_language_catalog_covers_every_supported_category(self):
+        categories = (
+            corrector.EXPLICIT_ADULT_PHRASE_TRANSLATIONS,
+            corrector.EXPLICIT_ADULT_STANDARD_ACT_TRANSLATIONS,
+            corrector.EXPLICIT_ADULT_ANATOMY_AND_FLUID_TRANSLATIONS,
+            corrector.EXPLICIT_ADULT_POSITION_TRANSLATIONS,
+            corrector.EXPLICIT_ADULT_GROUP_AND_RELATIONSHIP_TRANSLATIONS,
+            corrector.EXPLICIT_ADULT_BDSM_AND_FETISH_TRANSLATIONS,
+            corrector.EXPLICIT_ADULT_PORN_AND_CAMERA_TRANSLATIONS,
+        )
+
+        self.assertGreaterEqual(len(corrector.EXPLICIT_ADULT_LANGUAGE_TRANSLATIONS), 230)
+        for rules in categories:
+            self.assertTrue(rules)
+            for pattern, replacement, label in rules:
+                re.compile(pattern, flags=re.IGNORECASE)
+                self.assertTrue(replacement.strip())
+                self.assertTrue(label.strip())
+
+    def test_explicit_adult_standard_language_is_made_visually_concrete(self):
+        cases = (
+            (
+                "A woman masturbates and then has an orgasm.",
+                (
+                    "woman performs self-stimulation of their own genitals",
+                    "shows a visible peak sexual response",
+                    "muscle tension, altered breathing, and facial reaction",
+                ),
+            ),
+            (
+                "Mutual masturbation leads to simultaneous orgasm after foreplay and oral sex.",
+                (
+                    "each performing visible self-stimulation of their own genitals",
+                    "visible orgasm reactions",
+                    "pre-intercourse intimate touching",
+                    "mouth-to-genital contact",
+                ),
+            ),
+            (
+                "Fellatio, cunnilingus, anal sex, vaginal intercourse, tribadism, "
+                "pegging, and urethral sounding.",
+                (
+                    "oral stimulation of the penis",
+                    "oral stimulation of the vulva and clitoris",
+                    "visible penetration at the anus",
+                    "visible penetration at the vaginal opening",
+                    "vulva-to-vulva rubbing",
+                    "strap-on anal penetration",
+                    "sounding rod into the urethral opening",
+                ),
+            ),
+            (
+                "Her coochie and clit are visible with his schlong, nuts, sack, "
+                "her pussy juice, and jizz.",
+                (
+                    "Her vulva and clitoris",
+                    "his penis, testicles, and scrotum",
+                    "visible vaginal lubrication",
+                    "semen",
+                ),
+            ),
+            (
+                "Mating press, prone bone, lotus sex position, spooning sex, "
+                "and wheelbarrow position.",
+                (
+                    "knees pressed toward the chest",
+                    "receiving adult lying face-down",
+                    "face-to-face seated straddling",
+                    "side-lying rear-entry penetration",
+                    "supported on hands while hips are held",
+                ),
+            ),
+            (
+                "An MFM scene includes swingers, a hotwife, cuckold, lesbian sex, "
+                "and a one-night stand.",
+                (
+                    "two adult men and one adult woman",
+                    "exchanging sexual partners",
+                    "married adult woman having consensual sex",
+                    "partner watching or reacting",
+                    "sexual contact between adult women",
+                    "single casual sexual encounter",
+                ),
+            ),
+            (
+                "BDSM with shibari, impact play, spanking, wax play, pet play, and CNC.",
+                (
+                    "consensual adult restraint",
+                    "decorative rope restraint",
+                    "visible implement contact",
+                    "open-hand impact against the buttocks",
+                    "warm candle wax visibly dripping",
+                    "adult human role-playing a pet",
+                    "pre-consented adult force-roleplay",
+                ),
+            ),
+            (
+                "POV sex, amateur porn, hentai, glory hole, spit roast, "
+                "double anal, and a cumshot.",
+                (
+                    "first-person participant camera view",
+                    "candid homemade explicit-adult recording aesthetic",
+                    "explicit adult anime-style illustration",
+                    "penis extending through a small wall opening",
+                    "simultaneously receiving oral and rear penetration",
+                    "simultaneous anal penetration",
+                    "visible semen release captured as the focal action",
+                ),
+            ),
+        )
+
+        for source, expected_phrases in cases:
+            with self.subTest(source=source):
+                translated = corrector.translate_explicit_adult_language(source)
+                for phrase in expected_phrases:
+                    self.assertIn(phrase.casefold(), translated.casefold())
+                self.assertEqual(
+                    corrector.explicit_adult_language_terms(translated),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.translate_explicit_adult_language(translated),
+                    translated,
+                )
+
+    def test_standard_language_translation_preserves_extracted_act_families(self):
+        source = (
+            "Two adult partners engage in mutual masturbation and oral sex "
+            "before making love."
+        )
+        translated = corrector.translate_explicit_adult_language(source)
+
+        self.assertEqual(
+            corrector.nsfw_scene_contract_issues(translated, source),
+            [],
+        )
+        self.assertEqual(corrector.explicit_adult_language_terms(translated), [])
+
+    def test_explicit_adult_language_keeps_nonsexual_came_and_hammering(self):
+        prompt = (
+            "An adult woman came into the workshop while hammering a nail beside "
+            "an unopened boxed dildo. The missionary visits a rail yard carrying "
+            "five pounds of flour while a cowgirl rides her horse, turns on a light, "
+            "and leads an ass."
+        )
+
+        translated = corrector.translate_explicit_adult_language(prompt)
+
+        self.assertIn("came into the workshop", translated)
+        self.assertIn("hammering a nail", translated)
+        self.assertIn("The missionary visits a rail yard", translated)
+        self.assertIn("a cowgirl rides her horse", translated)
+        self.assertIn("turns on a light", translated)
+        self.assertIn("leads an ass", translated)
 
     def test_normalize_final_prompt_text_polishes_request_phrasing(self):
         prompt = 'please generate an image of a knight with some stuff, "make me a sign"'
@@ -2804,6 +3736,38 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(call_count, 3)
 
+    def test_short_fidelity_fallback_uses_supplied_story_beats(self):
+        fallback = " ".join(["source-grounded"] * 94)
+        story = (
+            "the adult subject increases the manual rhythm while reacting visibly; "
+            "the adult subject changes position to intensify solo pleasure"
+        )
+
+        expanded = corrector.extend_short_fidelity_fallback(
+            fallback,
+            story,
+            output_length="Expanded",
+        )
+
+        self.assertNotIn("Visible action details:", expanded)
+        self.assertIn(
+            "the adult subject increases the manual rhythm while reacting visibly",
+            expanded,
+        )
+        self.assertIn(
+            "the adult subject changes position to intensify solo pleasure",
+            expanded,
+        )
+        self.assertIsNone(corrector.length_issue(expanded, "Expanded"))
+        self.assertEqual(
+            corrector.extend_short_fidelity_fallback(
+                expanded,
+                story,
+                output_length="Expanded",
+            ),
+            expanded,
+        )
+
     def test_4b_model_uses_compact_audit_without_extra_soft_repair(self):
         captured_payloads = []
         responses = [
@@ -3020,10 +3984,53 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertIn("For individually tracked people", prompt)
         self.assertIn("bind every person explicitly", prompt)
-        self.assertIn("short immutable identity-or-role plus position label", prompt)
-        self.assertIn("Repeat the complete label before every action", prompt)
+        self.assertIn("short stable identity-or-role plus position label", prompt)
+        self.assertIn("Repeat that label only when needed", prompt)
+        self.assertIn("Use natural pronouns when the referent is unambiguous", prompt)
         self.assertIn("female, male, and nonbinary identities", prompt)
         self.assertIn("acting only collectively may keep one collective label", prompt)
+
+    def test_krea_system_prompts_require_visual_thesis_order_without_ui_labels(self):
+        full = corrector.build_system_prompt(generator_target="Krea 2")
+        compact = corrector.build_small_model_system_prompt(
+            generator_target="Krea 2",
+            content_format="Single Image",
+            output_length="Balanced",
+            output_min_words=None,
+            output_max_words=None,
+            risk_level="Balanced improvement",
+            prompt_preset="Auto",
+            variation_count=1,
+            enhance_actions=False,
+            develop_story=False,
+        )
+
+        for prompt in (full, compact):
+            self.assertIn("compact visual thesis", prompt)
+            self.assertIn("core action or state", prompt)
+            self.assertIn('"Camera framing and viewpoint:"', prompt)
+            self.assertIn('"Visual direction:"', prompt)
+        self.assertIn("Never emit workflow labels", full)
+        self.assertIn("Never emit control labels", compact)
+        self.assertIn(
+            "defining medium or composition-critical shot when supplied",
+            full,
+        )
+
+    def test_krea_workflow_labels_are_naturalized_outside_quoted_text(self):
+        prompt = (
+            "A courier reaches the gate. Camera framing and viewpoint: low-angle "
+            "wide shot. Visual direction: magical realism. Visible action details: "
+            'rain strikes her coat. A sign reads "Visual direction: KEEP ME".'
+        )
+
+        cleaned = corrector.naturalize_krea_workflow_labels(prompt)
+
+        self.assertNotIn("Camera framing and viewpoint:", corrector.unquoted_text(cleaned))
+        self.assertNotIn("Visible action details:", corrector.unquoted_text(cleaned))
+        self.assertIn("low-angle wide shot", cleaned)
+        self.assertIn("magical realism", cleaned)
+        self.assertIn('"Visual direction: KEEP ME"', cleaned)
 
     def test_user_message_can_include_non_visual_model_instructions(self):
         message = corrector.build_user_message(
@@ -3220,7 +4227,7 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("silver Car parked", result)
         self.assertNotIn("Car:1.3", result)
 
-    def test_post_completion_resolves_clear_him_and_his_role_references(self):
+    def test_post_completion_keeps_clear_him_and_his_role_references(self):
         response = (
             "The woman on the left reaches toward the man on the right, touching him "
             "while his blue coat reflects the lantern's warm light."
@@ -3237,7 +4244,7 @@ class PromptCorrectorTests(unittest.TestCase):
                 context_token_budget=1_000,
             )
 
-        self.assertNotRegex(result.lower(), r"\b(?:him|his)\b")
+        self.assertEqual(result, response)
         self.assertEqual(corrector.multi_person_role_issues(result), [])
 
     def test_final_compliance_issues_reports_missing_weighted_emphasis(self):

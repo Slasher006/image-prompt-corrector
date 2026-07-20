@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nsfw_scene_contract import infer_nsfw_preset_metadata
+
 
 CONCEPT_SELECTION_LIMIT = 8
 _KEY_SEPARATOR = "\x1f"
@@ -785,6 +787,15 @@ EXPLICIT_ADULT_CONCEPT_PRESET_KEYS = frozenset(
     for category, values in EXPLICIT_ADULT_CONCEPT_PRESETS.items()
     for value in values
 )
+EXPLICIT_ADULT_CONCEPT_PRESET_METADATA = {
+    concept_preset_key(category, value): infer_nsfw_preset_metadata(
+        "concept",
+        category,
+        value,
+    )
+    for category, values in EXPLICIT_ADULT_CONCEPT_PRESETS.items()
+    for value in values
+}
 ALL_CONCEPT_PRESET_KEYS = CONCEPT_PRESET_KEYS | EXPLICIT_ADULT_CONCEPT_PRESET_KEYS
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nsfw_scene_contract import infer_nsfw_preset_metadata
+
 
 NARRATIVE_PRESET_LIMIT = 6
 _KEY_SEPARATOR = "\x1f"
@@ -864,6 +866,24 @@ EXPLICIT_ADULT_EMOTION_PRESET_KEYS = frozenset(
     for category, values in EXPLICIT_ADULT_EMOTION_PRESETS.items()
     for value in values
 )
+EXPLICIT_ADULT_ACTION_PRESET_METADATA = {
+    narrative_preset_key("action", category, value): infer_nsfw_preset_metadata(
+        "action",
+        category,
+        value,
+    )
+    for category, values in EXPLICIT_ADULT_ACTION_PRESETS.items()
+    for value in values
+}
+EXPLICIT_ADULT_EMOTION_PRESET_METADATA = {
+    narrative_preset_key("emotion", category, value): infer_nsfw_preset_metadata(
+        "emotion",
+        category,
+        value,
+    )
+    for category, values in EXPLICIT_ADULT_EMOTION_PRESETS.items()
+    for value in values
+}
 ALL_ACTION_PRESET_KEYS = ACTION_PRESET_KEYS | EXPLICIT_ADULT_ACTION_PRESET_KEYS
 ALL_EMOTION_PRESET_KEYS = EMOTION_PRESET_KEYS | EXPLICIT_ADULT_EMOTION_PRESET_KEYS
 

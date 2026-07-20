@@ -94,6 +94,10 @@ class PromptWorkbenchTests(unittest.TestCase):
         review_text = messages[1]["content"][0]["text"]
         self.assertIn("evaluate requested adult content directly", review_text)
         self.assertIn("age 18 or older", review_text)
+        self.assertIn("NSFW visual fidelity audit", review_text)
+        self.assertIn("act families", review_text)
+        self.assertIn("contact targets", review_text)
+        self.assertIn("object/body separation", review_text)
 
     def test_review_response_parses_json_and_targeted_repair(self):
         parsed = workbench.parse_review_response(
@@ -101,6 +105,22 @@ class PromptWorkbenchTests(unittest.TestCase):
         )
         self.assertEqual(parsed["score"], 73)
         self.assertEqual(workbench.targeted_repair_prompt(parsed, "prompt"), "Fix only the hand.")
+
+    def test_review_parses_nsfw_fidelity_and_builds_targeted_feedback(self):
+        parsed = workbench.parse_review_response(
+            '{"score":61,"summary":"Wrong contact","passed":[],"failed":[],'
+            '"warnings":[],"repair_prompt":"","nsfw_fidelity":{'
+            '"participant_count":"pass","action_roles":"fail","contact_targets":"fail",'
+            '"object_separation":"fail","visible_phase":"pass","reactions":"fail",'
+            '"discrepancies":["receiver role is reversed","toy merged with anatomy"]}}'
+        )
+
+        self.assertEqual(parsed["nsfw_fidelity"]["action_roles"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["object_separation"], "fail")
+        repair = workbench.targeted_repair_prompt(parsed, "Current prompt.")
+        self.assertIn("NSFW fidelity: receiver role is reversed", repair)
+        self.assertIn("NSFW fidelity: toy merged with anatomy", repair)
+        self.assertIn("Current prompt.", repair)
 
     def test_invalid_review_response_fails_visibly(self):
         parsed = workbench.parse_review_response("not json")

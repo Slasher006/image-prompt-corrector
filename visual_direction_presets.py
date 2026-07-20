@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from nsfw_scene_contract import infer_nsfw_preset_metadata
+
 
 VISUAL_DIRECTION_PRESETS: dict[str, tuple[str, ...]] = {
     "Mood and emotional tone": (
@@ -636,6 +638,15 @@ EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_KEYS = frozenset(
     for category, values in EXPLICIT_ADULT_VISUAL_DIRECTION_PRESETS.items()
     for value in values
 )
+EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_METADATA = {
+    visual_preset_key(category, value): infer_nsfw_preset_metadata(
+        "visual_direction",
+        category,
+        value,
+    )
+    for category, values in EXPLICIT_ADULT_VISUAL_DIRECTION_PRESETS.items()
+    for value in values
+}
 ALL_VISUAL_DIRECTION_PRESET_KEYS = (
     VISUAL_DIRECTION_PRESET_KEYS | EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_KEYS
 )
@@ -669,5 +680,9 @@ def format_visual_direction_presets(
             if visual_preset_key(category, value) in selected
         ]
         if chosen:
-            parts.append(f"{category}: {', '.join(chosen)}")
+            parts.append(
+                ", ".join(chosen)
+                if category.startswith("NSFW")
+                else f"{category}: {', '.join(chosen)}"
+            )
     return ("; ".join(parts) + ".") if parts else ""

@@ -420,6 +420,36 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 self.assertEqual(diagnostic["workspace"], "Comic Story")
                 self.assertIn("Next:", diagnostic["message"])
 
+    def test_object_contract_error_gives_object_specific_recovery_guidance(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "Adult toy object contract: dildo lacks a readable contact boundary",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn(
+            "make the item, orientation, and body-contact point explicit",
+            diagnostic["next_step"],
+        )
+        self.assertNotIn("identity, count, or position", diagnostic["next_step"])
+
+    def test_nsfw_scene_contract_error_gives_action_specific_recovery_guidance(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "NSFW scene fidelity contract: missing requested sexual act family: masturbation",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn(
+            "make the adult actor, sexual action, contact target, and separate object explicit",
+            diagnostic["next_step"],
+        )
+        self.assertNotIn("identity, count, or position", diagnostic["next_step"])
+
     def test_unexpected_worker_exception_unlocks_ui_and_preserves_result(self):
         self.controller.draft_text.setPlainText("A red car under streetlights")
         self.controller.corrected_text.setPlainText("Previous successful result")
@@ -753,6 +783,26 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertTrue(bound.arguments["explicit_nsfw"])
         self.assertFalse(bound.arguments["safe_for_work"])
 
+    def test_selected_nsfw_presets_do_not_add_duplicate_private_metadata(self):
+        self.controller.explicit_nsfw_var.set(True)
+        adult_key = next(iter(gui.EXPLICIT_ADULT_ACTION_PRESET_METADATA))
+        self.controller.narrative_preset_selections["prompt"]["action"] = [
+            adult_key
+        ]
+        self.controller.draft_text.setPlainText(
+            "Two consenting adult partners share an intimate moment."
+        )
+
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+
+        worker_args = thread_class.call_args.kwargs["args"]
+        bound = inspect.signature(self.controller._correct_prompt_worker).bind(
+            *worker_args
+        )
+        private_instructions = bound.arguments["private_model_instructions"]
+        self.assertNotIn("Private NSFW preset compatibility", private_instructions)
+
     def test_nsfw_preset_categories_are_hidden_until_explicit_mode_is_enabled(self):
         pickers = (
             (
@@ -938,16 +988,19 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             direction,
         )
         for destination, expected_scope in (
-            ("prompt", "Camera framing and viewpoint"),
-            ("comic", "across the comic panels"),
+            ("prompt", None),
+            ("comic", "throughout every comic panel"),
             ("meme", "underlying meme image"),
         ):
             effective = self.controller._apply_camera_direction(
                 "A red-coated courier reaches a flooded gate",
                 destination,
             )
-            self.assertIn(expected_scope, effective)
+            if expected_scope:
+                self.assertIn(expected_scope, effective)
             self.assertIn(direction, effective)
+            self.assertTrue(effective.startswith(direction))
+            self.assertNotIn("Camera framing and viewpoint:", effective)
             self.assertNotIn("Mandatory user constraints", effective)
 
         self.assertEqual(
@@ -1555,13 +1608,38 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "meme",
         )
 
-        self.assertIn("Visual direction: Mood: ominous", prompt)
+        self.assertTrue(prompt.startswith("ominous, moonlit, low fog."))
+        self.assertNotIn("Visual direction:", prompt)
+        self.assertNotIn("Mood:", prompt)
+        self.assertNotIn("Lighting:", prompt)
         self.assertNotIn("ominous", comic)
         self.assertNotIn("ominous", meme)
         self.assertEqual(
             self.controller._single_image_field_context()["visual_direction"],
             "Mood: ominous; Lighting: moonlit; Weather: low fog.",
         )
+
+    def test_camera_and_visual_controls_form_one_ordered_krea_opening(self):
+        self.controller.camera_control_var.set(
+            "Wide establishing shot, 24mm lens"
+        )
+        self.controller.visual_direction_var.set(
+            "Art direction and genre: magical realism; Lighting: warm window light."
+        )
+
+        draft = "An adult baker pulls a loaf from a brick oven."
+        ordered = self.controller._apply_visual_direction(
+            self.controller._apply_camera_direction(draft, "prompt"),
+            "prompt",
+        )
+
+        self.assertEqual(
+            ordered,
+            "magical realism, warm window light. Wide establishing shot, "
+            "24mm lens. An adult baker pulls a loaf from a brick oven.",
+        )
+        self.assertNotIn("Camera framing and viewpoint:", ordered)
+        self.assertNotIn("Visual direction:", ordered)
 
     def test_single_image_story_editor_is_not_a_panel_editor(self):
         self.assertIsInstance(self.controller.story_elements_entry, gui.QTextEdit)
@@ -1750,6 +1828,54 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         self.assertTrue(callable(completion.call_args.kwargs["diagnostic_callback"]))
 
+    def test_model_candidate_and_repair_diagnostics_reach_activity_view(self):
+        self.controller.draft_text.setPlainText(
+            "A red sports car beneath rainy streetlights."
+        )
+        self.controller.reference_images_var.set(False)
+        self.controller.live_research_var.set(False)
+        self.controller.audit_repair_var.set(False)
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+        worker_args = thread_class.call_args.kwargs["args"]
+
+        def complete_with_diagnostics(**kwargs):
+            callback = kwargs["diagnostic_callback"]
+            callback(
+                "Initial model candidate rejected by validation (1 hard): "
+                "Contradictory terms"
+            )
+            callback(
+                "Final repair attempt 1/1 is addressing: Contradictory terms"
+            )
+            return "A red sports car beneath rainy streetlights."
+
+        with mock.patch(
+            "krea_prompt_gui.post_chat_completion",
+            side_effect=complete_with_diagnostics,
+        ):
+            self.controller._correct_prompt_worker(*worker_args)
+            self.controller.active_activity_workspace = "comic"
+            self.application.processEvents()
+
+        self.controller.activity_scope_combo.setCurrentText("Prompt Corrector")
+        activity = self.controller.activity_text.toPlainText()
+        self.assertIn(
+            "Initial model candidate rejected by validation",
+            activity,
+        )
+        self.assertIn("Final repair attempt 1/1 is addressing", activity)
+        diagnostic_events = [
+            event
+            for event in self.controller.activity_log
+            if "model candidate rejected" in event["message"]
+            or "repair attempt 1/1" in event["message"]
+        ]
+        self.assertTrue(diagnostic_events)
+        self.assertTrue(
+            all(event["workspace"] == "prompt" for event in diagnostic_events)
+        )
+
     def test_comic_workspace_starts_comic_worker_with_numbered_panels(self):
         self.controller.mode_tabs.setCurrentIndex(1)
         self.controller.comic_panel_count_var.set(2)
@@ -1781,7 +1907,13 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertIn("clipped workshop slang", bound.arguments["draft"])
         self.assertIn("Required concepts to integrate", bound.arguments["draft"])
         self.assertIn("dieselpunk engineering", bound.arguments["draft"])
-        self.assertIn("Mandatory shared comic style direction", bound.arguments["draft"])
+        self.assertTrue(
+            bound.arguments["draft"].startswith(
+                "Ink wash with copper highlights and angular panel compositions "
+                "throughout every comic panel."
+            )
+        )
+        self.assertNotIn("Mandatory shared comic style direction", bound.arguments["draft"])
         self.assertEqual(
             bound.arguments["concepts"],
             "dieselpunk engineering, storm electricity",

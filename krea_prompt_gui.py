@@ -122,6 +122,8 @@ from action_emotion_presets import (
     ACTION_PRESETS,
     EMOTION_PRESET_KEYS,
     EMOTION_PRESETS,
+    EXPLICIT_ADULT_ACTION_PRESET_METADATA,
+    EXPLICIT_ADULT_EMOTION_PRESET_METADATA,
     NARRATIVE_PRESET_LIMIT,
     format_narrative_presets,
     merge_narrative_text,
@@ -133,12 +135,14 @@ from concept_presets import (
     CONCEPT_PRESET_KEYS,
     CONCEPT_PRESETS,
     CONCEPT_SELECTION_LIMIT,
+    EXPLICIT_ADULT_CONCEPT_PRESET_METADATA,
     concept_preset_catalog,
     concept_preset_key,
     format_concept_presets,
     merge_concept_text,
 )
 from mix_ingredient_presets import (
+    EXPLICIT_ADULT_MIX_INGREDIENT_PRESET_METADATA,
     MIX_INGREDIENT_KEYS,
     MIX_INGREDIENT_LIMIT,
     MIX_INGREDIENT_PRESETS,
@@ -151,13 +155,33 @@ from visual_direction_presets import (
     ALL_VISUAL_DIRECTION_PRESET_KEYS,
     VISUAL_DIRECTION_PRESET_KEYS,
     VISUAL_DIRECTION_PRESETS,
+    EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_METADATA,
     format_visual_direction_presets,
     visual_direction_preset_catalog,
     visual_preset_key,
 )
+from nsfw_scene_contract import nsfw_preset_compatibility_issues
 from workbench_gui import PromptWorkbench
 
 WORKFLOW_PROFILES = ("Exact", "Improve", "Explore")
+
+
+def natural_visual_direction(value: object) -> str:
+    """Convert categorized picker text into one natural Krea-ready clause."""
+
+    pieces: list[str] = []
+    for raw_piece in re.split(r"[;\n]+", str(value or "")):
+        piece = re.sub(r"\s+", " ", raw_piece).strip(" .")
+        if not piece:
+            continue
+        piece = re.sub(
+            r"^[A-Za-z][A-Za-z /&-]{1,48}:\s*",
+            "",
+            piece,
+        ).strip(" .")
+        if piece:
+            pieces.append(piece)
+    return ", ".join(dict.fromkeys(pieces))
 CAMERA_CONTROL_AUTO = "Auto (use prompt)"
 CAMERA_CONTROL_PRESETS = (
     CAMERA_CONTROL_AUTO,
@@ -803,7 +827,10 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Copy corrected": ("Copy the corrected prompt to the clipboard.", "Paste it into the selected image generator afterward."),
     "Iterate result": ("Use the current result as the next draft and refine it again.", "Ask for warmer lighting while keeping the existing subject and settings."),
     "Corrected prompt": ("Review and optionally edit the model's final prompt.", "Adjust one camera detail before copying."),
-    "Activity": ("Shows research, image, connection, and generation events.", "Check here to confirm an image reached the model."),
+    "Activity": (
+        "Shows research, connection, model validation rejections, repair attempts, and generation events.",
+        "Check here to see why a candidate was rejected or which repair the model attempted.",
+    ),
     "History": ("Browse earlier prompt corrections and their settings.", "Load yesterday's pinned castle prompt."),
     "References": ("Manage local and discovered images used as visual context.", "Drop a costume PNG here for analysis."),
     "Chat settings": ("Configure direct conversation with the selected model.", "Set a system instruction for concise answers."),
@@ -896,7 +923,22 @@ def classify_workflow_error(
     elif "hard fidelity contract" in lowered:
         title = "The prompt contract could not be repaired"
         category = "contract"
-        next_step = "The input is preserved. Review the named contract issue in Activity, make the disputed identity, count, or position explicit, then retry."
+        if "adult toy object contract" in lowered or "inserted object/body contact contract" in lowered:
+            next_step = (
+                "The input is preserved. Review the named object/contact issue in Activity, "
+                "make the item, orientation, and body-contact point explicit, then retry."
+            )
+        elif "nsfw scene fidelity contract" in lowered:
+            next_step = (
+                "The input is preserved. Review the named adult-scene issue in Activity, "
+                "make the adult actor, sexual action, contact target, and separate object "
+                "explicit, then retry."
+            )
+        else:
+            next_step = (
+                "The input is preserved. Review the named contract issue in Activity, "
+                "make the disputed identity, count, or position explicit, then retry."
+            )
     elif any(marker in lowered for marker in (
         "base64 encoded image",
         "image input",
@@ -7305,7 +7347,12 @@ class PromptCorrectorApp:
         if not premise and not title:
             raise ValueError("Add a story premise or title before generating.")
 
-        draft_parts = [f"A {count}-panel comic story page."]
+        draft_parts: list[str] = []
+        if visual_direction:
+            draft_parts.append(
+                f"{natural_visual_direction(visual_direction)} throughout every comic panel."
+            )
+        draft_parts.append(f"A {count}-panel comic story page.")
         if title:
             draft_parts.append(f"Working title metadata only: {title}.")
         if premise:
@@ -7342,12 +7389,6 @@ class PromptCorrectorApp:
                 "panel and repeat it only where continuity benefits. Use these concepts as "
                 "supporting design language and story texture. Never let them replace the "
                 "requested cast, actions, setting, panel beats, or outcome."
-            )
-        if visual_direction:
-            draft_parts.append(
-                "Mandatory shared comic style direction: "
-                f"{visual_direction}. Apply it consistently to every panel while keeping "
-                "the story and action readable."
             )
         story_elements = "\n".join(
             f"Panel {index}: {panel}" for index, panel in enumerate(panels, start=1)
@@ -7389,9 +7430,15 @@ class PromptCorrectorApp:
                 "the exact rendered-text contract. Use curly quotes instead."
             )
 
-        parts = [
-            f"A single image-macro meme in {self.meme_aspect_ratio_var.get().strip()} format.",
-        ]
+        visual_direction = self.meme_visual_direction_var.get().strip()
+        parts = []
+        if visual_direction:
+            parts.append(
+                f"{natural_visual_direction(visual_direction)} for the underlying meme image."
+            )
+        parts.append(
+            f"A single image-macro meme in {self.meme_aspect_ratio_var.get().strip()} format."
+        )
         if response_context:
             safe_context = re.sub(r"\s+", " ", response_context).replace('"', "”")
             parts.append(
@@ -7469,9 +7516,6 @@ class PromptCorrectorApp:
                     ),
                 ]
             )
-        visual_direction = self.meme_visual_direction_var.get().strip()
-        if visual_direction:
-            parts.append(f"Visual direction: {visual_direction}.")
         return " ".join(parts)
 
     def _meme_field_context(self) -> dict[str, object]:
@@ -7901,6 +7945,42 @@ class PromptCorrectorApp:
                 if effective_reference_image_analysis
                 else []
             )
+        adult_preset_compatibility: list[str] = []
+        if destination == "prompt" and self.explicit_nsfw_var.get():
+            selected_metadata: list[dict[str, object]] = []
+            metadata_maps = (
+                EXPLICIT_ADULT_ACTION_PRESET_METADATA,
+                EXPLICIT_ADULT_EMOTION_PRESET_METADATA,
+                EXPLICIT_ADULT_CONCEPT_PRESET_METADATA,
+                EXPLICIT_ADULT_VISUAL_DIRECTION_PRESET_METADATA,
+            )
+            selected_keys = {
+                *self.narrative_preset_selections["prompt"]["action"],
+                *self.narrative_preset_selections["prompt"]["emotion"],
+                *self.concept_preset_selections["prompt"],
+                *self.visual_preset_selections["prompt"],
+            }
+            for metadata_map in metadata_maps:
+                selected_metadata.extend(
+                    metadata_map[key]
+                    for key in selected_keys
+                    if key in metadata_map
+                )
+            mixed_names = {
+                name.casefold()
+                for name, _percentage in parse_concept_mix(
+                    self.concept_mix_var.get()
+                )
+            }
+            selected_metadata.extend(
+                metadata
+                for metadata in EXPLICIT_ADULT_MIX_INGREDIENT_PRESET_METADATA.values()
+                if str(metadata.get("value", "")).casefold() in mixed_names
+            )
+            adult_preset_compatibility = nsfw_preset_compatibility_issues(
+                selected_metadata,
+                content_format=self.content_format_var.get(),
+            )
         precomputed_research: dict[str, object] = {}
         if destination == "prompt" and self.single_invent_research_cache:
             cache = self.single_invent_research_cache
@@ -8009,6 +8089,11 @@ class PromptCorrectorApp:
                 )
                 for number, description in panel_descriptions:
                     self._log_activity(f"- Panel {number}: {description}")
+        if adult_preset_compatibility:
+            self._log_activity(
+                "NSFW preset compatibility will be resolved in favor of the draft: "
+                + "; ".join(adult_preset_compatibility)
+            )
         if effective_weighted_terms:
             weighted_terms = parse_weighted_terms(effective_weighted_terms)
             parsed = ", ".join(f"{term}:{weight:g}" for term, weight in weighted_terms)
@@ -8219,8 +8304,12 @@ class PromptCorrectorApp:
         del self.activity_log[:-500]
         self._refresh_activity_text()
 
-    def _log_activity_threadsafe(self, message: str) -> None:
-        self._after_threadsafe(0, self._log_activity, message)
+    def _log_activity_threadsafe(
+        self,
+        message: str,
+        workspace: str | None = None,
+    ) -> None:
+        self._after_threadsafe(0, self._log_activity, message, workspace)
 
     def _set_status_threadsafe(self, status: str) -> None:
         self._after_threadsafe(0, self.status_var.set, status)
@@ -8984,28 +9073,22 @@ class PromptCorrectorApp:
         source = str(draft or "").strip()
         if not direction or direction.casefold() in source.casefold():
             return source
-        labels = {
-            "prompt": "Camera framing and viewpoint",
-            "comic": "Shared camera framing and viewpoint across the comic panels",
-            "meme": "Camera framing and viewpoint for the underlying meme image",
+        suffixes = {
+            "prompt": "",
+            "comic": " throughout every comic panel",
+            "meme": " for the underlying meme image",
         }
-        label = labels.get(destination, "Camera framing and viewpoint")
-        separator = " " if source.endswith((".", "!", "?")) else ". "
-        return f"{source}{separator}{label}: {direction}."
+        scope = suffixes.get(destination, "")
+        return f"{direction}{scope}. {source}".strip()
 
     def _apply_visual_direction(self, draft: str, destination: str) -> str:
         source = str(draft or "").strip()
         if destination != "prompt":
             return source
-        direction = re.sub(
-            r"\s+",
-            " ",
-            str(self.visual_direction_var.get() or ""),
-        ).strip(" .")
+        direction = natural_visual_direction(self.visual_direction_var.get())
         if not direction or direction.casefold() in source.casefold():
             return source
-        separator = " " if source.endswith((".", "!", "?")) else ". "
-        return f"{source}{separator}Visual direction: {direction}."
+        return f"{direction}. {source}".strip()
 
     def _correct_prompt_worker(
         self,
@@ -9352,7 +9435,10 @@ class PromptCorrectorApp:
                 story_elements=story_elements,
                 context_token_budget=context_token_budget,
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
-                diagnostic_callback=self._log_activity_threadsafe,
+                diagnostic_callback=lambda message: self._log_activity_threadsafe(
+                    message,
+                    destination,
+                ),
             )
             self._raise_if_cancelled(request_id)
             if unload_after_generation:
@@ -9380,7 +9466,6 @@ class PromptCorrectorApp:
                 self._log_activity_threadsafe("Correction stopped after an error. Error ignored.")
                 self._after_threadsafe(0, self._show_cancelled, request_id)
                 return
-            self._log_activity_threadsafe(f"Error: {exc}")
             self._after_threadsafe(
                 0,
                 self._show_error,

@@ -611,6 +611,29 @@ class PromptWorkbench(QWidget):
         for key, title in (("passed", "Passed"), ("failed", "Failed"), ("warnings", "Warnings")):
             values = review.get(key, [])
             blocks.append(f"\n{title}:\n" + ("\n".join(f"• {item}" for item in values) if values else "• None"))
+        nsfw_fidelity = review.get("nsfw_fidelity", {})
+        if isinstance(nsfw_fidelity, dict) and nsfw_fidelity:
+            checks = (
+                ("participant_count", "Participant count"),
+                ("action_roles", "Action roles"),
+                ("contact_targets", "Contact targets"),
+                ("object_separation", "Object separation"),
+                ("visible_phase", "Visible phase"),
+                ("reactions", "Participant reactions"),
+            )
+            blocks.append(
+                "\nNSFW fidelity:\n"
+                + "\n".join(
+                    f"• {label}: {nsfw_fidelity.get(key, 'not_applicable')}"
+                    for key, label in checks
+                )
+            )
+            discrepancies = nsfw_fidelity.get("discrepancies", [])
+            if isinstance(discrepancies, list) and discrepancies:
+                blocks.append(
+                    "\nNSFW discrepancies:\n"
+                    + "\n".join(f"• {item}" for item in discrepancies)
+                )
         blocks.append("\nTargeted repair prompt:\n" + targeted_repair_prompt(review, str(self.project.get("corrected_prompt", ""))))
         diagnostics = review.get("diagnostics", {})
         if isinstance(diagnostics, dict):

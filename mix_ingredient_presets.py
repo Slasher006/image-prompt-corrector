@@ -14,6 +14,7 @@ from visual_direction_presets import (
     EXPLICIT_ADULT_VISUAL_DIRECTION_PRESETS,
     VISUAL_DIRECTION_PRESETS,
 )
+from nsfw_scene_contract import infer_nsfw_preset_metadata
 
 
 MIX_INGREDIENT_LIMIT = 6
@@ -99,6 +100,20 @@ def mix_ingredient_preset_catalog(
         },
     }
     return {**MIX_INGREDIENT_PRESETS, **adult_categories}
+
+
+EXPLICIT_ADULT_MIX_INGREDIENT_PRESET_METADATA = {
+    mix_ingredient_key(category, value): infer_nsfw_preset_metadata(
+        category.split(" · ", 1)[0].lower(),
+        category,
+        value,
+    )
+    for category, values in mix_ingredient_preset_catalog(
+        explicit_nsfw=True
+    ).items()
+    if "NSFW" in category
+    for value in values
+}
 
 
 def format_mix_ingredient_names(

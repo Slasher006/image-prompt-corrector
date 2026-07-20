@@ -24,6 +24,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from nsfw_scene_contract import (
+    dildo_direction_instruction,
+    extract_nsfw_scene_contract,
+    format_nsfw_scene_contract,
+    nsfw_scene_contract_issues,
+    strip_nsfw_catalog_labels,
+)
+
 
 DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 DEFAULT_MODEL = "qwen3-vl-4b-instruct"
@@ -360,6 +368,1135 @@ VISUAL_SLANG_TRANSLATIONS = (
     (r"\bhighkey\b", "strongly emphasized", "highkey"),
     (r"\bno cap\b", "authentic and believable", "no cap"),
     (r"\bmain character energy\b", "cinematic confident central presence", "main character energy"),
+)
+EXPLICIT_ADULT_PHRASE_TRANSLATIONS = (
+    (
+        r"\b((?:his|her|their|the)\s+)climaxing\s+body\b",
+        r"\1body showing a visible orgasm reaction",
+        "climaxing body",
+    ),
+    (
+        r"\bclimaxing\s+((?:adult\s+)?(?:woman|man|person|partner))\b",
+        r"\1 showing a visible orgasm reaction",
+        "climaxing adult",
+    ),
+    (
+        r"\b((?:his|her|their)\s+)(?:schlong|dong|wang|penis|cock|dick),\s*"
+        r"nuts,\s*(?:and\s+)?(?:ball\s+)?sack\b",
+        r"\1penis, testicles, and scrotum",
+        "penis testicles scrotum slang list",
+    ),
+    (
+        r"\bgetting\s+railed\b",
+        "being penetrated with forceful repeated thrusts",
+        "getting railed",
+    ),
+    (
+        r"\bgets?\s+railed\b",
+        "is penetrated with forceful repeated thrusts",
+        "get railed",
+    ),
+    (
+        r"\bgot\s+railed\b",
+        "was penetrated with forceful repeated thrusts",
+        "got railed",
+    ),
+    (
+        r"\brailing\s+(her|him|them)\b",
+        r"penetrating \1 with forceful repeated thrusts",
+        "railing someone",
+    ),
+    (
+        r"\bpounding\s+(her|him|them)\b",
+        r"penetrating \1 with forceful repeated thrusts",
+        "pounding someone",
+    ),
+    (
+        r"\b(?:banging|screwing)\s+(her|him|them)\b",
+        r"having penetrative sex with \1",
+        "banging or screwing someone",
+    ),
+    (
+        r"\b(?:jerking|jacking)\s+(?:himself|herself|themself|themselves)\s+off\b",
+        "performing manual self-stimulation of the genitals",
+        "jerking off",
+    ),
+    (
+        r"\b(?:jerking|jacking)\s+him\s+off\b",
+        "manually stimulating his penis",
+        "jerking him off",
+    ),
+    (r"\b(?:jerk|jack)\s+off\b", "masturbate manually", "jerk off"),
+    (
+        r"\brub(?:bing|s)?\s+one\s+out\b",
+        "performing self-stimulation of the genitals",
+        "rub one out",
+    ),
+    (
+        r"\b(?:going|goes?|went)\s+down\s+on\s+(her|him|them)\b",
+        r"performing oral genital stimulation on \1",
+        "go down on",
+    ),
+    (
+        r"\b(?:sucking|sucks?)\s+((?:his|her|their|the)\s+)"
+        r"(?:cock|dick|penis)\b",
+        r"performing oral stimulation of \1penis",
+        "suck cock or dick",
+    ),
+    (
+        r"\bdeep[- ]throat(?:s|ed|ing)?\b",
+        "deep oral penetration",
+        "deep throat",
+    ),
+    (
+        r"\bfucking\s+(her|him|them)\s+from\s+behind\b",
+        r"penetrating \1 in a rear-entry position",
+        "fuck from behind",
+    ),
+    (
+        r"\bdoggy[- ]style\b",
+        "a rear-entry penetrative sex position",
+        "doggy style",
+    ),
+    (
+        r"\breverse\s+cowgirl\b",
+        "straddling penetrative sex position facing away from the partner",
+        "reverse cowgirl",
+    ),
+    (
+        r"\bcowgirl\s+position\b",
+        "straddling penetrative sex position facing the partner",
+        "cowgirl position",
+    ),
+    (
+        r"\bmissionary\s+position\b",
+        "face-to-face supine penetrative sex position",
+        "missionary position",
+    ),
+    (
+        r"\bin\s+missionary\b",
+        "in a face-to-face supine penetrative sex position",
+        "in missionary",
+    ),
+    (
+        r"\b(?:sixty[- ]nine|69\s+position)\b",
+        "mutual oral-genital contact in a head-to-toe position",
+        "69 position",
+    ),
+    (
+        r"\briding\s+((?:his|her|their|the|a)\s+)"
+        r"(?:cock|dick)\b",
+        r"straddling \1penis with rhythmic penetrative motion",
+        "riding a sexual object",
+    ),
+    (
+        r"\briding\s+((?:his|her|their|the|a)\s+)"
+        r"(penis|dildo|sex\s+toy)\b",
+        r"straddling \1\2 with rhythmic penetrative motion",
+        "riding a sexual object",
+    ),
+    (
+        r"\b(?:a\s+)?(?:cream[- ]?pie|creampie)\b",
+        "internal ejaculation with semen visible at the body opening",
+        "creampie",
+    ),
+    (
+        r"\bmoney\s+shot\b",
+        "visible ejaculation as the central focal action",
+        "money shot",
+    ),
+    (
+        r"\bcumming\s+on\s+"
+        r"((?:her|his|their|the)\s+(?:face|body|chest|breasts?|buttocks))\b",
+        r"ejaculating semen onto \1",
+        "cum on",
+    ),
+    (
+        r"\bcums\s+on\s+"
+        r"((?:her|his|their|the)\s+(?:face|body|chest|breasts?|buttocks))\b",
+        r"ejaculates semen onto \1",
+        "cum on",
+    ),
+    (
+        r"\bcum\s+on\s+"
+        r"((?:her|his|their|the)\s+(?:face|body|chest|breasts?|buttocks))\b",
+        r"ejaculate semen onto \1",
+        "cum on",
+    ),
+    (
+        r"\bfinish(?:es|ed|ing)?\s+inside\s+(her|him|them)\b",
+        r"ejaculates inside \1",
+        "finish inside",
+    ),
+    (
+        r"\b(?:blows?|blowing)\s+(?:his|their)\s+load\b",
+        "ejaculates visibly",
+        "blow a load",
+    ),
+    (
+        r"\b(?:busts?|busting)\s+a\s+nut\b",
+        "ejaculates visibly",
+        "bust a nut",
+    ),
+    (
+        r"\b(?:a\s+)?horny\s+adult\s+threesome\b",
+        "a sexual scene among three sexually aroused adults",
+        "horny adult threesome",
+    ),
+    (
+        r"\b(?:adult\s+)?threesomes?\b",
+        "sexual scene among three adults",
+        "threesome",
+    ),
+    (
+        r"\bgangbangs?\b",
+        "group sex centered on one receiving adult with multiple penetrating adults",
+        "gangbang",
+    ),
+    (r"\borg(?:y|ies)\b", "group sexual activity among adults", "orgy"),
+    (
+        r"\b(?:double\s+penetration|DP(?=\s+(?:sex|scene|position|with)\b|"
+        r"[^.!?]{0,50}\b(?:vaginal|anal|penetrat\w*|sex)\b))\b",
+        "simultaneous vaginal and anal penetration",
+        "double penetration or DP",
+    ),
+    (
+        r"\bdom\s*/\s*sub\b",
+        "dominant/submissive adult power-exchange",
+        "dom/sub",
+    ),
+    (
+        r"\b(she|he|they|the\s+(?:adult\s+)?(?:woman|man|partner))\s+"
+        r"(?:is|looks|becomes|appears)\s+turned\s+on\b",
+        r"\1 is sexually aroused",
+        "turned on",
+    ),
+    (r"\bvisibly\s+turned\s+on\b", "visibly sexually aroused", "turned on"),
+    (r"\bhorny\b", "sexually aroused", "horny"),
+    (r"\bpussy\s+lips\b", "labia", "pussy lips"),
+    (r"\bclit\b", "clitoris", "clit"),
+    (
+        r"\b((?:his|her|their|the)\s+)balls\b",
+        r"\1testicles",
+        "balls",
+    ),
+    (
+        r"\b((?:his|her|their|the)\s+)booty\b",
+        r"\1buttocks",
+        "booty",
+    ),
+    (
+        r"\b((?:his|her|their|the)\s+)taint\b",
+        r"\1perineum",
+        "taint",
+    ),
+    (
+        r"\b(?:eat(?:ing|s)?|lick(?:ing|s)?)\s+(?:her|the)\s+pussy\b",
+        "performing oral stimulation of the vulva",
+        "eat pussy",
+    ),
+    (
+        r"\b(?:suck(?:ing|s)?)\s+(?:his|the)\s+(?:cock|dick)\b",
+        "performing oral stimulation of the penis",
+        "suck dick",
+    ),
+    (
+        r"\b(?:eat(?:ing|s)?|lick(?:ing|s)?)\s+(?:his|her|their|the)\s+ass\b",
+        "performing oral stimulation of the anus",
+        "eat ass",
+    ),
+    (
+        r"\b(?:rim\s*jobs?|rimming)\b",
+        "oral stimulation of the anus",
+        "rim job or rimming",
+    ),
+    (
+        r"\bbutt\s+stuff\b",
+        "anal sexual activity",
+        "butt stuff",
+    ),
+    (
+        r"\bfinger[- ]?bang(?:s|ed|ing)?\b",
+        "manual genital penetration with fingers",
+        "finger bang",
+    ),
+    (
+        r"\bdry[- ]hump(?:s|ed|ing)?\b",
+        "rhythmic clothed genital rubbing",
+        "dry humping",
+    ),
+    (
+        r"\bhump(?:s|ed|ing)?\s+(her|him|them)\b",
+        r"presses the pelvis against \1 with rhythmic sexual motion",
+        "humping someone",
+    ),
+    (
+        r"\bmotorboat(?:s|ed|ing)?\b",
+        "pressing the face between the breasts",
+        "motorboating",
+    ),
+    (
+        r"\b(?:get(?:s|ting)?|got)\s+laid\b",
+        "has sexual intercourse",
+        "get laid",
+    ),
+    (r"\bquickie\b", "brief sexual encounter", "quickie"),
+    (r"\bbooty\s+call\b", "casual sexual encounter", "booty call"),
+    (
+        r"\bfriends?\s+with\s+benefits\b",
+        "casual sexual relationship between adult friends",
+        "friends with benefits",
+    ),
+    (
+        r"\bnetflix\s+and\s+chill\b",
+        "implied casual sexual encounter in a private setting",
+        "Netflix and chill",
+    ),
+    (
+        r"\b(?:going\s+raw|bareback(?:ing)?)\b",
+        "visible penetration without a condom",
+        "going raw or bareback",
+    ),
+    (
+        r"\bfacesitt(?:ing|s)\b",
+        "one adult seated over the partner's face for oral genital stimulation",
+        "facesitting",
+    ),
+    (
+        r"\bface[- ]?fuck(?:s|ed|ing)?\b",
+        "forceful oral penetration",
+        "facefuck",
+    ),
+    (
+        r"\btit[- ]?fuck(?:s|ed|ing)?\b",
+        "penis stimulated between the breasts",
+        "titfuck",
+    ),
+    (
+        r"\bfoot\s*jobs?\b",
+        "penis stimulated with the feet",
+        "footjob",
+    ),
+    (
+        r"\bfisting\b",
+        "genital or anal penetration with a hand",
+        "fisting",
+    ),
+    (
+        r"\bedging\b",
+        "prolonged sexual stimulation held near orgasm",
+        "edging",
+    ),
+    (
+        r"\bsquirting\b",
+        "visible fluid release at peak sexual response",
+        "squirting",
+    ),
+    (
+        r"\bbukkake\b",
+        "group ejaculation onto one adult",
+        "bukkake",
+    ),
+)
+EXPLICIT_ADULT_STANDARD_ACT_TRANSLATIONS = (
+    (
+        r"\bmutual\s+masturbation\b",
+        "two adults each performing visible self-stimulation of their own genitals",
+        "mutual masturbation",
+    ),
+    (
+        r"\bsolo\s+masturbation\b",
+        "one adult performing visible self-stimulation of their own genitals",
+        "solo masturbation",
+    ),
+    (
+        r"\bmasturbating\b",
+        "performing self-stimulation of their own genitals",
+        "masturbating",
+    ),
+    (
+        r"\bmasturbates\b",
+        "performs self-stimulation of their own genitals",
+        "masturbates",
+    ),
+    (
+        r"\bmasturbated\b",
+        "performed self-stimulation of their own genitals",
+        "masturbated",
+    ),
+    (
+        r"\bmasturbation\b",
+        "self-stimulation of their own genitals",
+        "masturbation",
+    ),
+    (
+        r"\boral\s+sex\b",
+        "oral stimulation with visible mouth-to-genital contact",
+        "oral sex",
+    ),
+    (
+        r"\bfellatio\b",
+        "oral stimulation of the penis",
+        "fellatio",
+    ),
+    (
+        r"\bcunnilingus\b",
+        "oral stimulation of the vulva and clitoris",
+        "cunnilingus",
+    ),
+    (
+        r"\banilingus\b",
+        "oral stimulation of the anus",
+        "anilingus",
+    ),
+    (
+        r"\bvaginal\s+(?:sex|intercourse)\b",
+        "visible penetration at the vaginal opening",
+        "vaginal sex",
+    ),
+    (
+        r"\banal\s+(?:sex|intercourse)\b",
+        "visible penetration at the anus",
+        "anal sex",
+    ),
+    (
+        r"(?<!having\s)(?<!intimate\s)(?<!upright\s)\bpenetrative\s+sex\b"
+        r"(?!\s+(?:position|without))",
+        "sexual activity with physically readable penetration",
+        "penetrative sex",
+    ),
+    (
+        r"\bsexual\s+intercourse\b",
+        "physically readable penetrative intercourse",
+        "sexual intercourse",
+    ),
+    (
+        r"\b(?:make|makes|making|made)\s+love\b",
+        "intercourse with intimate penetrative contact between adult partners",
+        "making love",
+    ),
+    (
+        r"\bforeplay\b",
+        "pre-intercourse intimate touching with visible body contact",
+        "foreplay",
+    ),
+    (
+        r"\baftercare\b",
+        "post-sex comforting touch, close body contact, and relaxed breathing",
+        "aftercare",
+    ),
+    (
+        r"\berotic\s+massage\b",
+        "oil-assisted intimate body massage with visible hand contact",
+        "erotic massage",
+    ),
+    (
+        r"\blap\s+dance\b",
+        "close-body erotic dance over a seated adult",
+        "lap dance",
+    ),
+    (
+        r"\bstrip[- ]?tease\b",
+        "seductive removal of clothing with a deliberately posed reveal",
+        "striptease",
+    ),
+    (
+        r"\btribadism\b",
+        "vulva-to-vulva rubbing between adult women",
+        "tribadism",
+    ),
+    (
+        r"\bscissoring\b",
+        "intertwined-leg vulva-to-vulva rubbing",
+        "scissoring",
+    ),
+    (
+        r"\b(?:frottage|frotting)\b",
+        "rhythmic genital-to-genital rubbing",
+        "frottage or frotting",
+    ),
+    (
+        r"\b(?:intercrural|thigh)\s+sex\b",
+        "penis held and stimulated between the partner's thighs",
+        "intercrural sex",
+    ),
+    (
+        r"\bpegging\b",
+        "strap-on anal penetration",
+        "pegging",
+    ),
+    (
+        r"\bstrap[- ]on\s+sex\b",
+        "penetration with a visibly separate strap-on toy",
+        "strap-on sex",
+    ),
+    (
+        r"\btoy\s+play\b",
+        "visible sex-toy contact at the specified body target",
+        "toy play",
+    ),
+    (
+        r"\bdildo\s+play\b",
+        "visible dildo use at the specified body target",
+        "dildo play",
+    ),
+    (
+        r"\bvibrator\s+play\b",
+        "visible vibrator contact at the specified body target",
+        "vibrator play",
+    ),
+    (
+        r"\banal\s+play\b",
+        "visible anal touching or toy contact without changing the requested act",
+        "anal play",
+    ),
+    (
+        r"\bprostate\s+(?:play|massage)\b",
+        "manual or toy stimulation of the prostate through the anus",
+        "prostate play",
+    ),
+    (
+        r"\b(?:nipple|breast)\s+play\b",
+        "visible hand or mouth contact with the breasts and nipples",
+        "breast or nipple play",
+    ),
+    (
+        r"\burethral\s+sounding\b",
+        "insertion of a slender sounding rod into the urethral opening",
+        "urethral sounding",
+    ),
+    (
+        r"\b(?:multiple|repeated)\s+orgasms?\b",
+        "repeated visible orgasm reactions with muscle tension and altered breathing",
+        "multiple orgasms",
+    ),
+    (
+        r"\bsimultaneous\s+orgasm\b",
+        "both adults showing visible orgasm reactions at the same moment",
+        "simultaneous orgasm",
+    ),
+    (
+        r"\borgasm\s+denial\b",
+        "sexual stimulation deliberately stopped before peak release",
+        "orgasm denial",
+    ),
+    (
+        r"\bruined\s+orgasm\b",
+        "an interrupted peak response with incomplete physical release",
+        "ruined orgasm",
+    ),
+    (
+        r"\bclimaxing\b",
+        "showing a visible orgasm reaction",
+        "climaxing",
+    ),
+    (
+        r"\b(?:has|reaches|experiences)\s+an?\s+(?:orgasm|climax)\b",
+        "shows a visible peak sexual response with muscle tension, altered breathing, and facial reaction",
+        "has an orgasm",
+    ),
+    (
+        r"\ban?\s+(?:orgasm|climax)\b",
+        "a visible peak sexual response with muscle tension, altered breathing, and facial reaction",
+        "an orgasm or climax",
+    ),
+    (
+        r"(?<!visible\s)(?<!near\s)\b(?:orgasm|climax)\b",
+        "visible orgasm with muscle tension, altered breathing, and facial reaction",
+        "orgasm or climax",
+    ),
+    (
+        r"\bfemale\s+ejaculation\b",
+        "visible fluid release from the vulva during orgasm",
+        "female ejaculation",
+    ),
+    (
+        r"\ban?\s+ejaculation\b",
+        "a visible semen release",
+        "an ejaculation",
+    ),
+    (
+        r"(?<!visible\s)(?<!internal\s)(?<!group\s)\bejaculation\b",
+        "visible semen release",
+        "ejaculation",
+    ),
+    (
+        r"\bsexual\s+arousal\b",
+        "visible arousal through posture, expression, breathing, and physical response",
+        "sexual arousal",
+    ),
+    (
+        r"\bsolo\s+pleasure\b",
+        "self-stimulation of the genitals",
+        "solo pleasure",
+    ),
+)
+EXPLICIT_ADULT_ANATOMY_AND_FLUID_TRANSLATIONS = (
+    (r"\b(?:cunt|twat|snatch|cooch(?:ie)?)\b", "vulva", "vulva slang"),
+    (r"\b(?:schlong|dong|wang)\b", "penis", "penis slang"),
+    (
+        r"\b((?:his|her|their|the)\s+)(?:nuts|family\s+jewels)\b",
+        r"\1testicles",
+        "testicle slang",
+    ),
+    (
+        r"\b((?:his|her|their|the)\s+)(?:sack|ball\s+sack)\b",
+        r"\1scrotum",
+        "scrotum slang",
+    ),
+    (
+        r"\b(?:butt\s*hole|back\s*door)\b",
+        "anus",
+        "anus slang",
+    ),
+    (
+        r"\b((?:his|her|their|the)\s+)(?:butt\s+cheeks?|ass\s+cheeks?)\b",
+        r"\1buttocks",
+        "buttock slang",
+    ),
+    (
+        r"\b(?:knockers|jugs|funbags)\b",
+        "breasts",
+        "breast slang",
+    ),
+    (
+        r"\b((?:her|their|the)\s+)rack\b",
+        r"\1breasts",
+        "rack",
+    ),
+    (r"\bnips\b", "nipples", "nips"),
+    (r"\bgooch\b", "perineum", "gooch"),
+    (
+        r"\b(?:pussy\s+juice|girl\s+cum)\b",
+        "visible vaginal lubrication",
+        "vaginal fluid slang",
+    ),
+    (r"\b(?:jizz|spunk)\b", "semen", "semen slang"),
+    (
+        r"\b(?:load|seed)\b(?=\s+(?:on|inside|across|over)\b)",
+        "semen",
+        "load or seed",
+    ),
+    (
+        r"\b(?:dripping|soaking)\s+wet\b(?=[^,.!?;]{0,35}\b"
+        r"(?:vulva|vagina|pussy|genitals?)\b)",
+        "visibly lubricated",
+        "dripping wet",
+    ),
+    (
+        r"\brock[- ]hard\b(?=[^,.!?;]{0,25}\b(?:penis|cock|dick)\b)",
+        "fully erect",
+        "rock hard",
+    ),
+    (
+        r"\b((?:his|her|their|the)\s+)(?:love\s+button)\b",
+        r"\1clitoris",
+        "love button",
+    ),
+)
+EXPLICIT_ADULT_POSITION_TRANSLATIONS = (
+    (
+        r"\bmating\s+press\b",
+        "face-to-face position with the receiving adult's knees pressed toward the chest",
+        "mating press",
+    ),
+    (
+        r"\bprone[- ]bone\b",
+        "rear-entry penetration with the receiving adult lying face-down",
+        "prone bone",
+    ),
+    (
+        r"\bpiledriver\s+position\b",
+        "inverted penetration position with hips raised and legs folded overhead",
+        "piledriver position",
+    ),
+    (
+        r"\blotus\s+(?:sex\s+)?position\b",
+        "face-to-face seated straddling position with bodies closely embraced",
+        "lotus position",
+    ),
+    (
+        r"\bspooning\s+sex\b",
+        "side-lying rear-entry penetration with both adults facing the same direction",
+        "spooning sex",
+    ),
+    (
+        r"\bstanding\s+sex\b",
+        "upright penetration with both adults visibly weight-bearing",
+        "standing sex",
+    ),
+    (
+        r"\bwheelbarrow\s+position\b",
+        "rear-entry position with the receiving adult supported on hands while hips are held",
+        "wheelbarrow position",
+    ),
+    (
+        r"\bbutterfly\s+position\b",
+        "receiving adult lying at an edge with hips raised toward a standing partner",
+        "butterfly position",
+    ),
+    (
+        r"\bamazon\s+position\b",
+        "top partner controlling penetration while straddling the reclining partner",
+        "amazon position",
+    ),
+    (
+        r"\bleapfrog\s+position\b",
+        "rear-entry position with chest lowered and hips raised",
+        "leapfrog position",
+    ),
+    (
+        r"\bflatiron\s+position\b",
+        "rear-entry penetration with the receiving adult lying flat and legs together",
+        "flatiron position",
+    ),
+    (
+        r"\bface[- ]off\s+position\b",
+        "face-to-face seated straddling position",
+        "face-off position",
+    ),
+    (
+        r"\bstanding\s+carry\s+position\b",
+        "standing penetration while one adult supports the other's raised body",
+        "standing carry position",
+    ),
+    (
+        r"\bspread[- ]eagle\s+sex\s+position\b",
+        "receiving adult lying with arms and legs extended apart for visible contact",
+        "spread-eagle position",
+    ),
+    (
+        r"\blegs?\s+over\s+(?:his|her|their|the)\s+shoulders?\b",
+        "receiving adult's legs raised over the penetrating partner's shoulders",
+        "legs over shoulders",
+    ),
+    (
+        r"\bon\s+all\s+fours\b",
+        "hands-and-knees pose with clearly visible limb support and rear body access",
+        "on all fours",
+    ),
+)
+EXPLICIT_ADULT_GROUP_AND_RELATIONSHIP_TRANSLATIONS = (
+    (
+        r"\bfoursomes?\b",
+        "sexual scene among four adults",
+        "foursome",
+    ),
+    (
+        r"\bgroup\s+sex\b",
+        "sexual activity among multiple clearly separated adults",
+        "group sex",
+    ),
+    (
+        r"\ban?\s+MFM\b",
+        "a sexual scene with two adult men and one adult woman",
+        "MFM",
+    ),
+    (
+        r"\ban?\s+FMF\b",
+        "a sexual scene with two adult women and one adult man",
+        "FMF",
+    ),
+    (
+        r"\ban?\s+MMF\b",
+        "a sexual scene with two adult men and one adult woman",
+        "MMF",
+    ),
+    (
+        r"\ban?\s+FFM\b",
+        "a sexual scene with two adult women and one adult man",
+        "FFM",
+    ),
+    (
+        r"\bMFM\b",
+        "sexual scene with two adult men and one adult woman",
+        "MFM",
+    ),
+    (
+        r"\bFMF\b",
+        "sexual scene with two adult women and one adult man",
+        "FMF",
+    ),
+    (
+        r"\bMMF\b",
+        "sexual scene with two adult men and one adult woman",
+        "MMF",
+    ),
+    (
+        r"\bFFM\b",
+        "sexual scene with two adult women and one adult man",
+        "FFM",
+    ),
+    (
+        r"\bcouple\s+swap(?:ping)?\b",
+        "two adult couples exchanging sexual partners",
+        "couple swapping",
+    ),
+    (
+        r"\bswingers?\b",
+        "adults consensually exchanging sexual partners",
+        "swingers",
+    ),
+    (
+        r"\bhotwife\b",
+        "married adult woman having consensual sex with another adult while her partner knows",
+        "hotwife",
+    ),
+    (
+        r"\bcuckold(?:ing)?\b",
+        "adult partner watching or reacting to their partner having sex with another adult",
+        "cuckold",
+    ),
+    (
+        r"\bcuckquean\b",
+        "adult woman watching or reacting to her partner having sex with another adult",
+        "cuckquean",
+    ),
+    (
+        r"\bstag\s+and\s+vixen\b",
+        "consensual adult couple sharing an exhibitionistic partner dynamic",
+        "stag and vixen",
+    ),
+    (
+        r"\blesbian\s+sex\b",
+        "visible sexual contact between adult women",
+        "lesbian sex",
+    ),
+    (
+        r"\bgay\s+sex\b",
+        "visible sexual contact between adult men",
+        "gay sex",
+    ),
+    (
+        r"\bone[- ]night\s+stand\b",
+        "single casual sexual encounter between adults",
+        "one-night stand",
+    ),
+    (
+        r"\badulterous\s+sex\b",
+        "sexual encounter involving an adult who has another committed partner",
+        "adulterous sex",
+    ),
+    (
+        r"\badult\s+incest\b",
+        "sexual relationship between clearly adult relatives",
+        "adult incest",
+    ),
+)
+EXPLICIT_ADULT_BDSM_AND_FETISH_TRANSLATIONS = (
+    (
+        r"\bBDSM\b",
+        "consensual adult restraint, dominance, submission, and power-exchange staging",
+        "BDSM",
+    ),
+    (
+        r"\bshibari\b",
+        "decorative rope restraint visibly wrapped and tensioned around an adult body",
+        "shibari",
+    ),
+    (
+        r"\bbondage\b",
+        "visible consensual restraints applied to an adult",
+        "bondage",
+    ),
+    (
+        r"\bD\s*/\s*s\b",
+        "dominant/submissive adult power-exchange roles",
+        "D/s",
+    ),
+    (
+        r"\bimpact\s+play\b",
+        "consensual striking focused on visible implement contact and body reaction",
+        "impact play",
+    ),
+    (
+        r"\bspanking\b",
+        "open-hand impact against the buttocks with visible contact and reaction",
+        "spanking",
+    ),
+    (
+        r"\bflogging\b",
+        "multi-tail flogger striking an adult body with visible contact",
+        "flogging",
+    ),
+    (
+        r"\bcaning\b",
+        "flexible cane striking an adult body with visible contact",
+        "caning",
+    ),
+    (
+        r"\bpaddling\b",
+        "flat paddle striking the buttocks with visible contact",
+        "paddling",
+    ),
+    (
+        r"\b(?:breath\s+play|erotic\s+choking)\b",
+        "consensual hand-at-neck power-exchange pose without obscuring actor ownership",
+        "breath play",
+    ),
+    (
+        r"\bwax\s+play\b",
+        "warm candle wax visibly dripping onto an adult body",
+        "wax play",
+    ),
+    (
+        r"\bsensory\s+deprivation\b",
+        "blindfolded or hearing-restricted adult with visible consensual restraint context",
+        "sensory deprivation",
+    ),
+    (
+        r"\b(?:ball|ring|bit)\s+gag\b",
+        "visible mouth gag secured by straps around an adult head",
+        "gag",
+    ),
+    (
+        r"\bcollar\s+and\s+leash\b",
+        "adult wearing a collar connected to a leash held by the dominant adult",
+        "collar and leash",
+    ),
+    (
+        r"\bpet\s+play\b",
+        "adult human role-playing a pet with costume accessories and dominant/submissive cues",
+        "pet play",
+    ),
+    (
+        r"\berotic\s+humiliation\b",
+        "consensual adult humiliation role-play with readable dominant/submissive reactions",
+        "erotic humiliation",
+    ),
+    (
+        r"\bpraise\s+kink\b",
+        "consensual erotic praise shown through approving speech, gaze, and body response",
+        "praise kink",
+    ),
+    (
+        r"\bfoot\s+fetish\b",
+        "erotic focus on adult feet with deliberate touch, gaze, and composition",
+        "foot fetish",
+    ),
+    (
+        r"\b(?:latex|leather)\s+fetish\b",
+        "erotic focus on fitted material, sheen, body contour, and tactile contact",
+        "latex or leather fetish",
+    ),
+    (
+        r"\bvoyeurism\b",
+        "adult secretly or deliberately watching other adults during sexual activity",
+        "voyeurism",
+    ),
+    (
+        r"\bexhibitionism\b",
+        "adult deliberately exposing sexual activity to an observing adult audience",
+        "exhibitionism",
+    ),
+    (
+        r"\bpublic\s+sex\b",
+        "adults engaged in visible sexual activity in a public setting",
+        "public sex",
+    ),
+    (
+        r"\b(?:consensual\s+non[- ]consent|CNC)\b",
+        "pre-consented adult force-roleplay with explicit dominant and submissive role binding",
+        "consensual non-consent or CNC",
+    ),
+    (
+        r"\bchastity\s+(?:play|device)\b",
+        "visible locked adult chastity device with consensual power-exchange context",
+        "chastity play",
+    ),
+    (
+        r"\btease\s+and\s+denial\b",
+        "repeated sexual stimulation stopped before orgasm",
+        "tease and denial",
+    ),
+)
+EXPLICIT_ADULT_PORN_AND_CAMERA_TRANSLATIONS = (
+    (
+        r"\bPOV\s+sex\b",
+        "first-person participant camera view of the sexual action",
+        "POV sex",
+    ),
+    (
+        r"\bamateur\s+porn\b",
+        "candid homemade explicit-adult recording aesthetic",
+        "amateur porn",
+    ),
+    (
+        r"\bgonzo\s+porn\b",
+        "participant-close explicit camera style with minimal separation from the action",
+        "gonzo porn",
+    ),
+    (
+        r"\bhentai\b",
+        "explicit adult anime-style illustration",
+        "hentai",
+    ),
+    (
+        r"\byaoi\b",
+        "explicit adult male-male manga or anime style",
+        "yaoi",
+    ),
+    (
+        r"\byuri\b",
+        "explicit adult female-female manga or anime style",
+        "yuri",
+    ),
+    (
+        r"\bNTR\b",
+        "adult infidelity scene emphasizing the excluded partner's reaction",
+        "NTR",
+    ),
+    (
+        r"\bglory\s*hole\b",
+        "penis extending through a small wall opening for sexual contact",
+        "glory hole",
+    ),
+    (
+        r"\bspit[- ]roast\b",
+        "one adult simultaneously receiving oral and rear penetration from two adults",
+        "spit roast",
+    ),
+    (
+        r"\bairtight\s+penetration\b",
+        "simultaneous oral, vaginal, and anal penetration of one adult by three adults",
+        "airtight penetration",
+    ),
+    (
+        r"\bdouble\s+vaginal\b",
+        "simultaneous vaginal penetration by two separate penetrating actors or objects",
+        "double vaginal",
+    ),
+    (
+        r"\bdouble\s+anal\b",
+        "simultaneous anal penetration by two separate penetrating actors or objects",
+        "double anal",
+    ),
+    (
+        r"\bcum\s*shot\b",
+        "visible semen release captured as the focal action",
+        "cumshot",
+    ),
+    (
+        r"\bfacial\s+cum\s*shot\b",
+        "visible semen release onto an adult face",
+        "facial cumshot",
+    ),
+    (
+        r"\binternal\s+cum\s*shot\b",
+        "internal ejaculation at the specified body opening",
+        "internal cumshot",
+    ),
+)
+EXPLICIT_ADULT_LANGUAGE_TRANSLATIONS = (
+    EXPLICIT_ADULT_PHRASE_TRANSLATIONS
+    + EXPLICIT_ADULT_STANDARD_ACT_TRANSLATIONS
+    + EXPLICIT_ADULT_ANATOMY_AND_FLUID_TRANSLATIONS
+    + EXPLICIT_ADULT_POSITION_TRANSLATIONS
+    + EXPLICIT_ADULT_GROUP_AND_RELATIONSHIP_TRANSLATIONS
+    + EXPLICIT_ADULT_BDSM_AND_FETISH_TRANSLATIONS
+    + EXPLICIT_ADULT_PORN_AND_CAMERA_TRANSLATIONS
+    + (
+    (r"\bsextoys?\b", "sex toy", "sextoy"),
+    (r"\bmilf\s+women\b", "mature adult women", "MILF"),
+    (r"\bmilf\s+woman\b", "mature adult woman", "MILF"),
+    (r"\bmilfs\b", "mature adult women", "MILF"),
+    (r"\bmilf\b", "mature adult woman", "MILF"),
+    (
+        r"\bfucking\s+(?:herself|himself|themself|themselves)\b",
+        "performing self-penetration for genital stimulation",
+        "fucking oneself",
+    ),
+    (
+        r"\bfucks\s+(?:herself|himself|themself|themselves)\b",
+        "performs self-penetration for genital stimulation",
+        "fucking oneself",
+    ),
+    (
+        r"\bfucked\s+(?:herself|himself|themself|themselves)\b",
+        "performed self-penetration for genital stimulation",
+        "fucking oneself",
+    ),
+    (
+        r"\bfuck\s+(?:herself|himself|themself|themselves)\b",
+        "perform self-penetration for genital stimulation",
+        "fucking oneself",
+    ),
+    (
+        r"\bthey\s+(?:are\s+)?fucking\b",
+        "they are having penetrative sex",
+        "fucking",
+    ),
+    (
+        r"\ban?\s+adult\s+couple\s+fucking\b",
+        "an adult couple having penetrative sex",
+        "fucking",
+    ),
+    (
+        r"\bfucking\s+(her|him|them|the\s+(?:adult\s+)?(?:woman|man|partner))\b",
+        r"penetrating \1",
+        "fucking",
+    ),
+    (r"\bis\s+fucking\b", "is penetrating", "fucking"),
+    (r"\bare\s+fucking\b", "are having penetrative sex", "fucking"),
+    (r"\bfucks\b", "penetrates", "fucking"),
+    (r"\bfucking\b", "having penetrative sex", "fucking"),
+    (r"\bfucked\b", "penetrated", "fucking"),
+    (r"\bfuck\b", "penetrate", "fucking"),
+    (
+        r"\bhammering\b(?=\s+(?:(?:the|a|an|her|his|their)\s+)?"
+        r"(?:dildo|sex\s+toy|penis|vulva|vagina|anus)\b)",
+        "repeatedly thrusting",
+        "hammering",
+    ),
+    (
+        r"\bhammers\b(?=\s+(?:(?:the|a|an|her|his|their)\s+)?"
+        r"(?:dildo|sex\s+toy|penis|vulva|vagina|anus)\b)",
+        "repeatedly thrusts",
+        "hammering",
+    ),
+    (
+        r"\bhammered\b(?=\s+(?:(?:the|a|an|her|his|their)\s+)?"
+        r"(?:dildo|sex\s+toy|penis|vulva|vagina|anus)\b)",
+        "repeatedly thrust",
+        "hammering",
+    ),
+    (
+        r"\bhammer\b(?=\s+(?:(?:the|a|an|her|his|their)\s+)?"
+        r"(?:dildo|sex\s+toy|penis|vulva|vagina|anus)\b)",
+        "repeatedly thrust",
+        "hammering",
+    ),
+    (r"\bpuss(?:y|ies)\b", "vulva", "pussy"),
+    (r"\bblowjobs?\b", "oral stimulation of the penis", "blowjob"),
+    (r"\bhandjobs?\b", "manual stimulation of the penis", "handjob"),
+    (r"\bfingering\b", "manual genital stimulation with fingers", "fingering"),
+    (
+        r"\b(?:eating|eat|eats)\s+(?:her|their)\s+out\b",
+        "performing oral stimulation of the vulva",
+        "eat out",
+    ),
+    (r"\bpre[- ]cum\b", "pre-ejaculate fluid", "pre-cum"),
+    (r"\bcumming\b", "reaching peak sexual release", "cumming"),
+    (
+        r"\b(she|he|they)\s+came(?=\s+(?:hard|again|together)\b|[,.!?;])",
+        r"\1 showed a peak sexual release",
+        "came",
+    ),
+    (r"\bcum\b", "semen", "cum"),
+    (r"\b(?:tits?|boobs?)\b", "breasts", "tits or boobs"),
+    (r"\basshole\b", "anus", "asshole"),
+    (
+        r"\b((?:his|her|their|the|bare|naked|round|firm|exposed)\s+)"
+        r"(?:ass|asses)\b",
+        r"\1buttocks",
+        "ass",
+    ),
+    (
+        r"\b((?:erect|hard|throbbing|his|her|their|the)\s+)(?:cock|dick)\b",
+        r"\1penis",
+        "cock or dick",
+    ),
+)
 )
 PHRASING_REWRITES = (
     (
@@ -930,6 +2067,75 @@ def translate_visual_slang(text: str) -> str:
     return translated
 
 
+def translate_explicit_adult_language(text: str) -> str:
+    """Translate adult slang outside quotes into concrete anatomy and actions."""
+
+    def replace_with_source_case(
+        match: re.Match[str],
+        replacement: str,
+    ) -> str:
+        expanded = match.expand(replacement)
+        source = match.group(0)
+        source_word = re.search(r"[A-Za-z]+", source)
+        preserve_initial_capital = bool(
+            source_word
+            and source_word.group(0)[0].isupper()
+            and (
+                len(source_word.group(0)) == 1
+                or not source_word.group(0).isupper()
+            )
+        )
+        if preserve_initial_capital:
+            first_letter = re.search(r"[A-Za-z]", expanded)
+            if first_letter:
+                index = first_letter.start()
+                expanded = (
+                    expanded[:index]
+                    + expanded[index].upper()
+                    + expanded[index + 1 :]
+                )
+        return expanded
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    translated_parts: list[str] = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            translated_parts.append(part)
+            continue
+        protected_replacements: list[tuple[str, str]] = []
+        for pattern, replacement, _label in EXPLICIT_ADULT_LANGUAGE_TRANSLATIONS:
+            def protect_replacement(
+                match: re.Match[str],
+                value: str = replacement,
+            ) -> str:
+                rendered = replace_with_source_case(match, value)
+                token = f"\ue000{len(protected_replacements)}\ue001"
+                protected_replacements.append((token, rendered))
+                return token
+
+            part = re.sub(
+                pattern,
+                protect_replacement,
+                part,
+                flags=re.IGNORECASE,
+            )
+        for token, rendered in protected_replacements:
+            part = part.replace(token, rendered)
+        translated_parts.append(part)
+    return re.sub(r"\s{2,}", " ", "".join(translated_parts)).strip()
+
+
+def explicit_adult_language_terms(text: str) -> list[str]:
+    """Return adult slang labels that remain outside exact rendered text."""
+
+    searchable = unquoted_text(text)
+    terms: list[str] = []
+    for pattern, _replacement, label in EXPLICIT_ADULT_LANGUAGE_TRANSLATIONS:
+        if re.search(pattern, searchable, flags=re.IGNORECASE) and label not in terms:
+            terms.append(label)
+    return terms
+
+
 def polish_prompt_phrasing(text: str) -> str:
     polished = text
     for pattern, replacement in PHRASING_REWRITES:
@@ -1266,6 +2472,32 @@ def normalize_final_prompt_text(text: str) -> str:
     return cleaned.strip()
 
 
+KREA_WORKFLOW_LABEL_PATTERN = re.compile(
+    r"(?i)\b(?:"
+    r"camera framing and viewpoint(?: for the underlying meme image| across the comic panels)?"
+    r"|shared camera framing and viewpoint across the comic panels"
+    r"|visual direction"
+    r"|visible action details"
+    r")\s*:\s*"
+)
+
+
+def naturalize_krea_workflow_labels(text: str) -> str:
+    """Remove accidental UI/control labels without changing quoted visible text."""
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    cleaned_parts: list[str] = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            cleaned_parts.append(part)
+            continue
+        part = KREA_WORKFLOW_LABEL_PATTERN.sub("", part)
+        part = re.sub(r"\s{2,}", " ", part)
+        part = re.sub(r"([.!?])\s*,\s*", r"\1 ", part)
+        cleaned_parts.append(part)
+    return "".join(cleaned_parts).strip()
+
+
 def unquoted_text(text: str) -> str:
     return " ".join(
         part
@@ -1400,6 +2632,67 @@ def _bound_role_position_count(searchable: str) -> int:
     return len(bound_spans)
 
 
+def _single_gender_alias_scene(searchable: str) -> bool:
+    """Recognize one person described with repeated same-gender aliases."""
+
+    identity_groups = (
+        set(FEMALE_PERSON_IDENTITY_WORDS),
+        set(MALE_PERSON_IDENTITY_WORDS),
+        set(NONBINARY_PERSON_IDENTITY_WORDS)
+        | {"agender person", "genderqueer person", "non-binary person", "nonbinary person"},
+    )
+    present_groups = [
+        group
+        for group in identity_groups
+        if any(
+            re.search(rf"\b{re.escape(term)}\b", searchable)
+            for term in group
+        )
+    ]
+    if len(present_groups) != 1:
+        return False
+
+    present_group = present_groups[0]
+    generic_aliases = {"actor", "adult", "character", "person"}
+    role_mentions = set(person_role_mentions(searchable))
+    if role_mentions - present_group - generic_aliases:
+        return False
+
+    explicit_single = bool(
+        re.search(
+            r"\b(?:alone|solo|single\s+(?:adult|character|person|subject|woman|man)|"
+            r"only\s+(?:adult|character|person|subject|woman|man))\b",
+            searchable,
+        )
+    )
+    subject_alias = bool(
+        re.search(
+            r"\b(?:adult\s+)?"
+            r"(?:female|male|agender|genderqueer|non-binary|nonbinary)\s+subject\b",
+            searchable,
+        )
+    )
+    if re.search(
+        r"\b(?:another|second)\s+(?:adult\s+)?"
+        r"(?:female|male|agender|genderqueer|non-binary|nonbinary)\s+subject\b",
+        searchable,
+    ):
+        return False
+    if not explicit_single and not subject_alias:
+        return False
+
+    identity_pattern = "|".join(
+        re.escape(term)
+        for term in sorted(present_group, key=len, reverse=True)
+    )
+    distinct_person_connector = re.compile(
+        rf"\b(?:{identity_pattern})\b[^,.!?;]{{0,40}}\b"
+        r"(?:and|beside|faces?|greets?|kisses?|next\s+to|opposite|versus|with)\b"
+        rf"[^,.!?;]{{0,40}}\b(?:another\s+)?(?:{identity_pattern})\b"
+    )
+    return not distinct_person_connector.search(searchable)
+
+
 def appears_multi_person_scene(prompt: str) -> bool:
     searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
     role_mentions = person_role_mentions(searchable)
@@ -1414,6 +2707,8 @@ def appears_multi_person_scene(prompt: str) -> bool:
         searchable,
     ):
         return True
+    if _single_gender_alias_scene(searchable):
+        return False
     return len(role_mentions) >= 2
 
 
@@ -1431,13 +2726,56 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         for role in role_mentions
         if role not in {"adult", "character", "person"}
     }
+    role_pattern = _role_pattern()
+    relational_role_binding = _relational_role_binding(searchable)
+    position_count = _bound_role_position_count(searchable)
     reciprocal_is_unambiguous = (
         len(distinct_roles) >= 2 and "each other" in searchable
     )
+    female_reference_is_unique = bool(
+        _unambiguous_gender_label(
+            searchable,
+            singular_terms=(
+                "woman", "female", "lady", "girl", "queen", "mother",
+                "daughter", "sister", "wife", "bride", "cavewoman",
+            ),
+            plural_terms=(
+                "women", "females", "ladies", "girls", "queens", "mothers",
+                "daughters", "sisters", "wives", "brides", "cavewomen",
+            ),
+            fallback_label="the female subject",
+        )
+    )
+    male_reference_is_unique = bool(
+        _unambiguous_gender_label(
+            searchable,
+            singular_terms=(
+                "man", "male", "boy", "king", "father", "son", "brother",
+                "husband", "groom", "caveman",
+            ),
+            plural_terms=(
+                "men", "males", "boys", "kings", "fathers", "sons",
+                "brothers", "husbands", "grooms", "cavemen",
+            ),
+            fallback_label="the male subject",
+        )
+    )
+    group_reference_is_clear = (
+        len(distinct_roles) >= 2
+        and (position_count >= 2 or relational_role_binding)
+    )
+    allowed_references: set[str] = set()
+    if female_reference_is_unique:
+        allowed_references.update(("she", "her", "hers"))
+    if male_reference_is_unique:
+        allowed_references.update(("he", "him", "his"))
+    if group_reference_is_clear:
+        allowed_references.update(("both", "they", "their", "them"))
     ambiguous = [
         word
         for word in AMBIGUOUS_MULTI_PERSON_REFERENCES
         if re.search(rf"\b{re.escape(word)}\b", searchable)
+        and word not in allowed_references
         and not (
             reciprocal_is_unambiguous
             and word in {"each other", "other"}
@@ -1448,9 +2786,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     if ambiguous:
         issues.append("ambiguous person references: " + ", ".join(ambiguous[:6]))
 
-    role_pattern = _role_pattern()
-    relational_role_binding = _relational_role_binding(searchable)
-    position_count = _bound_role_position_count(searchable)
     if position_count < 2 and not relational_role_binding:
         issues.append("missing distinct position labels for each person")
 
@@ -1700,168 +3035,9 @@ def bind_unpositioned_mixed_gender_pair(prompt: str) -> str:
 
 
 def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
-    """Expand safely resolvable gendered pronouns into stable person labels."""
+    """Keep natural pronouns; validation rejects only genuinely ambiguous ones."""
 
-    if not appears_multi_person_scene(prompt):
-        return prompt
-
-    female_label = _unambiguous_gender_label(
-        prompt,
-        singular_terms=(
-            "woman",
-            "female",
-            "lady",
-            "girl",
-            "queen",
-            "mother",
-            "daughter",
-            "sister",
-            "wife",
-            "bride",
-            "cavewoman",
-        ),
-        plural_terms=(
-            "women",
-            "females",
-            "ladies",
-            "girls",
-            "queens",
-            "mothers",
-            "daughters",
-            "sisters",
-            "wives",
-            "brides",
-            "cavewomen",
-        ),
-        fallback_label="the female subject",
-    )
-    male_label = _unambiguous_gender_label(
-        prompt,
-        singular_terms=(
-            "man",
-            "male",
-            "boy",
-            "king",
-            "father",
-            "son",
-            "brother",
-            "husband",
-            "groom",
-            "caveman",
-        ),
-        plural_terms=(
-            "men",
-            "males",
-            "boys",
-            "kings",
-            "fathers",
-            "sons",
-            "brothers",
-            "husbands",
-            "grooms",
-            "cavemen",
-        ),
-        fallback_label="the male subject",
-    )
-    if not female_label and not male_label:
-        return prompt
-
-    def replace_unquoted(segment: str) -> str:
-        group_label = (
-            f"{female_label} and {male_label}"
-            if female_label and male_label
-            else ""
-        )
-        positioned_role = (
-            _role_pattern()
-            + r"[^,.!?;]{0,48}\b(?:"
-            r"(?:(?:image|screen)-)?(?:left|right|center)|"
-            r"foreground|background|middle)\b"
-        )
-        if male_label:
-            segment = re.sub(
-                rf"\bhis\s+(?={positioned_role})",
-                "the ",
-                segment,
-                flags=re.IGNORECASE,
-            )
-        if female_label:
-            segment = re.sub(
-                rf"\bher\s+(?={positioned_role})",
-                "the ",
-                segment,
-                flags=re.IGNORECASE,
-            )
-        if male_label:
-            segment = re.sub(r"\bhe\b", male_label, segment, flags=re.IGNORECASE)
-            segment = re.sub(r"\bhim\b", male_label, segment, flags=re.IGNORECASE)
-            segment = re.sub(
-                r"\bhis\b",
-                male_label + "'s",
-                segment,
-                flags=re.IGNORECASE,
-            )
-        if female_label:
-            segment = re.sub(r"\bshe\b", female_label, segment, flags=re.IGNORECASE)
-            segment = re.sub(
-                r"\bhers\b",
-                female_label + "'s",
-                segment,
-                flags=re.IGNORECASE,
-            )
-
-            object_her = re.compile(
-                r"(?i)(?P<prefix>\b(?:to|toward|towards|at|beside|behind|near|with|from|"
-                r"for|against|around|past|above|below|helps|watches|sees|touches|faces|"
-                r"follows|holds|grabs)\s+)\bher\b"
-            )
-            segment = object_her.sub(
-                lambda match: match.group("prefix") + female_label,
-                segment,
-            )
-            segment = re.sub(
-                r"\bher\b(?=\s*[,.:!?)]|$)",
-                female_label,
-                segment,
-                flags=re.IGNORECASE,
-            )
-            segment = re.sub(
-                r"\bher\b",
-                female_label + "'s",
-                segment,
-                flags=re.IGNORECASE,
-            )
-        if group_label:
-            segment = re.sub(
-                r"\bboth\b",
-                group_label,
-                segment,
-                flags=re.IGNORECASE,
-            )
-            segment = re.sub(
-                r"\bthey\b",
-                group_label,
-                segment,
-                flags=re.IGNORECASE,
-            )
-            segment = re.sub(
-                r"\bthem\b",
-                group_label,
-                segment,
-                flags=re.IGNORECASE,
-            )
-            segment = re.sub(
-                r"\btheir\b",
-                group_label + "'s",
-                segment,
-                flags=re.IGNORECASE,
-            )
-        return segment
-
-    return "".join(
-        part if index % 2 else replace_unquoted(part)
-        for index, part in enumerate(re.split(r'("[^"]*")', prompt))
-    )
+    return prompt
 
 
 def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
@@ -1884,6 +3060,234 @@ def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> 
         if source_has_identity and not candidate_has_identity:
             issues.append(f"missing explicit {label} identity label from the source")
     return issues
+
+
+ADULT_TOY_OBJECT_PATTERNS = (
+    ("dildo", re.compile(r"\bdildos?\b", re.IGNORECASE)),
+    ("vibrator", re.compile(r"\bvibrators?\b", re.IGNORECASE)),
+    ("strap-on", re.compile(r"\bstrap[- ]ons?\b", re.IGNORECASE)),
+    ("butt plug", re.compile(r"\b(?:butt|anal)\s+plugs?\b", re.IGNORECASE)),
+    ("anal beads", re.compile(r"\banal\s+beads?\b", re.IGNORECASE)),
+    (
+        "masturbation sleeve",
+        re.compile(r"\b(?:masturbation|penis)\s+sleeves?\b", re.IGNORECASE),
+    ),
+    ("sex toy", re.compile(r"\b(?:sex|adult)\s+toys?\b", re.IGNORECASE)),
+)
+DILDO_REVERSED_DIRECTION_PATTERN = re.compile(
+    r"(?:\b(?:base|handle)\b[^.!?;]{0,100}\b(?:faces?|points?|aimed|aligned)\b"
+    r"[^.!?;]{0,60}\b(?:toward|towards|into)\b[^.!?;]{0,60}\b"
+    r"(?:body|vagina|vaginal|anus|anal|opening|contact)\b|"
+    r"\b(?:rounded\s+|insertion\s+)?(?:tip|end)\b[^.!?;]{0,100}\b"
+    r"(?:faces?|points?|aimed|aligned)\b[^.!?;]{0,50}\baway\s+from\b"
+    r"[^.!?;]{0,50}\b(?:body|vagina|vaginal|anus|anal|opening|contact)\b)",
+    re.IGNORECASE,
+)
+UNREQUESTED_GENDER_TRAIT_PATTERNS = (
+    ("futanari", re.compile(r"\b(?:futanari|futa)\b", re.IGNORECASE)),
+    ("transgender", re.compile(r"\b(?:transgender|transsexual|trans)\b", re.IGNORECASE)),
+    ("shemale", re.compile(r"\bshe[- ]?male\b", re.IGNORECASE)),
+    ("intersex", re.compile(r"\b(?:intersex|hermaphrodit(?:e|ic))\b", re.IGNORECASE)),
+)
+MALE_GENITAL_ANATOMY_PATTERN = re.compile(
+    r"\b(?:penis|penises|cock|cocks|phallus|testicles?|testes|scrotum)\b",
+    re.IGNORECASE,
+)
+FEMALE_GENITAL_ANATOMY_PATTERN = re.compile(
+    r"\b(?:vagina|vaginal|vulva|vulval|labia)\b",
+    re.IGNORECASE,
+)
+INSERTED_OBJECT_ACTION = (
+    r"(?:insert(?:s|ed|ing)?|push(?:es|ed|ing)?|slid(?:e|es|ing)?|"
+    r"put(?:s|ting)?|plac(?:e|es|ed|ing)|press(?:es|ed|ing)?|"
+    r"thrust(?:s|ed|ing)?|guid(?:e|es|ed|ing)|stuff(?:s|ed|ing)?)"
+)
+INSERTED_OBJECT_TARGET = (
+    r"(?:(?:her|his|their|the\s+(?:adult\s+)?(?:woman|man|subject)(?:'s)?)\s+)?"
+    r"(?P<target>vagina|vaginal\s+opening|anus|anal\s+opening|rectum|"
+    r"urethra|urethral\s+opening)"
+)
+ACTIVE_INSERTED_OBJECT_PATTERN = re.compile(
+    rf"\b{INSERTED_OBJECT_ACTION}\b\s+(?P<object>[^,.!?;]{{1,100}}?)\s+"
+    rf"(?:into|inside|in)\s+{INSERTED_OBJECT_TARGET}\b",
+    re.IGNORECASE,
+)
+PASSIVE_INSERTED_OBJECT_PATTERN = re.compile(
+    rf"(?P<object>[^,.!?;]{{1,100}}?)\s+\b(?:is|are|being|was|were)\s+"
+    rf"{INSERTED_OBJECT_ACTION}\b\s+(?:into|inside|in)\s+{INSERTED_OBJECT_TARGET}\b",
+    re.IGNORECASE,
+)
+BODY_PART_INSERTION_HEADS = {
+    "finger",
+    "fingers",
+    "hand",
+    "hands",
+    "thumb",
+    "thumbs",
+    "tongue",
+    "tongues",
+    "penis",
+    "penises",
+    "cock",
+    "cocks",
+    "toe",
+    "toes",
+    "foot",
+    "feet",
+}
+INSERTED_OBJECT_RELATION_MARKER = re.compile(
+    r"\b(?:separate\s+(?:physical\s+)?object|distinct\s+(?:physical\s+)?object|"
+    r"non-anatomical\s+(?:item|object)|own\s+(?:material|outer\s+contour)|"
+    r"continuous\s+outer\s+contour)\b",
+    re.IGNORECASE,
+)
+INSERTED_OBJECT_BOUNDARY_MARKER = re.compile(
+    r"\b(?:visible\s+external\s+portion|external\s+portion|contact\s+boundary|"
+    r"boundary\s+at|orientation|outer\s+contour|point\s+of\s+contact)\b",
+    re.IGNORECASE,
+)
+
+
+def requested_adult_toy_objects(text: str) -> list[tuple[str, re.Pattern[str]]]:
+    """Return positively requested adult toys, excluding negative constraints."""
+
+    searchable = text_without_negative_constraints(normalize_concept_text(text))
+    requested = [
+        (label, pattern)
+        for label, pattern in ADULT_TOY_OBJECT_PATTERNS
+        if pattern.search(searchable)
+    ]
+    if any(label != "sex toy" for label, _pattern in requested):
+        requested = [
+            (label, pattern)
+            for label, pattern in requested
+            if label != "sex toy"
+        ]
+    return requested
+
+
+def _is_body_part_insertion_phrase(object_phrase: str) -> bool:
+    words = re.findall(r"[a-z]+", object_phrase.lower())
+    if not words:
+        return False
+    return words[-1] in BODY_PART_INSERTION_HEADS
+
+
+def requested_inserted_object_targets(text: str) -> list[str]:
+    """Return body openings receiving an explicitly separate, non-anatomical item."""
+
+    searchable = text_without_negative_constraints(normalize_concept_text(text))
+    targets: list[str] = []
+    for pattern in (ACTIVE_INSERTED_OBJECT_PATTERN, PASSIVE_INSERTED_OBJECT_PATTERN):
+        for match in pattern.finditer(searchable):
+            if _is_body_part_insertion_phrase(match.group("object")):
+                continue
+            target = match.group("target").lower()
+            normalized_target = (
+                "vaginal opening"
+                if target in {"vagina", "vaginal opening"}
+                else "anal opening"
+                if target in {"anus", "anal opening", "rectum"}
+                else "urethral opening"
+            )
+            if normalized_target not in targets:
+                targets.append(normalized_target)
+    return targets
+
+
+def requested_dildo_direction(text: str) -> str:
+    """Return one shared direction sentence only for active single-ended use."""
+
+    return dildo_direction_instruction(extract_nsfw_scene_contract(text))
+
+
+def adult_toy_object_contract_issues(
+    final_prompt: str,
+    original_prompt: str,
+) -> list[str]:
+    """Reject only an explicitly reversed active dildo-use direction."""
+
+    if not requested_dildo_direction(original_prompt):
+        return []
+    candidate = text_without_negative_constraints(normalize_concept_text(final_prompt))
+    if not DILDO_REVERSED_DIRECTION_PATTERN.search(candidate):
+        return []
+    return [
+        "dildo is reversed: its insertion tip must face the requested contact "
+        "while its base or handle remains outside and points away"
+    ]
+
+
+def inserted_object_contract_issues(
+    final_prompt: str,
+    original_prompt: str,
+) -> list[str]:
+    """Require the requested contact target without demanding geometry prose."""
+
+    targets = requested_inserted_object_targets(original_prompt)
+    if not targets:
+        return []
+    candidate = text_without_negative_constraints(normalize_concept_text(final_prompt))
+    issues: list[str] = []
+    for target in targets:
+        target_pattern = (
+            r"\b(?:vagina|vaginal|vulva|pussy)\b"
+            if target == "vaginal opening"
+            else r"\b(?:anus|anal|rectum|rectal)\b"
+            if target == "anal opening"
+            else r"\b(?:urethra|urethral)\b"
+        )
+        if not re.search(target_pattern, candidate, flags=re.IGNORECASE):
+            issues.append(f"missing requested contact at the {target}")
+    return issues
+
+
+def unrequested_gender_trait_issues(
+    final_prompt: str,
+    original_prompt: str,
+) -> list[str]:
+    """Reject invented gender identities and cross-gender genital anatomy."""
+
+    source = text_without_negative_constraints(normalize_concept_text(original_prompt)).lower()
+    candidate = text_without_negative_constraints(normalize_concept_text(final_prompt)).lower()
+    issues: list[str] = []
+    for label, pattern in UNREQUESTED_GENDER_TRAIT_PATTERNS:
+        if pattern.search(candidate) and not pattern.search(source):
+            issues.append(f"unrequested {label} identity or trait")
+
+    source_has_female = any(
+        re.search(rf"\b{re.escape(term)}\b", source)
+        for term in FEMALE_PERSON_IDENTITY_WORDS
+    )
+    source_has_male = any(
+        re.search(rf"\b{re.escape(term)}\b", source)
+        for term in MALE_PERSON_IDENTITY_WORDS
+    )
+    if source_has_female and not source_has_male:
+        added = MALE_GENITAL_ANATOMY_PATTERN.search(candidate)
+        if added and not MALE_GENITAL_ANATOMY_PATTERN.search(source):
+            issues.append(
+                f"male genital anatomy added to a female-only source: {added.group(0).lower()}"
+            )
+    if source_has_male and not source_has_female:
+        added = FEMALE_GENITAL_ANATOMY_PATTERN.search(candidate)
+        if added and not FEMALE_GENITAL_ANATOMY_PATTERN.search(source):
+            issues.append(
+                f"female genital anatomy added to a male-only source: {added.group(0).lower()}"
+            )
+    return issues
+
+
+def enforce_inserted_object_contract(candidate: str, original_prompt: str) -> str:
+    """Leave a clear direct contact phrase alone."""
+
+    return normalize_final_prompt_text(candidate)
+
+
+def enforce_adult_toy_object_contract(candidate: str, original_prompt: str) -> str:
+    """Leave ordinary active-use wording alone; validation catches explicit reversal."""
+
+    return normalize_final_prompt_text(candidate)
 
 
 def implicit_panel_beats(text: str) -> list[str]:
@@ -3229,8 +4633,10 @@ def final_compliance_issues(
     movement: int = 0,
     content_format: str = "Auto",
     safe_for_work: bool = False,
+    explicit_nsfw: bool = False,
 ) -> list[str]:
     cleaned = normalize_final_prompt_text(final_prompt)
+    normalized_format = normalize_content_format(content_format)
     issues: list[str] = []
     if not cleaned:
         issues.append("Final prompt is empty")
@@ -3296,7 +4702,38 @@ def final_compliance_issues(
     )
     if gender_issues:
         issues.append("Gender identity contract: " + ", ".join(gender_issues))
-    normalized_format = normalize_content_format(content_format)
+    if explicit_nsfw:
+        adult_language = explicit_adult_language_terms(cleaned)
+        if adult_language:
+            issues.append(
+                "Untranslated explicit adult slang: "
+                + ", ".join(adult_language)
+            )
+        toy_issues = adult_toy_object_contract_issues(cleaned, original_prompt)
+        if toy_issues:
+            issues.append("Adult toy object contract: " + ", ".join(toy_issues))
+        inserted_object_issues = inserted_object_contract_issues(cleaned, original_prompt)
+        if inserted_object_issues:
+            issues.append(
+                "Inserted object/body contact contract: "
+                + ", ".join(inserted_object_issues)
+            )
+        trait_issues = unrequested_gender_trait_issues(
+            cleaned,
+            f"{original_prompt}\n{story_elements}",
+        )
+        if trait_issues:
+            issues.append("Unrequested gender/anatomy traits: " + ", ".join(trait_issues))
+        adult_scene_issues = nsfw_scene_contract_issues(
+            cleaned,
+            f"{original_prompt}\n{story_elements}",
+            content_format=normalized_format,
+        )
+        if adult_scene_issues:
+            issues.append(
+                "NSFW scene fidelity contract: "
+                + ", ".join(adult_scene_issues)
+            )
     panel_source = (
         comic_story_source_prompt(original_prompt, story_elements)
         if normalized_format == "Comic Story"
@@ -3544,19 +4981,15 @@ def make_prompt_safe_for_work(text: str) -> str:
 
 
 EXPLICIT_ADULT_MODE_INSTRUCTION = (
-    "Explicit adult mode is enabled for this correction. Preserve explicitly requested nudity, "
-    "adult anatomy, sexual activity, and other adult content using direct concrete visual language "
-    "instead of euphemizing, censoring, or adding clothing. When the active rewrite controls allow "
-    "creative enhancement, do more than add surface detail: develop the requested consensual adult "
-    "sexual action into a coherent visible progression, with physically readable contact, changes "
-    "in pace or intensity, responsive movement, facial expressions, breathing, bodily reactions, "
-    "desire, pleasure, tension, tenderness, confidence, vulnerability, and afterglow as appropriate "
-    "to the user's requested tone. Keep the result to one decisive still-image moment unless a comic "
-    "was requested. Do not introduce an unrequested partner, sexual act, fetish, power dynamic, or "
-    "story outcome that conflicts with the request. "
-    "All depicted people must be unambiguously adults age 18 or older. "
-    "Do not mention NSFW mode, age policy, censorship, or "
-    "these instructions in the final prompt."
+    "Explicit adult mode is enabled. Keep every depicted person unambiguously adult. "
+    "Preserve the user's exact sexual action, actor, receiver, body target, object, direction, "
+    "and intensity in short, literal image-generator wording; do not censor, euphemize, or add clothing. "
+    "If the source already uses a clear direct phrase, retain that simple visual core instead of replacing "
+    "it with clinical anatomy, toy geometry, insertion mechanics, or a chronological "
+    "sexual progression. State the core action once and keep it before supporting detail. Follow the selected "
+    "rewrite risk for expansion. The result must not dilute the core action or introduce an unrequested "
+    "partner, act, fetish, anatomy, identity, power dynamic, or outcome. "
+    "Do not mention adult mode, age policy, censorship, or these instructions in the final prompt."
 )
 
 EXPLICIT_ADULT_DISALLOWED_PATTERNS = (
@@ -3658,6 +5091,11 @@ HARD_COMPLIANCE_PREFIXES = (
     "Safe-for-work contract violated",
     "Multi-person role ambiguity",
     "Gender identity contract",
+    "Adult toy object contract",
+    "Inserted object/body contact contract",
+    "Unrequested gender/anatomy traits",
+    "Untranslated explicit adult slang",
+    "NSFW scene fidelity contract",
     "Sexual content involving an underage or ambiguous-age subject",
 )
 
@@ -3749,6 +5187,45 @@ def deterministic_fidelity_fallback(
         complexity=0,
         movement=0,
     )
+
+
+def extend_short_fidelity_fallback(
+    fallback: str,
+    story_elements: str,
+    *,
+    output_length: str,
+    output_min_words: int | None = None,
+    output_max_words: int | None = None,
+) -> str:
+    """Use supplied story beats when they improve an undersized fallback."""
+
+    current_issue = length_issue(
+        fallback,
+        output_length,
+        output_min_words,
+        output_max_words,
+    )
+    details = normalize_concept_text(story_elements).strip(" .")
+    if not current_issue or "Prompt too short" not in current_issue or not details:
+        return fallback
+    if details.casefold() in fallback.casefold():
+        return fallback
+    candidate = normalize_final_prompt_text(
+        fallback.rstrip(" .") + ". The scene also shows " + details + "."
+    )
+    if prompt_length_fit_penalty(
+        candidate,
+        output_length,
+        output_min_words,
+        output_max_words,
+    ) >= prompt_length_fit_penalty(
+        fallback,
+        output_length,
+        output_min_words,
+        output_max_words,
+    ):
+        return fallback
+    return candidate
 
 
 def normalize_research_context(context: str) -> str:
@@ -5597,6 +7074,21 @@ PRIVATE_PROMPT_GUIDANCE_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     (re.escape(ARTISTIC_DETAIL_FREEDOM_INSTRUCTION), ""),
     (re.escape(EXPLICIT_ADULT_MODE_INSTRUCTION), ""),
+    (
+        r"(?is)\bPrivate\s+NSFW\s+scene\s+contract\s*:.*?"
+        r"Do\s+not\s+quote\s+or\s+label\s+this\s+private\s+contract\s+in\s+the\s+final\s+prompt\s*\.\s*",
+        "",
+    ),
+    (
+        r"(?is)\bPrivate\s+literal\s+adult-scene\s+core\s*:.*?"
+        r"Do\s+not\s+quote\s+or\s+label\s+this\s+private\s+literal\s+core\s+in\s+the\s+final\s+prompt\s*\.\s*",
+        "",
+    ),
+    (
+        r"(?is)\bPrivate\s+NSFW\s+preset\s+compatibility\s*:.*?"
+        r"Do\s+not\s+quote\s+or\s+label\s+this\s+private\s+preset\s+metadata\s+in\s+the\s+final\s+prompt\s*\.\s*",
+        "",
+    ),
     (r"(?i)\bMandatory\s+user\s+constraints\s*:\s*", ""),
     (
         r"(?i)\bPrivate\s+revision\s+guidance\s+for\s+this\s+correction\s+pass\s+only\s*:\s*",
@@ -5648,6 +7140,8 @@ INTERNAL_PROMPT_GUIDANCE_MARKERS: tuple[tuple[str, str], ...] = (
         "concept-mix control text",
     ),
     (r"(?i)\bExplicit\s+adult\s+mode\s+is\s+enabled\b", "mode control text"),
+    (r"(?i)\bPrivate\s+NSFW\s+scene\s+contract\b", "adult scene contract"),
+    (r"(?i)\bPrivate\s+NSFW\s+preset\s+compatibility\b", "adult preset metadata"),
     (r"(?i)\bArtistic\s+detail\s+freedom\s+is\s+enabled\b", "mode control text"),
     (r"(?i)\bSafe-for-work\s+output\s+is\s+mandatory\b", "mode control text"),
     (
@@ -5917,12 +7411,14 @@ Rewrite the draft as a compact natural-language visual caption. Correct spelling
 Rules:
 - Treat the supplied hard fidelity contract as non-negotiable.
 - Output format contract: {format_rule}
-- Keep the main subject and action first; group each object with its attributes, position, and relationships.
-- For individually tracked people, assign each person a short immutable identity-or-role plus position label, such as "the woman in the red coat on image-left", "the nonbinary doctor at center", and "the man in the blue shirt on image-right". Repeat that complete label before every action, pose, gaze, clothing detail, body part, and object interaction. Preserve female, male, and nonbinary identities. A couple, crowd, or group acting only collectively may keep its collective label.
+- Open with one compact visual thesis: a defining medium or composition-critical shot when supplied, then the main subject, core action or state, and immediate setting. Never delay the core subject-action relationship behind secondary detail.
+- After the opening, group each subject or object with its attributes, position, action, contact, and relationships. Then describe the wider environment, remaining composition or camera facts, global lighting and palette, and material or rendering finish.
+- For individually tracked people, assign each person a short stable identity-or-role plus position label at first mention. Repeat it only where needed to prevent ambiguous action, ownership, contact, or spatial relationships; use a pronoun when its referent is unambiguous. Preserve female, male, and nonbinary identities. A couple, crowd, or group acting only collectively may keep its collective label.
 - Preserve negative constraints as clear absence statements. Never turn excluded content into positive content.
 - Keep left/right, foreground/background, inside/outside, above/below, facing direction, source direction, and object counts exact.
 - For panels, keep the requested count, order, distinct beats, identity continuity, layout, and exact dialogue.
 - Use only the requested visual style. Do not add generic cinematic decoration.
+- Integrate camera and visual direction as natural image description. Never output control labels such as "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:".
 - Target-specific rules:
 {target_rules}
 - {'Fix genuine contradictions without changing the clearest stated intent.' if fix_logic else 'Do not reinterpret the stated scene logic.'}
@@ -5958,7 +7454,7 @@ def build_small_model_system_prompt(
     target_rule = (
         "FLUX.2 Klein has no prompt upsampling; state every essential visual fact explicitly in priority order."
         if target == "FLUX.2 Klein 9B"
-        else "Use coherent natural-language Krea 2 phrasing with a clear subject, action, composition, lighting, and style."
+        else "Use natural Krea 2 language."
     )
     action_rule = (
         "Enhance described actions using only the action-critical chain: camera view, torso direction, active shoulder-to-hand or hip-to-foot chain, contact point, and weight-bearing limb."
@@ -5966,7 +7462,7 @@ def build_small_model_system_prompt(
         else "Fix action-critical pose ambiguity when needed; do not decorate every body part."
     )
     story_rule = (
-        "Story development is enabled: add only small causal details that preserve the supplied outcome and panel count."
+        "Story development is enabled: add only causal details consistent with the outcome and panel count."
         if develop_story
         else "Do not invent plot events, characters, outcomes, or panels."
     )
@@ -5975,20 +7471,24 @@ def build_small_model_system_prompt(
         prompt_preset,
         PROMPT_PRESET_GUIDANCE["Auto"],
     )
-    return f"""You are a precise prompt editor for {target}.
-Return only final prompt; no notes, markdown, settings, negative prompt, or reasoning.
+    risk_rule = {
+        "Strict cleanup": "Polish only; invent no scene facts.",
+        "Balanced improvement": "Add one compact coherent visual cluster when useful.",
+        "Creative enhancement": "Develop one coherent setting, staging, light, or material direction.",
+    }.get(risk_level, "Improve coherently without changing the core.")
+    return f"""Precisely edit prompts for {target}. Return only the final prompt.
 {format_rule}
 {target_rule}
-Preserve requested subjects, actions, objects, counts, sides, positions, relationships, exclusions, exact visible text, and concepts.
-Resolve contradictions and ambiguous pronouns. Keep modifiers beside owners.
+Preserve all requested subjects, actions, objects, counts, positions, relationships, exclusions, quoted text, and concepts.
+Open with one compact visual thesis: supplied medium/critical shot, subject, core action or state, and setting. Then interactions, environment, other camera/composition, light/color, and rendering. Keep modifiers with owners.
 Anatomical left and right mean the subject's body; image-left and image-right mean frame placement. {action_rule}
-For multiple people, repeat each person's role and position before attributed actions or traits; use no pronouns.
-For comics, preserve identity, wardrobe, props, environment, lighting progression, and screen direction. A working title is metadata, not visible text unless requested.
+For multiple people, use stable role-position labels only where ambiguity requires.
+Integrate camera and style naturally. Never emit control labels: "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:".
 {story_rule}
 Requested output length: {output_length}. {length_rule}
-Rewrite risk level: {risk_level}. Prompt preset: {prompt_preset}.
+Rewrite risk level: {risk_level}. {risk_rule} Prompt preset: {prompt_preset}.
 Preset guidance: {preset_guidance}
-Return exactly {variation_count} variation{'s' if variation_count != 1 else ''}."""
+Return exactly {variation_count} variation{'s' if variation_count != 1 else ''}; no notes or reasoning."""
 
 
 def build_small_model_user_message(
@@ -6040,7 +7540,7 @@ def build_small_model_audit_system_prompt(generator_target: str, content_format:
     target = normalize_generator_target(generator_target)
     return f"""You are a compact {target} prompt compliance auditor.
 Compare the source contract with the candidate. Repair only concrete failures: dropped facts, wrong counts or positions, ambiguous subject-action binding, incoherent action-critical joints or contact, comic layout or continuity loss, and incompatible syntax.
-For individually tracked people, preserve every explicit female, male, and nonbinary identity and replace ambiguous pronouns with repeated identity-or-role plus position labels before each person's action and attributes. Keep purely collective couples, crowds, and groups collective.
+For individually tracked people, preserve every explicit female, male, and nonbinary identity. Establish a short stable identity-or-role plus position label, and repeat it only when needed to resolve ambiguous action, ownership, contact, or position. Natural pronouns are allowed when unambiguous. Keep purely collective couples, crowds, and groups collective.
 Return only the repaired {normalize_content_format(content_format)} prompt. Do not output a score, notes, or reasoning."""
 
 
@@ -6127,7 +7627,8 @@ def build_system_prompt(
         "For each subject, object, or location, keep its identity, attributes, material, state, action, position, and direct visual effects next to it before moving to another entity. "
         "Keep causes beside their effects and sources beside what they illuminate, reflect, cast, hold, wear, or affect. "
         "For example, describe a light bulb together with its fixture, glass, color temperature, emitted glow, nearby illuminated surface, shadows, and reflections instead of separating the bulb from its light. "
-        "After forming these local clusters, order them by scene hierarchy: main subject and action, important interacting objects, environment, composition and camera, global lighting and palette, then rendering or style. "
+        "Open with one compact visual thesis: a defining medium or composition-critical shot when supplied, then the main subject, core action or state, and immediate setting. Never bury the core relationship behind explanation or secondary anatomy. "
+        "After the opening, order local clusters as subject attributes and important interacting objects, explicit contact and spatial relationships, foreground and background environment, remaining composition or camera facts, global lighting and palette, then texture or rendering finish. "
         "Merge duplicates and never move a modifier so far away that its owner becomes ambiguous."
     )
     preset_guidance = PROMPT_PRESET_GUIDANCE.get(
@@ -6229,11 +7730,12 @@ Rules:
 - Analyze vague requests before expanding them. If the draft is underspecified, identify the missing visual decisions internally and make conservative concrete choices that fit the user's stated subject, mode, focus, concepts, and research context. Do not leave generic words as the main content.
 - Run a plausibility check before final output: remove accidental AI-artifact wording, impossible body states, impossible camera combinations, unclear subject/action bindings, and visually incoherent object mixtures unless the draft clearly requests surreal, fantasy, symbolic, dreamlike, or abstract imagery.
 - Keep body orientation viewpoint-aware. Anatomical left and right always mean the subject's own left and right; use image-left, image-right, screen-left, or screen-right only for placement in the frame. For every visible action-critical body part, make torso and head facing, gaze, shoulder and hip alignment, elbow and knee bend, palm or paw direction, grip, feet or toes, weight bearing, and prop contact mutually consistent with the camera view. Do not mirror, swap, or disconnect limbs or other connected anatomy. Add only orientation details that help the requested pose or action.
-- For individually tracked people, bind every person explicitly. Give each person a short immutable identity-or-role plus position label, such as the woman in the red coat on image-left, the nonbinary doctor at center, the bearded man in the blue shirt on image-right, or the second guard in the background. Repeat the complete label before every action, pose, gaze, clothing detail, body part, object interaction, and relationship. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. A couple, crowd, or group acting only collectively may keep one collective label.
+- For individually tracked people, bind every person explicitly. Give each person a short stable identity-or-role plus position label, such as the woman in the red coat on image-left, the nonbinary doctor at center, the bearded man in the blue shirt on image-right, or the second guard in the background. Repeat that label only when needed to prevent ambiguous action, pose, gaze, clothing ownership, body-part ownership, contact, or spatial relationships. Use natural pronouns when the referent is unambiguous. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. A couple, crowd, or group acting only collectively may keep one collective label.
 - Remove duplicate ideas, repeated descriptors, contradictions, filler, prompt chatter, and irrelevant instructions.
 - {semantic_grouping_rule}
 - Use strong composition and camera language when helpful: close-up, low angle, wide angle, macro, high-angle perspective, shallow depth of field, dynamic composition.
 - Prefer one polished natural-language paragraph or a clean comma-separated visual sentence.
+- Integrate requested camera and visual direction into the opening thesis or their natural semantic cluster. Never emit workflow labels such as "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:".
 - Use plain ASCII punctuation in the final prompt. Do not use em dashes, en dashes, semicolons, markdown, or code fences.
 - Do not invent unrelated important objects, people, brands, text, lore, or artistic styles. When story development is enabled, minimal supporting actions, reactions, props, transitions, and environmental consequences are allowed only when they strengthen the existing narrative.
 - Avoid negative prompt syntax unless the user explicitly included negative constraints.
@@ -6520,7 +8022,7 @@ Translate each feeling into visible image evidence: facial expression, gaze dire
 Multi-person role binding analysis:
 {", ".join(role_issues)}
 
-Rewrite the final prompt so every individually tracked person has a distinct identity label: a short immutable identity-or-role plus position label. Repeat the complete label before every action, pose, gaze, clothing detail, body part, and object interaction. Replace ambiguous he, she, him, her, his, hers, they, and them references with those repeated labels. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. Keep a purely collective couple, crowd, or group collective. Make it obvious who does what to whom and where each individually tracked person stands.
+Rewrite the final prompt so every individually tracked person has a distinct identity label: a short stable identity-or-role plus position. Establish that label at first mention and repeat it only where needed to resolve ambiguous action, ownership, contact, or position. Replace only ambiguous pronouns; keep natural pronouns when their referents are clear. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. Keep a purely collective couple, crowd, or group collective. Make it obvious who does what to whom and where each individually tracked person stands.
 """
         if role_issues
         else ""
@@ -6645,14 +8147,16 @@ Audit the corrected prompt against these {target} expectations:
 - Natural-language visual description, not old Stable Diffusion tag soup.
 - Correct spelling, grammar, and phrasing derived from every user-authored field, while exact quoted rendered text and intentional names remain unchanged.
 - Clear main subject, action, environment, composition, lighting, palette, camera/style, and quality details when relevant.
+- Open with a compact visual thesis: a defining medium or composition-critical shot when supplied, then the main subject, core action or state, and immediate setting. Continue with subject and interaction clusters, environment, remaining camera/composition, lighting/palette, then texture or rendering finish.
 - Related details form semantic entity clusters: each object stays beside its attributes, material, action, position, and direct effects. Sources stay beside their consequences, such as a light bulb beside its glow, illuminated surfaces, shadows, and reflections. Modifiers must not be stranded far from the entity they describe.
 - The creative result has a coherent visual thesis and prompt-specific choices. Replace generic adjective inflation with useful staging, environmental storytelling, relationships, material behavior, light interaction, or composition that supports the original idea.
 - No duplicate descriptors, filler, malformed punctuation, contradictions, or impossible framing unless intentionally surreal.
+- No workflow labels such as "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:". Integrate their content into natural image description.
 - No unresolved slang, meme language, or vague social-media shorthand outside quoted rendered text.
 - No polite filler, vague placeholders, or hedged wording outside quoted rendered text. Explicit direct phrasing is acceptable when it is concrete and helps altered text encoder clarity.
 - No unresolved vague request content. Generic words such as nice, cool, aesthetic, scene, something, stuff, or things must be replaced with concrete visual decisions.
 - No accidental AI-failure wording, impossible body states, impossible camera combinations, unclear subject/action bindings, or visually incoherent object mixtures unless intentionally surreal/fantasy/abstract.
-- Every individually tracked person has a short immutable identity-or-role plus position label. The complete label is repeated before that person's actions, pose, gaze, clothing, body parts, and object interactions. Ambiguous pronouns are removed, and explicit female, male, and nonbinary identities are never swapped, merged, generalized, or dropped. Purely collective couples, crowds, and groups may remain collective.
+- Every individually tracked person has a short stable identity-or-role plus position label. It is repeated only where needed to prevent ambiguous action, ownership, contact, or position. Clear natural pronouns may remain, while explicit female, male, and nonbinary identities are never swapped, merged, generalized, or dropped. Purely collective couples, crowds, and groups may remain collective.
 - Body-part orientation is anatomically and spatially coherent from the stated camera view. The subject's anatomical left and right are not confused with image-left and image-right, and visible action-critical anatomy has consistent facing, joint bends, palm or paw direction, grip, foot direction, weight bearing, and prop contact. Repair mirrored, swapped, twisted, or disconnected anatomy instead of repeating generic "correct anatomy" wording.
 - No unsupported sampler, CFG, step, seed, LoRA, model, or negative-prompt boilerplate inside the prompt.
 - Avoidance constraints are folded into the main prompt naturally.
@@ -6868,9 +8372,10 @@ Translate slang and shorthand into concrete renderable visual language.
 Allow explicit direct phrasing when useful for altered text encoder clarity, but replace polite filler, hedged wording, and vague placeholders with direct visual description.
 Resolve vague requests by making conservative concrete visual choices grounded in the original intent, focus, concepts, and research context.
 Repair plausibility risks such as accidental artifact wording, impossible poses, impossible framing, or incoherent subject/action bindings.
-For every individually tracked person, preserve each explicit female, male, and nonbinary identity and assign a short immutable identity-or-role plus position label. Repeat the complete label before each person's actions, pose, gaze, clothing, body parts, and object interactions. Replace ambiguous pronouns with those labels. Never swap, merge, generalize, or drop gender identities. Keep purely collective couples, crowds, and groups collective.
+For every individually tracked person, preserve each explicit female, male, and nonbinary identity and assign a short stable identity-or-role plus position label. Repeat the label only where needed to prevent ambiguous action, ownership, contact, or position. Replace ambiguous pronouns with those labels and keep clear natural pronouns. Never swap, merge, generalize, or drop gender identities. Keep purely collective couples, crowds, and groups collective.
 Repair body-part orientation with explicit, viewpoint-aware anatomy where the pose or action needs it. Keep the subject's anatomical left and right distinct from image-left and image-right, and make facing, joint bends, palm or paw direction, grip, foot direction, weight bearing, and prop contact mutually consistent. Replace generic "correct anatomy" wording with a small number of concrete orientation cues tied to the visible action.
 Regroup related visual details into entity-centered clusters. Keep every object next to its attributes, material, action, position, and direct effects, and keep a light source next to its emitted light, affected surfaces, shadows, and reflections. Order clusters by visual hierarchy rather than preserving a scrambled draft order.
+Open with a compact visual thesis containing a defining medium or composition-critical shot when supplied, then the main subject, core action or state, and immediate setting. Follow with subject and interaction clusters, environment, remaining camera/composition, lighting/palette, then texture or rendering finish. Remove workflow labels such as "Camera framing and viewpoint:", "Visual direction:", and "Visible action details:" by integrating their content naturally.
 Preserve and strengthen coherent prompt-specific creative choices, but replace generic adjective inflation or unrelated ornament with useful staging, environmental storytelling, material behavior, light interaction, or composition.
 Preserve an explicitly requested multi-panel format. Repair it with a clear layout and reading order, explicit panel labels, distinct chronological beats, stable character and prop continuity, and correctly assigned dialogue or captions. Never collapse separate panels into one scene.
 Treat every labelled source panel description in the user message as mandatory for that same numbered panel. Restore missing or reassigned subjects, actions, important objects, settings, outcomes, and exact quoted dialogue before adding optional creative detail.
@@ -9342,6 +10847,8 @@ def post_meme_completion(
                 normalize_meme_response_text(response)
             )
         )
+        if explicit_nsfw:
+            candidate = translate_explicit_adult_language(candidate)
         candidate = strip_unexpected_scripts(candidate, prompt)
         if safe_for_work:
             candidate = make_prompt_safe_for_work(candidate)
@@ -9411,6 +10918,10 @@ def post_meme_completion(
                     normalize_meme_response_text(response)
                 )
             )
+            if explicit_nsfw:
+                repaired_candidate = translate_explicit_adult_language(
+                    repaired_candidate
+                )
             repaired_candidate = strip_unexpected_scripts(
                 repaired_candidate,
                 prompt,
@@ -9500,8 +11011,27 @@ def post_chat_completion(
     explicit_nsfw: bool = False,
     diagnostic_callback: Callable[[str], None] | None = None,
 ) -> str:
+    def report_diagnostic(message: str) -> None:
+        if diagnostic_callback is None:
+            return
+        cleaned = re.sub(r"\s+", " ", str(message or "")).strip()
+        if cleaned:
+            diagnostic_callback(cleaned[:1600])
+
+    def report_issue_summary(stage: str, issue_values: list[str]) -> None:
+        if not issue_values:
+            return
+        hard_values, _soft_values = split_compliance_issues(issue_values)
+        if not hard_values:
+            return
+        report_diagnostic(
+            f"{stage} rejected by validation ({len(hard_values)} hard): "
+            + "; ".join(hard_values[:6])
+        )
+
     if safe_for_work and explicit_nsfw:
-        raise RuntimeError("Safe for work and Explicit adult (NSFW) cannot both be enabled.")
+        error = "Safe for work and Explicit adult (NSFW) cannot both be enabled."
+        raise RuntimeError(error)
     source_request = "\n".join(
         value
         for value in (
@@ -9519,9 +11049,7 @@ def post_chat_completion(
     )
     validate_no_minor_sexual_content(source_request)
     if explicit_nsfw:
-        validate_explicit_adult_mode(
-            source_request
-        )
+        validate_explicit_adult_mode(source_request)
     normalized_format = normalize_content_format(content_format)
     correction_model_instructions = "\n".join(
         value.strip()
@@ -9546,6 +11074,17 @@ def post_chat_completion(
             if correction_model_instructions.strip()
             else EXPLICIT_ADULT_MODE_INSTRUCTION
         )
+        adult_scene_contract = format_nsfw_scene_contract(
+            extract_nsfw_scene_contract(
+                source_request,
+                content_format=normalized_format,
+            ),
+            risk_level=risk_level,
+        )
+        if adult_scene_contract:
+            correction_model_instructions = (
+                f"{correction_model_instructions.strip()}\n{adult_scene_contract}"
+            )
     if artistic_detail_freedom:
         correction_model_instructions = (
             f"{correction_model_instructions.strip()}\n"
@@ -9570,9 +11109,12 @@ def post_chat_completion(
     if normalized_format == "Single Image" and appears_multi_panel_story(
         prompt, story_elements
     ):
-        raise RuntimeError(
-            "Single Image format accepts one still image only. Switch Format to Comic Story for panels, comics, storyboards, diptychs, triptychs, or sequential art."
+        error = (
+            "Single Image format accepts one still image only. Switch Format to "
+            "Comic Story for panels, comics, storyboards, diptychs, triptychs, "
+            "or sequential art."
         )
+        raise RuntimeError(error)
     core_context_text = "\n".join(
         value
         for value in (
@@ -9734,18 +11276,31 @@ def post_chat_completion(
         )
         if not exact_fidelity or not response_failed:
             raise
-        corrected = deterministic_fidelity_fallback(
-            prompt,
+        report_diagnostic(
+            "Initial model response was unusable; using the deterministic "
+            f"exact-fidelity fallback. Difficulty: {exc}"
+        )
+        corrected = extend_short_fidelity_fallback(
+            deterministic_fidelity_fallback(
+                prompt,
+                story_elements,
+                model_instructions,
+                concept_keywords=concept_keywords,
+                goal_headline=goal_headline,
+                focus=focus,
+                weighted_terms=weighted_terms,
+            ),
             story_elements,
-            model_instructions,
-            concept_keywords=concept_keywords,
-            goal_headline=goal_headline,
-            focus=focus,
-            weighted_terms=weighted_terms,
+            output_length=output_length,
+            output_min_words=output_min_words,
+            output_max_words=output_max_words,
         )
 
     def enforce_mechanical_contracts(candidate: str) -> str:
         candidate = strip_private_prompt_guidance(candidate)
+        candidate = strip_nsfw_catalog_labels(candidate)
+        if explicit_nsfw:
+            candidate = translate_explicit_adult_language(candidate)
         source_script_context = "\n".join(
             (
                 prompt,
@@ -9769,12 +11324,20 @@ def post_chat_completion(
             prompt,
             model_instructions,
         )
+        if explicit_nsfw:
+            candidate = enforce_adult_toy_object_contract(candidate, prompt)
+            candidate = enforce_inserted_object_contract(candidate, prompt)
         candidate = enforce_generator_settings_contract(candidate)
         candidate = make_prompt_safe_for_work(candidate) if safe_for_work else candidate
         candidate = strip_weighted_term_syntax(candidate, weighted_terms)
         candidate = bind_unpositioned_distinct_people(candidate)
         candidate = resolve_unambiguous_multi_person_pronouns(candidate)
         candidate = strip_private_prompt_guidance(candidate)
+        candidate = strip_nsfw_catalog_labels(candidate)
+        if explicit_nsfw:
+            candidate = translate_explicit_adult_language(candidate)
+        if normalize_generator_target(generator_target) == "Krea 2":
+            candidate = naturalize_krea_workflow_labels(candidate)
         return strip_unexpected_scripts(candidate, source_script_context)
 
     def compliance_issues(candidate: str) -> list[str]:
@@ -9799,12 +11362,20 @@ def post_chat_completion(
             movement=movement,
             content_format=normalized_format,
             safe_for_work=safe_for_work,
+            explicit_nsfw=explicit_nsfw,
         )
 
-    candidates = [enforce_mechanical_contracts(normalize_final_prompt_text(corrected))]
+    initial_candidate = enforce_mechanical_contracts(
+        normalize_final_prompt_text(corrected)
+    )
+    candidates = [initial_candidate]
+    report_issue_summary(
+        "Initial model candidate",
+        compliance_issues(initial_candidate),
+    )
     if exact_fidelity:
-        candidates.append(
-            enforce_mechanical_contracts(
+        fidelity_fallback = enforce_mechanical_contracts(
+            extend_short_fidelity_fallback(
                 deterministic_fidelity_fallback(
                     prompt,
                     story_elements,
@@ -9813,8 +11384,17 @@ def post_chat_completion(
                     goal_headline=goal_headline,
                     focus=focus,
                     weighted_terms=weighted_terms,
-                )
+                ),
+                story_elements,
+                output_length=output_length,
+                output_min_words=output_min_words,
+                output_max_words=output_max_words,
             )
+        )
+        candidates.append(fidelity_fallback)
+        report_issue_summary(
+            "Deterministic exact-fidelity candidate",
+            compliance_issues(fidelity_fallback),
         )
 
     # Small models receive the same audit option through a much shorter,
@@ -9880,12 +11460,24 @@ def post_chat_completion(
             )
             if audit_candidate:
                 candidates.append(audit_candidate)
-        except RuntimeError:
+                report_issue_summary(
+                    "Audit model candidate",
+                    compliance_issues(audit_candidate),
+                )
+            else:
+                report_diagnostic(
+                    "Audit model returned no usable candidate; continuing with "
+                    "the best earlier result."
+                )
+        except RuntimeError as exc:
             # The main response is already usable; an optional audit failure must
             # not discard it after the user has waited for generation.
             if cancel_check is not None:
                 cancel_check()
-            pass
+            report_diagnostic(
+                "Optional audit model call failed; continuing with the best "
+                f"earlier candidate. Difficulty: {exc}"
+            )
 
     def candidate_rank(candidate: str) -> tuple[int, int, int, int, int, int]:
         if not candidate.strip():
@@ -9967,6 +11559,10 @@ def post_chat_completion(
 
     repair_attempts = 1 if small_model else 2
     for _attempt in range(repair_attempts):
+        report_diagnostic(
+            f"Final repair attempt {_attempt + 1}/{repair_attempts} is addressing: "
+            + "; ".join(repair_issues[:6])
+        )
         try:
             repaired = chat_completion(
                 base_url=base_url,
@@ -10022,13 +11618,30 @@ def post_chat_completion(
                 seed=derived_sampling_seed(seed, 2 + _attempt),
                 cancel_check=cancel_check,
             )
-        except RuntimeError:
+        except RuntimeError as exc:
             if cancel_check is not None:
                 cancel_check()
+            report_diagnostic(
+                f"Final repair attempt {_attempt + 1}/{repair_attempts} failed: {exc}"
+            )
             break
         repaired_prompt = enforce_mechanical_contracts(normalize_final_prompt_text(repaired))
         if repaired_prompt:
             candidates.append(repaired_prompt)
+            repaired_candidate_issues = compliance_issues(repaired_prompt)
+            report_issue_summary(
+                f"Final repair candidate {_attempt + 1}/{repair_attempts}",
+                repaired_candidate_issues,
+            )
+            if not repaired_candidate_issues:
+                report_diagnostic(
+                    f"Final repair attempt {_attempt + 1}/{repair_attempts} passed validation."
+                )
+        else:
+            report_diagnostic(
+                f"Final repair attempt {_attempt + 1}/{repair_attempts} returned "
+                "no usable candidate."
+            )
         final_prompt = min(candidates, key=candidate_rank)
         issues = compliance_issues(final_prompt)
         if not issues:
@@ -10038,29 +11651,49 @@ def post_chat_completion(
     if final_prompt:
         hard_issues, _soft_issues = split_compliance_issues(compliance_issues(final_prompt))
         if hard_issues:
+            report_diagnostic(
+                "Model repair attempts left hard contract failures; trying the "
+                "deterministic fidelity fallback. Remaining issues: "
+                + "; ".join(hard_issues[:6])
+            )
             fallback = enforce_mechanical_contracts(
-                deterministic_fidelity_fallback(
-                    prompt,
+                extend_short_fidelity_fallback(
+                    deterministic_fidelity_fallback(
+                        prompt,
+                        story_elements,
+                        model_instructions,
+                        concept_keywords=concept_keywords,
+                        goal_headline=goal_headline,
+                        focus=focus,
+                        weighted_terms=weighted_terms,
+                    ),
                     story_elements,
-                    model_instructions,
-                    concept_keywords=concept_keywords,
-                    goal_headline=goal_headline,
-                    focus=focus,
-                    weighted_terms=weighted_terms,
+                    output_length=output_length,
+                    output_min_words=output_min_words,
+                    output_max_words=output_max_words,
                 )
             )
             if fallback:
                 candidates.append(fallback)
+                report_issue_summary(
+                    "Deterministic fidelity fallback",
+                    compliance_issues(fallback),
+                )
                 final_prompt = min(candidates, key=candidate_rank)
                 hard_issues, _soft_issues = split_compliance_issues(
                     compliance_issues(final_prompt)
                 )
         if hard_issues:
             summary = "; ".join(hard_issues[:4])
+            report_diagnostic(
+                "Final candidate rejected after model repair and deterministic "
+                "fallback: " + summary
+            )
             raise RuntimeError(
                 "LM Studio could not preserve the prompt's hard fidelity contract: " + summary
             )
         return final_prompt
+    report_diagnostic("Final validation rejected every candidate as unusable.")
     raise RuntimeError("LM Studio returned no usable final prompt.")
 
 

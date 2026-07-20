@@ -78,6 +78,10 @@ class VisualDirectionPresetTests(unittest.TestCase):
             values[0],
             format_visual_direction_presets([key], explicit_nsfw=True),
         )
+        self.assertNotIn(
+            "NSFW",
+            format_visual_direction_presets([key], explicit_nsfw=True),
+        )
 
 
 if __name__ == "__main__":
