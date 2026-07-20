@@ -98,6 +98,7 @@ from krea_prompt_corrector import (
     normalize_all_comic_panel_suggestions,
     normalize_invent_candidate,
     preserve_invent_seed_value,
+    recover_invent_length_overflow,
     canonicalize_saved_invent_value,
     normalize_lm_studio_base_url,
     parse_concepts,
@@ -773,7 +774,10 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Generation feedback": ("Describe what was wrong with an earlier image.", "The hands were hidden and the pose felt stiff."),
     "Mode": ("Choose the rewrite strategy for the prompt.", "Use Creative enhancement for richer invention."),
     "Detail": ("Control how much visual specificity is added.", "Use High for materials, lighting, and camera detail."),
-    "Output length": ("Choose a general target size for the corrected prompt.", "Use Medium for a balanced prompt."),
+    "Output length": (
+        "Choose the target size for the corrected prompt. Expanded is a validated 140-280-word result contract.",
+        "Use Balanced for everyday prompts or Expanded for substantial development.",
+    ),
     "Risk": ("Control how boldly the model may reinterpret the draft.", "Use Low when exact subject details matter."),
     "Creative freedom": ("Control how boldly the rewrite may develop the visual idea.", "Choose Creative enhancement for multiple internal concept directions."),
     "Artistic detail freedom": (
@@ -798,7 +802,10 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Quote rendered text": ("Put text that must appear in the image in quotes.", "Turn SIGN: OPEN into a sign reading \"OPEN\"."),
     "Fix logic conflicts": ("Repair contradictory spatial, lighting, or action details.", "Resolve both noon sunlight and a pitch-black sky."),
     "Enhance actions": ("Make poses and actions more visually explicit.", "Expand running into a forward lean and trailing coat."),
-    "Invent and extend story": ("Add coherent narrative beats when the prompt has story intent.", "Add an obstacle and reaction to a rescue scene."),
+    "Invent and extend story": (
+        "Add coherent causal narrative beats when the prompt has story intent. Supplied story direction remains mandatory.",
+        "At Expanded plus Creative enhancement, develop motivation, pressure, reaction, and visible consequence.",
+    ),
     "Clean Krea constraints": ("Remove syntax or instructions that do not help Krea.", "Remove unsupported parameter flags."),
     "Clean generator constraints": ("Remove syntax or instructions unsupported by the selected generator.", "Turn negative-prompt boilerplate into a clear desired scene state."),
     "Altered encoder safe": ("Prefer plain wording that survives altered text encoders.", "Use red metal helmet instead of nested syntax."),
@@ -923,7 +930,13 @@ def classify_workflow_error(
     elif "hard fidelity contract" in lowered:
         title = "The prompt contract could not be repaired"
         category = "contract"
-        if "adult toy object contract" in lowered or "inserted object/body contact contract" in lowered:
+        if "creative development contract" in lowered:
+            next_step = (
+                "The input is preserved. The model repaired fidelity by collapsing too close "
+                "to the source. Keep Expanded and Creative enhancement enabled, then retry; "
+                "the recovery pass will target prompt-specific scene and story development."
+            )
+        elif "adult toy object contract" in lowered or "inserted object/body contact contract" in lowered:
             next_step = (
                 "The input is preserved. Review the named object/contact issue in Activity, "
                 "make the item, orientation, and body-contact point explicit, then retry."
@@ -6518,6 +6531,29 @@ class PromptCorrectorApp:
             repaired_candidate,
             seed_value=seed_value,
         )
+        if (
+            len(repaired_issues) == 1
+            and repaired_issues[0].startswith("Invented field exceeds ")
+        ):
+            shortened_candidate = recover_invent_length_overflow(
+                workspace,
+                field,
+                repaired_candidate,
+                seed_value=seed_value,
+            )
+            shortened_issues = invent_field_issues(
+                workspace,
+                field,
+                shortened_candidate,
+                seed_value=seed_value,
+            )
+            if not shortened_issues:
+                self._log_activity_threadsafe(
+                    f"Invent repair for {field_name} remained over its word limit; "
+                    "applied deterministic length recovery without changing the "
+                    "preserved input."
+                )
+                return shortened_candidate
         if repaired_issues:
             self._log_activity_threadsafe(
                 f"Invent repair rejected for {field_name}: "

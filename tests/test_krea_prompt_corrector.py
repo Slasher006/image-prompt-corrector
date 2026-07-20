@@ -546,6 +546,24 @@ class PromptCorrectorTests(unittest.TestCase):
                 normalized_oversized,
             ),
         )
+        oversized_draft = " ".join(f"detail{index}" for index in range(1, 176))
+        recovered_draft = corrector.recover_invent_length_overflow(
+            "single",
+            "draft",
+            oversized_draft,
+            seed_value="detail1 detail2 courier",
+        )
+        self.assertEqual(corrector.CREATIVE_FIELD_WORD_LIMITS["draft"], 160)
+        self.assertLessEqual(len(recovered_draft.split()), 160)
+        self.assertEqual(
+            corrector.invent_field_issues(
+                "single",
+                "draft",
+                recovered_draft,
+                seed_value="detail1 detail2 courier",
+            ),
+            [],
+        )
 
         repair_messages = corrector.build_invent_field_repair_messages(
             workspace="single",
@@ -1767,8 +1785,31 @@ class PromptCorrectorTests(unittest.TestCase):
         )
 
         self.assertIn("Develop the scene generously", guidance)
-        self.assertIn("between 115 and 260 words", guidance)
+        self.assertIn("between 140 and 280 words", guidance)
         self.assertTrue(any("Prompt too short" in issue for issue in issues))
+
+    def test_weighted_explicit_slang_matches_its_canonical_visible_language(self):
+        self.assertEqual(
+            corrector.missing_weighted_terms(
+                "A mature adult performs clear oral stimulation of the penis.",
+                "blowjob:1.7",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.missing_weighted_terms(
+                "A mature adult performs clear manual stimulation of the penis.",
+                "handjob:1.7",
+            ),
+            [],
+        )
+        self.assertIn(
+            "blowjob (strong visual priority, 1.7)",
+            corrector.missing_weighted_terms(
+                "A mature adult stands in a rain-darkened alley.",
+                "blowjob:1.7",
+            ),
+        )
 
     def test_compact_model_gets_one_targeted_expanded_length_repair(self):
         source = "A red car crosses a stone bridge at dawn."
@@ -1786,8 +1827,11 @@ class PromptCorrectorTests(unittest.TestCase):
             "paint reflections follow the car's curved panels without becoming glossy or "
             "artificial. The composition balances crisp foreground stone texture against a "
             "soft atmospheric background and preserves a calm purposeful sense of arrival."
+            " Subtle tire spray catches the backlight near the bridge joints, while weathered "
+            "iron rail details and moss-filled mortar lines make the crossing feel specific, "
+            "inhabited, and grounded in the cool river valley."
         )
-        self.assertGreaterEqual(corrector.word_count(expanded), 115)
+        self.assertGreaterEqual(corrector.word_count(expanded), 140)
         with patch(
             "krea_prompt_corrector.chat_completion",
             side_effect=[short, expanded],
@@ -1806,6 +1850,224 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertEqual(completion.call_count, 2)
         self.assertEqual(result, expanded)
+
+    def test_compact_maximum_development_repairs_fidelity_then_reexpands(self):
+        source = "Exactly two red lanterns hang beside a sealed stone gate at dawn."
+        developed = (
+            "Exactly two red paper lanterns hang beside a sealed stone gate at dawn, their "
+            "warm light defining the threshold against rain-darkened masonry. A lone courier "
+            "in a weathered blue coat pauses in the foreground, one gloved hand hovering over "
+            "the bronze latch while fresh muddy footprints continue beneath the door. Her "
+            "guarded posture shifts into resolve as she notices a torn warning ribbon trapped "
+            "under the lower hinge. Wind presses the coat against her forward-leaning stance "
+            "and drives fine rain across the lantern glass, scattering copper reflections over "
+            "the carved stone. A low three-quarter camera angle makes the paired lanterns the "
+            "dominant frame around her decision, with the nearest footprint sharply focused "
+            "and the empty road dissolving into mist behind her. One lantern swings toward the "
+            "gate while the other remains still, creating a subtle imbalance that suggests "
+            "recent passage. Cold blue dawn fills the distant archway, contrasting with the "
+            "lantern glow on her face, wet leather satchel, and tense fingertips. Displaced "
+            "gravel, dripping ivy, and a thin line of light under the door imply movement "
+            "inside and turn the scene into the instant before she enters."
+        )
+        count_broken = developed.replace(
+            "Exactly two red paper lanterns",
+            "Exactly three red paper lanterns",
+            1,
+        )
+        shallow_fidelity_repair = source
+        responses = [count_broken, shallow_fidelity_repair, developed]
+        temperatures = []
+
+        def fake_completion(**kwargs):
+            temperatures.append(kwargs["temperature"])
+            return responses.pop(0)
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=fake_completion,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.25,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                content_format="Single Image",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                enhance_actions=True,
+                develop_story=True,
+                artistic_detail_freedom=True,
+                altered_text_encoder=False,
+                audit_repair=False,
+            )
+
+        self.assertEqual(completion.call_count, 3)
+        self.assertEqual(temperatures, [0.25, 0.1, 0.25])
+        self.assertEqual(result, developed)
+        self.assertEqual(
+            corrector.creative_development_issues(
+                result,
+                source,
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+            ),
+            [],
+        )
+
+    def test_compact_maximum_development_reexpands_fidelity_fallback(self):
+        source = "Exactly two red lanterns hang beside a sealed stone gate at dawn."
+        continuation = (
+            "Their warm light defines the threshold against rain-darkened masonry. A lone courier "
+            "in a weathered blue coat pauses in the foreground, one gloved hand hovering over "
+            "the bronze latch while fresh muddy footprints continue beneath the door. Her "
+            "guarded posture shifts into resolve as she notices a torn warning ribbon trapped "
+            "under the lower hinge. Wind presses the coat against her forward-leaning stance "
+            "and drives fine rain across the lantern glass, scattering copper reflections over "
+            "the carved stone. A low three-quarter camera angle makes the paired lanterns the "
+            "dominant frame around her decision, with the nearest footprint sharply focused "
+            "and the empty road dissolving into mist behind her. One lantern swings toward the "
+            "gate while the other remains still, creating a subtle imbalance that suggests "
+            "recent passage. Cold blue dawn fills the distant archway, contrasting with the "
+            "lantern glow on her face, wet leather satchel, and tense fingertips. Displaced "
+            "gravel, dripping ivy, and a thin line of light under the door imply movement "
+            "inside and turn the scene into the instant before she enters."
+        )
+        developed = corrector.append_creative_continuation(
+            source,
+            continuation,
+            max_added_words=190,
+        )
+        count_broken = developed.replace(
+            "Exactly two red lanterns",
+            "Exactly three red lanterns",
+            1,
+        )
+        responses = [count_broken, count_broken, count_broken, continuation]
+        temperatures = []
+        diagnostics = []
+
+        def fake_completion(**kwargs):
+            temperatures.append(kwargs["temperature"])
+            return responses.pop(0)
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=fake_completion,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.25,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                content_format="Single Image",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                enhance_actions=True,
+                develop_story=True,
+                artistic_detail_freedom=True,
+                altered_text_encoder=False,
+                audit_repair=False,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 4)
+        self.assertEqual(temperatures, [0.25, 0.1, 0.1, 0.3])
+        self.assertEqual(result, developed)
+        expansion_messages = completion.call_args_list[3].kwargs["messages"]
+        self.assertIn(
+            "Return continuation prose only",
+            expansion_messages[0]["content"],
+        )
+        self.assertNotIn(
+            "Return the repaired full final prompt",
+            "\n".join(message["content"] for message in expansion_messages),
+        )
+        self.assertTrue(
+            any(
+                "immutable-base creative expansion" in message.casefold()
+                for message in diagnostics
+            )
+        )
+
+    def test_long_fidelity_fallback_restores_story_then_reexpands(self):
+        source = " ".join(
+            [
+                "A weathered knight waits beside an abandoned gate at pale dawn.",
+                "Rain darkens the carved stone and gathers along the iron threshold.",
+                "A low camera keeps the silent archway behind her guarded stance.",
+            ]
+            * 6
+        )
+        story = "unconditional acceptance with open body language"
+        continuation = (
+            "Copper reflections travel through shallow runoff, linking the foreground stones "
+            "to distant windows veiled by pearl fog. Torn banners breathe with each crosswind, "
+            "their softened shadows sweeping over eroded carvings in a slow visual rhythm. "
+            "Moss brightens inside mortar seams, droplets bead along hammered edges, and thin "
+            "sun shafts reveal suspended moisture above the road. The framing leaves generous "
+            "negative space beyond the threshold while layered haze separates nearby masonry "
+            "from muted hills, giving the quiet arrival depth and a restrained hopeful release."
+        )
+        self.assertGreaterEqual(
+            corrector.word_count(source),
+            corrector.OUTPUT_WORD_RANGES["Expanded"][0],
+        )
+        diagnostics = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[source, source, source, continuation],
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.25,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                content_format="Single Image",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+                artistic_detail_freedom=True,
+                story_elements=story,
+                audit_repair=False,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 4)
+        self.assertIn(story, result)
+        self.assertEqual(
+            corrector.final_compliance_issues(
+                result,
+                original_prompt=source,
+                story_elements=story,
+                content_format="Single Image",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+            ),
+            [],
+        )
+        self.assertTrue(
+            any(
+                "immutable-base creative expansion passed validation"
+                in message.casefold()
+                for message in diagnostics
+            )
+        )
 
     def test_user_message_preserves_messy_draft_for_model_inspection(self):
         draft = random_bad_prompt()
@@ -3829,7 +4091,7 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(call_count, 3)
 
     def test_short_fidelity_fallback_uses_supplied_story_beats(self):
-        fallback = " ".join(["source-grounded"] * 94)
+        fallback = " ".join(["source-grounded"] * 117)
         story = (
             "the adult subject increases the manual rhythm while reacting visibly; "
             "the adult subject changes position to intensify solo pleasure"
@@ -4038,6 +4300,139 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertIn("Story development is disabled", disabled_system)
         self.assertIn("Story invention and extension is disabled", disabled_message)
+
+    def test_maximum_development_is_a_substantial_visual_and_story_contract(self):
+        full = corrector.build_system_prompt(
+            detail_level="Rich caption",
+            output_length="Expanded",
+            risk_level="Creative enhancement",
+            develop_story=True,
+            artistic_detail_freedom=True,
+        )
+        compact = corrector.build_small_model_system_prompt(
+            generator_target="Krea 2",
+            content_format="Single Image",
+            output_length="Expanded",
+            output_min_words=None,
+            output_max_words=None,
+            risk_level="Creative enhancement",
+            prompt_preset="Cinematic keyframe",
+            variation_count=1,
+            enhance_actions=True,
+            develop_story=True,
+            detail_level="Rich caption",
+            artistic_detail_freedom=True,
+        )
+        compact_user = corrector.build_small_model_user_message(
+            "A knight discovers an abandoned gate.",
+            generator_target="Krea 2",
+            content_format="Single Image",
+            story_elements="Fresh footprints lead through the opening.",
+            output_length="Expanded",
+            risk_level="Creative enhancement",
+            develop_story=True,
+            artistic_detail_freedom=True,
+        )
+
+        for prompt in (full, compact):
+            self.assertIn("Substantial expansion", prompt)
+            self.assertIn("cause-effect", prompt)
+            self.assertIn("environmental response", prompt)
+            self.assertIn("Rephrasing", prompt)
+        self.assertIn("maximum depth", full)
+        self.assertIn("maximum depth", compact)
+        self.assertIn("Maximum development contract", compact_user)
+        self.assertIn("situation, motivation, pressure or change, reaction", compact_user)
+
+    def test_single_image_story_elements_are_a_hard_visible_contract(self):
+        missing = corrector.final_compliance_issues(
+            (
+                "A knight stands at a weathered gate under pale dawn light, framed from a "
+                "low three-quarter angle with damp stone and distant hills."
+            ),
+            original_prompt="A knight stands at a weathered gate.",
+            story_elements="unconditional acceptance with open body language",
+            content_format="Single Image",
+        )
+        preserved = corrector.final_compliance_issues(
+            (
+                "A knight stands at a weathered gate with unconditional acceptance visible "
+                "in open body language, relaxed shoulders, welcoming palms, and a steady gaze."
+            ),
+            original_prompt="A knight stands at a weathered gate.",
+            story_elements="unconditional acceptance with open body language",
+            content_format="Single Image",
+        )
+
+        self.assertTrue(any(issue.startswith("Story element contract") for issue in missing))
+        self.assertFalse(any(issue.startswith("Story element contract") for issue in preserved))
+        hard, _soft = corrector.split_compliance_issues(missing)
+        self.assertTrue(any(issue.startswith("Story element contract") for issue in hard))
+
+    def test_long_fidelity_fallback_still_restores_required_story_direction(self):
+        source = " ".join(
+            [
+                "A weathered knight waits beside an abandoned gate at pale dawn.",
+                "Rain darkens the carved stone and gathers along the iron threshold.",
+                "A low camera keeps the silent archway behind her guarded stance.",
+            ]
+            * 6
+        )
+        story = "unconditional acceptance with open body language"
+        self.assertGreaterEqual(
+            corrector.word_count(source),
+            corrector.OUTPUT_WORD_RANGES["Expanded"][0],
+        )
+
+        restored = corrector.extend_short_fidelity_fallback(
+            source,
+            story,
+            output_length="Expanded",
+        )
+
+        self.assertIn(story, restored)
+        self.assertFalse(
+            corrector.single_image_story_element_issues(restored, story)
+        )
+
+    def test_maximum_expansion_rejects_padding_and_accepts_authored_development(self):
+        source = "A knight discovers an abandoned gate."
+        story = "Fresh footprints lead through the opening."
+        padded = " ".join([source, story] * 10)
+        developed = (
+            "A rain-darkened knight discovers the abandoned gate at first light, stopping as "
+            "fresh footprints cross the flooded threshold and lead into the silent courtyard. "
+            "Her guarded stance softens into wary resolve, one gauntlet lifting a broken ivy "
+            "strand while the other steadies a chipped lantern. Wind pushes loose ash outward "
+            "from the opening, revealing that something inside has disturbed the long-sealed "
+            "hall. A low over-the-shoulder composition makes the boot prints the visual path "
+            "from foreground mud to the deep archway. Cold blue dawn fills the ruined masonry, "
+            "while the lantern lays warm copper reflections across wet armor and carved stone. "
+            "A snapped warning cord, trembling weeds, and fresh water rings around the newest "
+            "print imply recent passage and turn her discovery into the instant before pursuit."
+        )
+
+        self.assertTrue(
+            corrector.creative_development_issues(
+                padded,
+                source,
+                story,
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+            )
+        )
+        self.assertEqual(
+            corrector.creative_development_issues(
+                developed,
+                source,
+                story,
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+            ),
+            [],
+        )
 
     def test_multi_panel_compliance_requires_ordered_distinct_panels(self):
         original = "three-panel comic strip about a knight reaching a castle"

@@ -272,7 +272,7 @@ OUTPUT_WORD_RANGES = {
     "Concise": (15, 55),
     "Balanced": (35, 100),
     "Detailed": (65, 170),
-    "Expanded": (115, 260),
+    "Expanded": (140, 280),
 }
 CONCEPT_ALIASES = {
     "medieval": ("middle ages", "gothic", "castle", "chainmail", "plate armor"),
@@ -4652,14 +4652,19 @@ def missing_weighted_terms(prompt: str, weighted_terms: str) -> list[str]:
     for term, weight in parse_weighted_terms(weighted_terms):
         if weight < 1.3:
             continue
-        significant = significant_words(term)
+        # Visible Explicit-mode output uses concrete canonical language while
+        # the private weighted field may contain supported slang. Validate the
+        # translated visual meaning so normalization cannot create a false
+        # missing-emphasis failure (for example blowjob -> oral stimulation).
+        validation_term = translate_explicit_adult_language(term)
+        significant = significant_words(validation_term)
         if significant:
             represented = (
                 semantic_match_count(significant[:4], prompt)
                 >= math.ceil(len(significant[:4]) * 0.6)
             )
         else:
-            represented = semantic_term_present(term, prompt)
+            represented = semantic_term_present(validation_term, prompt)
         if not represented:
             missing.append(f"{term} ({weighted_term_priority_label(weight)}, {weight:g})")
     return missing
@@ -4795,6 +4800,96 @@ def length_issue(
     return None
 
 
+def single_image_story_element_issues(
+    final_prompt: str,
+    story_elements: str,
+    *,
+    content_format: str = "Auto",
+) -> list[str]:
+    """Keep user-supplied single-image story direction in the visible result."""
+
+    if not story_elements.strip():
+        return []
+    normalized_format = normalize_content_format(content_format)
+    if normalized_format == "Comic Story" or appears_multi_panel_story(story_elements):
+        return []
+
+    clauses = [
+        clause.strip(" \t\r\n,;.-")
+        for clause in re.split(r"[\n|;]+", story_elements)
+        if clause.strip(" \t\r\n,;.-")
+    ]
+    issues: list[str] = []
+    for clause in clauses:
+        anchors: list[str] = []
+        for term in significant_words(clause):
+            key = _panel_term_key(term)
+            if len(key) <= 3 or key in anchors:
+                continue
+            anchors.append(key)
+        if not anchors:
+            continue
+        required = max(1, math.ceil(len(anchors) * 0.5))
+        matched = semantic_match_count(anchors, final_prompt)
+        if matched < required:
+            missing = [
+                term for term in anchors
+                if not semantic_term_present(term, final_prompt)
+            ]
+            issues.append(
+                "missing or weakened story direction "
+                + ", ".join(missing[:5])
+            )
+    return issues
+
+
+def creative_development_issues(
+    final_prompt: str,
+    original_prompt: str,
+    story_elements: str = "",
+    *,
+    output_length: str = "Balanced",
+    risk_level: str = "Balanced improvement",
+    develop_story: bool = True,
+) -> list[str]:
+    """Reject top-setting results that merely pad or lightly paraphrase the draft."""
+
+    if output_length != "Expanded" or risk_level != "Creative enhancement":
+        return []
+
+    source = "\n".join(
+        value.strip() for value in (original_prompt, story_elements) if value.strip()
+    )
+    if not source or not final_prompt.strip():
+        return []
+
+    added_terms = {
+        term
+        for term in significant_words(final_prompt)
+        if not semantic_term_present(term, source)
+    }
+    required_added_terms = 18 if develop_story else 14
+    issues: list[str] = []
+    if len(added_terms) < required_added_terms:
+        issues.append(
+            "too little prompt-specific development beyond the source "
+            f"({len(added_terms)} new visual terms, expected at least {required_added_terms})"
+        )
+
+    source_words = word_count(source)
+    final_words = word_count(final_prompt)
+    required_growth = min(55, max(30, math.ceil(source_words * 0.35)))
+    if (
+        source_words < OUTPUT_WORD_RANGES["Expanded"][0]
+        and final_words < source_words + required_growth
+    ):
+        issues.append(
+            "expanded result did not grow substantially beyond the supplied material "
+            f"({final_words} words versus {source_words} source words)"
+        )
+    return issues
+
+
 def split_variation_prompts(prompt: str, variation_count: int) -> list[str]:
     """Return normalized variation bodies without a trailing Krea settings block."""
 
@@ -4873,6 +4968,8 @@ def final_compliance_issues(
     movement: int = 0,
     content_format: str = "Auto",
     mode: str = "Auto",
+    risk_level: str = "Balanced improvement",
+    develop_story: bool = True,
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
 ) -> list[str]:
@@ -5011,6 +5108,13 @@ def final_compliance_issues(
         issue = focus_issue(cleaned, focus)
         if issue:
             issues.append(issue)
+    story_problems = single_image_story_element_issues(
+        cleaned,
+        story_elements,
+        content_format=normalized_format,
+    )
+    if story_problems:
+        issues.append("Story element contract: " + ", ".join(story_problems))
     variation_problems = variation_issues(cleaned, variation_count)
     if variation_problems:
         issues.append("Variation structure: " + ", ".join(variation_problems))
@@ -5021,6 +5125,21 @@ def final_compliance_issues(
             if issue:
                 prefix = f"Variation {index}: " if variation_count > 1 else ""
                 issues.append(prefix + issue)
+            development_problems = creative_development_issues(
+                section,
+                original_prompt,
+                story_elements,
+                output_length=output_length,
+                risk_level=risk_level,
+                develop_story=develop_story,
+            )
+            if development_problems:
+                prefix = f"Variation {index}: " if variation_count > 1 else ""
+                issues.append(
+                    prefix
+                    + "Creative development contract: "
+                    + ", ".join(development_problems)
+                )
     settings_problems = krea_settings_issues(
         cleaned,
         include_krea_settings=include_krea_settings,
@@ -5326,6 +5445,8 @@ HARD_COMPLIANCE_PREFIXES = (
     "Missing weighted visual emphasis",
     "Missing quoted rendered text",
     "Requested focus not represented",
+    "Story element contract",
+    "Creative development contract",
     "Variation structure",
     "Krea settings",
     "Krea controls",
@@ -5344,7 +5465,8 @@ HARD_COMPLIANCE_PREFIXES = (
 
 
 def is_hard_compliance_issue(issue: str) -> bool:
-    return issue.startswith(HARD_COMPLIANCE_PREFIXES)
+    normalized = re.sub(r"^Variation\s+\d+\s*:\s*", "", issue)
+    return normalized.startswith(HARD_COMPLIANCE_PREFIXES)
 
 
 def split_compliance_issues(issues: list[str]) -> tuple[list[str], list[str]]:
@@ -5440,35 +5562,51 @@ def extend_short_fidelity_fallback(
     output_min_words: int | None = None,
     output_max_words: int | None = None,
 ) -> str:
-    """Use supplied story beats when they improve an undersized fallback."""
+    """Restore required story direction before considering fallback length."""
 
-    current_issue = length_issue(
-        fallback,
-        output_length,
-        output_min_words,
-        output_max_words,
-    )
     details = normalize_concept_text(story_elements).strip(" .")
-    if not current_issue or "Prompt too short" not in current_issue or not details:
+    if not details:
         return fallback
-    if details.casefold() in fallback.casefold():
+    if not single_image_story_element_issues(fallback, details):
         return fallback
-    candidate = normalize_final_prompt_text(
+    return normalize_final_prompt_text(
         fallback.rstrip(" .") + ". The scene also shows " + details + "."
     )
-    if prompt_length_fit_penalty(
-        candidate,
-        output_length,
-        output_min_words,
-        output_max_words,
-    ) >= prompt_length_fit_penalty(
-        fallback,
-        output_length,
-        output_min_words,
-        output_max_words,
-    ):
-        return fallback
-    return candidate
+
+
+def append_creative_continuation(
+    fidelity_base: str,
+    continuation: str,
+    *,
+    max_added_words: int,
+) -> str:
+    """Append model-authored development without letting it rewrite the safe base."""
+
+    base = normalize_final_prompt_text(fidelity_base)
+    addition = normalize_final_prompt_text(continuation)
+    if not base or not addition:
+        return base
+
+    exact_base = base.rstrip(" .")
+    if addition.casefold().startswith(exact_base.casefold()):
+        addition = addition[len(exact_base):].lstrip(" .,:;-")
+    addition = re.sub(
+        r"(?i)^(?:additional\s+)?(?:creative\s+)?"
+        r"(?:continuation|development|details?)\s*:\s*",
+        "",
+        addition,
+    ).strip()
+    if not addition:
+        return base
+
+    words = addition.split()
+    if max_added_words > 0 and len(words) > max_added_words:
+        addition = " ".join(words[:max_added_words]).rstrip(" ,;:-")
+        if addition and addition[-1] not in ".!?":
+            addition += "."
+    return normalize_final_prompt_text(
+        base.rstrip(" .") + ". " + addition.lstrip(" .")
+    )
 
 
 def normalize_research_context(context: str) -> str:
@@ -7685,6 +7823,8 @@ def build_small_model_system_prompt(
     enhance_actions: bool,
     develop_story: bool,
     mode: str = "Auto",
+    detail_level: str = "Detailed",
+    artistic_detail_freedom: bool = False,
 ) -> str:
     """Return a compact, low-fragility contract for roughly 4B local models."""
 
@@ -7705,11 +7845,24 @@ def build_small_model_system_prompt(
         if enhance_actions
         else "Fix action-critical pose ambiguity when needed; do not decorate every body part."
     )
-    story_rule = (
-        "Story development is enabled: add only causal details consistent with the outcome and panel count."
-        if develop_story
-        else "Do not invent plot events, characters, outcomes, or panels."
+    top_development = (
+        output_length == "Expanded"
+        and risk_level == "Creative enhancement"
     )
+    if develop_story and top_development:
+        story_rule = (
+            "Story development is enabled at maximum depth. Form a causal arc from situation and motivation "
+            "through pressure or change, reaction, and visible consequence. In one still, encode the adjacent "
+            "beats through body language, prop state, environmental response, and aftermath clues. In comics, "
+            "distribute the arc across fixed panels. Every supplied story beat is required."
+        )
+    elif develop_story:
+        story_rule = (
+            "Story development is enabled: add a causal situation, reaction, or consequence. "
+            "Supplied story beats are required."
+        )
+    else:
+        story_rule = "Do not invent plot events, characters, outcomes, or panels."
     length_rule = length_guidance_text(output_length, output_min_words, output_max_words)
     preset_guidance = PROMPT_PRESET_GUIDANCE.get(
         prompt_preset,
@@ -7718,8 +7871,30 @@ def build_small_model_system_prompt(
     risk_rule = {
         "Strict cleanup": "Polish only; invent no scene facts.",
         "Balanced improvement": "Add one compact coherent visual cluster when useful.",
-        "Creative enhancement": "Develop one coherent setting, staging, light, or material direction.",
+        "Creative enhancement": (
+            "Follow the substantial expansion contract below."
+            if top_development
+            else "Develop one coherent visual thesis with prompt-specific staging, environment, light, and material decisions."
+        ),
     }.get(risk_level, "Improve coherently without changing the core.")
+    expansion_rule = (
+        "Substantial expansion contract: preserve the source, then make consistent decisions across subject "
+        "and body language, action and cause-effect, setting and depth, prop contact or environmental response, "
+        "camera and composition, and motivated light, palette, materials, texture, and atmosphere. Omit only "
+        "inapplicable layers. Rephrasing, generic quality words, and adjective padding do not count."
+        if top_development
+        else ""
+    )
+    artistic_rule = (
+        "Artistic detail freedom is enabled for supporting details that reinforce the thesis without changing explicit facts."
+        if artistic_detail_freedom
+        else ""
+    )
+    detail_rule = (
+        f"Requested detail level: {detail_level}."
+        if detail_level == "Rich caption" or top_development
+        else ""
+    )
     mode_rule = (
         ""
         if mode == "Auto"
@@ -7728,13 +7903,16 @@ def build_small_model_system_prompt(
     return f"""Precisely edit prompts for {target}. Return only the final prompt.
 {format_rule}
 {target_rule}
-Preserve requested subjects, actions, objects, counts, positions, relationships, exclusions, quoted text, and concepts.
-Open with one compact visual thesis: supplied medium/critical shot, subject, core action or state, and setting. Then interactions, environment, other camera/composition, light/color, and rendering. Keep modifiers with owners.
-Anatomical left and right mean the subject's body; image-left and image-right mean frame placement. {action_rule}
-For multiple people, use stable role-position labels only where ambiguity requires.
+Preserve subjects, actions, objects, counts, positions, relationships, exclusions, quoted text, and concepts.
+Open with one compact visual thesis: medium or shot, subject, core action or state, and setting. Then group interactions, environment, camera, light, color, and rendering by owner.
+Anatomical left and right belong to the subject; image-left and image-right belong to the frame. {action_rule}
+Use stable role-position labels only for ambiguous people.
 Integrate camera and style naturally. Never emit control labels: "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:".
 {mode_rule}
 {story_rule}
+{expansion_rule}
+{artistic_rule}
+{detail_rule}
 Requested output length: {output_length}. {length_rule}
 Rewrite risk level: {risk_level}. {risk_rule} Prompt preset: {prompt_preset}.
 Preset guidance: {preset_guidance}
@@ -7756,6 +7934,9 @@ def build_small_model_user_message(
     research_context: str = "",
     concept_context: str = "",
     output_length: str = "Balanced",
+    risk_level: str = "Balanced improvement",
+    develop_story: bool = True,
+    artistic_detail_freedom: bool = False,
 ) -> str:
     sections = [
         f"Correct this draft for {normalize_generator_target(generator_target)} as {normalize_content_format(content_format)}:",
@@ -7782,6 +7963,22 @@ def build_small_model_user_message(
             "only. Never copy a source scene, subject, pose, action, camera, composition, setting, palette, "
             "lighting arrangement, text, or story into the corrected prompt."
         )
+    if output_length == "Expanded" and risk_level == "Creative enhancement":
+        sections.append(
+            "Maximum development contract: preserve the complete source and every supplied story beat, then "
+            "add substantial prompt-specific visual invention across subject expression or design, decisive "
+            "action and cause-effect, setting and depth, prop or environment interaction, camera staging, and "
+            "motivated light, color, materials, texture, and atmosphere. When narrative intent is present and "
+            "story development is enabled, make situation, motivation, pressure or change, reaction, and visible "
+            "consequence legible in the chosen still or fixed panel sequence. Rephrasing and adjective padding "
+            "do not count."
+        )
+    if artistic_detail_freedom:
+        sections.append(
+            "Artistic detail freedom is enabled for supporting details that reinforce the chosen visual thesis."
+        )
+    if not develop_story:
+        sections.append("Do not invent new plot events, outcomes, characters, or panels.")
     sections.append(f"Output length: {output_length}. Return only the corrected prompt.")
     return "\n\n".join(sections)
 
@@ -7867,6 +8064,18 @@ def build_system_prompt(
         "Balanced improvement": "Before writing, internally consider several compatible ways to strengthen the image, then select one coherent direction. Add only a few high-value details that reinforce the subject, mood, action, or story, such as a meaningful prop interaction, environmental reaction, material contrast, light behavior, or compositional motif. Avoid interchangeable filler such as merely adding cinematic, epic, highly detailed, or dramatic.",
         "Creative enhancement": "Before writing, internally explore at least three substantially different visual interpretations of the same core request, then choose and develop the strongest one. Give the result a clear visual thesis and at least one memorable, prompt-specific motif, relationship, environmental consequence, material-light interaction, or staging idea. Make each invented detail support the same story, mood, and composition. Prefer surprising but plausible specificity over generic adjectives, random ornament, unrelated lore, or a crowded list of ideas.",
     }.get(risk_level, "Strengthen the visual concept with coherent, prompt-specific details.")
+    substantial_expansion_rule = (
+        "Substantial expansion is a result contract, not a length hint. Preserve the complete source, then "
+        "make concrete prompt-specific decisions across every useful layer: subject identity, design, and "
+        "visible body language; decisive action phase, motivation, and cause-effect; immediate setting plus "
+        "foreground/background depth; meaningful prop contact and environmental response; camera placement, "
+        "staging, and composition; and motivated lighting, palette, material behavior, texture, and atmosphere. "
+        "Omit a layer only when it genuinely cannot apply. Rephrasing, synonyms, generic quality words, adjective "
+        "stacks, and unrelated decoration do not count as development. The final scene should feel authored "
+        "beyond the draft while remaining unmistakably the same request."
+        if output_length == "Expanded" and risk_level == "Creative enhancement"
+        else "Match the amount of development to the selected output length and rewrite risk."
+    )
     artistic_detail_rule = (
         ARTISTIC_DETAIL_FREEDOM_INSTRUCTION
         if artistic_detail_freedom
@@ -7910,11 +8119,37 @@ def build_system_prompt(
         if enhance_actions
         else "Do not add extra action mechanics unless needed to fix an obvious ambiguity or contradiction."
     )
-    story_development_rule = (
-        "Story development is enabled. When the draft or story elements imply a narrative, invent and extend it with a restrained, coherent arc: establish the situation, clarify motivation, add a useful escalation or obstacle, show reactions and consequences, and create a visual payoff. Preserve the core characters, identities, world, tone, required concepts, and user-specified outcome. Follow the rewrite risk level: under Strict cleanup, add only minimal beats directly implied by the request; under Creative enhancement, richer but still coherent development is allowed. When grounded research is supplied, build factual actions, objects, materials, places, and cultural details from the reconciled guidance and do not invent unsupported factual specifics. For a fixed panel count, fit the added beats inside those panels without adding panels. For an unspecified multi-panel story, choose only as many panels as needed for a readable sequence. For a single image, select the strongest decisive moment and imply what happened before and what will happen next through visible clues. Add only supporting actions, reactions, props, and environmental changes that make the story legible; do not introduce unrelated main characters, lore, brands, or a different genre."
-        if develop_story
-        else "Story development is disabled. Preserve only the story beats supplied or directly implied by the user; do not invent new plot events, obstacles, outcomes, characters, or panels."
-    )
+    if develop_story and output_length == "Expanded" and risk_level == "Creative enhancement":
+        story_development_rule = (
+            "Story development is enabled at maximum depth. When narrative intent is present, internally build "
+            "a compact causal arc: establish the situation and character motivation, introduce pressure, change, "
+            "or an obstacle, show a specific reaction and consequence, then land on a visible payoff or charged "
+            "aftermath. Treat every supplied story element as required content. Preserve the core characters, "
+            "identities, world, tone, required concepts, and user-specified outcome. For a single image, render "
+            "only the strongest decisive instant, but make the larger arc legible through gaze, posture, gesture, "
+            "prop state, contact, environmental response, and before-or-after clues. For comics, distribute the "
+            "causal arc across the fixed panels without adding or displacing panels. Use grounded research only "
+            "for reconciled factual support. Do not introduce unrelated main characters, lore, brands, or a "
+            "different genre, and never return a lightly decorated paraphrase."
+        )
+    elif develop_story:
+        story_development_rule = (
+            "Story development is enabled. When the draft or story elements imply a narrative, invent and extend "
+            "it with a restrained, coherent arc: establish the situation, clarify motivation, add a useful "
+            "escalation or obstacle, show reactions and consequences, and create a visual payoff. Treat supplied "
+            "story elements as required content. Preserve the core characters, identities, world, tone, required "
+            "concepts, and user-specified outcome. Follow the rewrite risk level. When grounded research is "
+            "supplied, use reconciled factual guidance without inventing unsupported factual specifics. Fit added "
+            "beats inside a fixed panel count. For a fixed panel count, never add or remove panels. For a single "
+            "image, select one decisive moment and imply adjacent events through visible clues. In all formats, "
+            "do not introduce unrelated main characters, lore, brands, or a "
+            "different genre."
+        )
+    else:
+        story_development_rule = (
+            "Story development is disabled. Preserve only the story beats supplied or directly implied by the "
+            "user; do not invent new plot events, obstacles, outcomes, characters, or panels."
+        )
     constraints_rule = (
         f"{target} does not use a separate negative prompt field. If the draft contains negative-prompt syntax, avoid lists, or unwanted artifacts, fold only the important constraints into the main prompt as natural desired-state guidance, such as an empty room, clean background, single subject, uncluttered composition, or an unmarked surface. Preserve the prohibited content contract while removing old Stable Diffusion negative-prompt boilerplate."
         if clean_constraints
@@ -7997,6 +8232,7 @@ Rules:
 - {logic_rule}
 - {action_rule}
 - {creative_rule}
+- {substantial_expansion_rule}
 - {artistic_detail_rule}
 - {story_development_rule}
 - {constraints_rule}
@@ -8129,16 +8365,20 @@ Preserve this as sequential visual storytelling. Define a clear page, strip, gri
         if multi_panel_story
         else ""
     )
-    story_development_section = (
-        """
+    if develop_story and output_length == "Expanded" and risk_level == "Creative enhancement":
+        story_development_section = """
+Story invention and extension:
+Maximum development is requested. Preserve every supplied fact and story element, then author a substantially developed but coherent version of the same scene. Internally connect situation and motivation to pressure or change, a specific reaction, an immediate consequence, and a visible payoff or charged aftermath. In a single still image, choose one decisive instant and make that larger arc visible through expression, gaze, posture, gesture, prop state, contact, environment response, foreground/background evidence, and composition. In multi-panel work, distribute the causal arc across the existing requested panel count and maintain continuity. Also develop the chosen visual thesis through prompt-specific setting, staging, depth, material-light interaction, palette, texture, and atmosphere. Rephrasing, synonyms, generic quality adjectives, and decorative filler do not count as invention. Do not force narrative events onto a static portrait, product, architecture, or design request with no narrative intent, but still develop its visual concept substantially.
+"""
+    elif develop_story:
+        story_development_section = """
 Story invention and extension:
 Develop the user's story when a narrative is present. Fill meaningful gaps with a coherent setup, motivation, escalation, reaction, transition, consequence, or payoff, while preserving the supplied characters, visual identity, world, tone, required concepts, and intended outcome. Keep additions visually renderable and causally connected. Use reconciled grounded research for factual actions, objects, materials, places, and cultural details whenever it is available. In multi-panel work, distribute added beats across the existing requested panel count and maintain continuity. In a single still image, choose one decisive moment and suggest the larger arc through visible evidence rather than summarizing a plot. Do not force a story onto a static portrait, product, architecture, or design request that has no narrative intent.
 """
-        if develop_story
-        else """
+    else:
+        story_development_section = """
 Story invention and extension is disabled. Preserve the user's existing story beats without adding new plot events or panels.
 """
-    )
     parsed_weighted_terms = sorted(
         parse_weighted_terms(weighted_terms),
         key=lambda item: item[1],
@@ -9673,7 +9913,10 @@ SINGLE_IMAGE_FIELD_SUGGESTION_RULES = {
 }
 
 CREATIVE_FIELD_WORD_LIMITS = {
-    "draft": 80,
+    # A populated draft can already exceed the old 80-word ceiling before
+    # Invent is asked to preserve and develop it. Keep enough room for a rich
+    # creative seed while leaving Expanded correction room beneath 280 words.
+    "draft": 160,
     "concepts": 24,
     "concept_mix": 12,
     "visual_direction": 32,
@@ -10906,6 +11149,73 @@ def normalize_and_validate_invent(
     ) else value
 
 
+def recover_invent_length_overflow(
+    workspace: str,
+    field: str,
+    value: str,
+    *,
+    seed_value: str = "",
+) -> str:
+    """Shorten a length-only model failure after repair, without hiding other failures."""
+
+    normalized_workspace = str(workspace).strip().casefold()
+    normalized_field = str(field).strip().casefold()
+    current_issues = invent_field_issues(
+        normalized_workspace,
+        normalized_field,
+        value,
+        seed_value=seed_value,
+    )
+    if len(current_issues) != 1 or not current_issues[0].startswith(
+        "Invented field exceeds "
+    ):
+        return str(value or "").strip()
+
+    def shorten(candidate: str) -> str:
+        if normalized_workspace in {"single", "comic"}:
+            shortened = normalize_creative_field_suggestion(
+                candidate,
+                normalized_field,
+                truncate_prose=True,
+            )
+        elif normalized_workspace == "meme" and normalized_field in {"top", "bottom"}:
+            shortened = normalize_meme_caption_suggestion(candidate)
+        elif normalized_workspace == "meme":
+            shortened = normalize_meme_field_suggestion(
+                candidate,
+                normalized_field,
+                truncate_prose=True,
+            )
+        else:
+            return ""
+        incomplete_endings = {
+            "a", "an", "and", "as", "at", "for", "from", "in", "into",
+            "of", "on", "or", "the", "to", "with", "while",
+        }
+        words = shortened.split()
+        while (
+            words
+            and words[-1].strip(".,!?").casefold() in incomplete_endings
+        ):
+            words.pop()
+        return " ".join(words).strip(" \t\r\n,;:-")
+
+    shortened = shorten(value)
+    seed_issue = "Invented field weakened or replaced its mandatory seed"
+    if (
+        seed_value.strip()
+        and seed_issue in invent_field_issues(
+            normalized_workspace,
+            normalized_field,
+            shortened,
+            seed_value=seed_value,
+        )
+    ):
+        separator = " " if seed_value.rstrip().endswith((".", "!", "?")) else ". "
+        shortened = shorten(seed_value.strip() + separator + str(value or "").strip())
+    return shortened
+
+
 def invent_field_contract_text(workspace: str, field: str) -> str:
     """Return the authoritative repair contract for one Invent field."""
 
@@ -11489,6 +11799,8 @@ def post_chat_completion(
                 enhance_actions=enhance_actions,
                 develop_story=develop_story,
                 mode=mode,
+                detail_level=detail_level,
+                artistic_detail_freedom=artistic_detail_freedom,
             )
         correction_user = build_small_model_user_message(
             prompt,
@@ -11504,6 +11816,9 @@ def post_chat_completion(
             research_context=research_context,
             concept_context=concept_context,
             output_length=output_length,
+            risk_level=risk_level,
+            develop_story=develop_story,
+            artistic_detail_freedom=artistic_detail_freedom,
         )
     correction_messages = [
         {"role": "system", "content": correction_system},
@@ -11616,6 +11931,8 @@ def post_chat_completion(
             movement=movement,
             content_format=normalized_format,
             mode=mode,
+            risk_level=risk_level,
+            develop_story=develop_story,
             safe_for_work=safe_for_work,
             explicit_nsfw=explicit_nsfw,
         )
@@ -11744,7 +12061,12 @@ def post_chat_completion(
             len(hard_issues),
             prompt_fidelity_penalty(prompt, candidate),
             len(soft_issues),
-            prompt_length_fit_penalty(candidate, output_length, output_min_words, output_max_words),
+            prompt_length_fit_penalty(
+                candidate,
+                output_length,
+                output_min_words,
+                output_max_words,
+            ),
             max(0, word_count(candidate) - OUTPUT_WORD_RANGES.get(output_length, (0, 10_000))[1]),
         )
 
@@ -11780,6 +12102,8 @@ def post_chat_completion(
         enhance_actions=enhance_actions,
         develop_story=develop_story,
         mode=mode,
+        detail_level=detail_level,
+        artistic_detail_freedom=artistic_detail_freedom,
     ) if small_model else build_system_prompt(
         generator_target=generator_target,
         content_format=normalized_format,
@@ -11813,11 +12137,25 @@ def post_chat_completion(
         include_krea_settings=include_krea_settings,
     )
 
-    repair_attempts = 1 if small_model else 2
+    maximum_development = (
+        output_length == "Expanded"
+        and risk_level == "Creative enhancement"
+    )
+    repair_attempts = 2 if (not small_model or maximum_development) else 1
     for _attempt in range(repair_attempts):
         report_diagnostic(
             f"Final repair attempt {_attempt + 1}/{repair_attempts} is addressing: "
             + "; ".join(repair_issues[:6])
+        )
+        creative_repair = any(
+            "Creative development contract" in issue
+            or "Prompt too short for Expanded" in issue
+            for issue in repair_issues
+        )
+        repair_temperature = (
+            max(0.25, min(0.5, float(temperature)))
+            if creative_repair
+            else 0.1
         )
         try:
             repaired = chat_completion(
@@ -11867,7 +12205,7 @@ def post_chat_completion(
                         ),
                     },
                 ],
-                temperature=0.1,
+                temperature=repair_temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
                 api_key=api_key,
@@ -11929,16 +12267,150 @@ def post_chat_completion(
                     output_max_words=output_max_words,
                 )
             )
+            fallback_issues: list[str] = []
             if fallback:
                 candidates.append(fallback)
+                fallback_issues = compliance_issues(fallback)
                 report_issue_summary(
                     "Deterministic fidelity fallback",
-                    compliance_issues(fallback),
+                    fallback_issues,
                 )
                 final_prompt = min(candidates, key=candidate_rank)
                 hard_issues, _soft_issues = split_compliance_issues(
                     compliance_issues(final_prompt)
                 )
+            fallback_hard_issues, _fallback_soft_issues = split_compliance_issues(
+                fallback_issues
+            )
+            if (
+                fallback
+                and maximum_development
+                and fallback_hard_issues
+                and all(
+                    "Creative development contract" in issue
+                    for issue in fallback_hard_issues
+                )
+            ):
+                fallback_words = word_count(fallback)
+                source_words = word_count(
+                    "\n".join(
+                        value.strip()
+                        for value in (prompt, story_elements)
+                        if value.strip()
+                    )
+                )
+                required_growth = min(
+                    55,
+                    max(30, math.ceil(source_words * 0.35)),
+                )
+                required_total = max(
+                    OUTPUT_WORD_RANGES["Expanded"][0],
+                    source_words + required_growth,
+                )
+                available_words = max(
+                    0,
+                    OUTPUT_WORD_RANGES["Expanded"][1] - fallback_words,
+                )
+                minimum_addition = min(
+                    available_words,
+                    max(40, required_total - fallback_words + 12),
+                )
+                maximum_addition = min(
+                    available_words,
+                    max(minimum_addition, minimum_addition + 50),
+                )
+                report_diagnostic(
+                    "The deterministic fallback preserved source fidelity but "
+                    "remained too shallow; trying one immutable-base creative "
+                    f"expansion of {minimum_addition}-{maximum_addition} added words."
+                )
+                preset_guidance = PROMPT_PRESET_GUIDANCE.get(
+                    prompt_preset,
+                    PROMPT_PRESET_GUIDANCE["Auto"],
+                )
+                expansion_system = (
+                    "Write only new visual continuation sentences for an immutable "
+                    "image-prompt base. Never repeat, rewrite, summarize, or quote the "
+                    "base. Return continuation prose only, with no label, analysis, "
+                    "alternatives, or commentary."
+                )
+                expansion_user = (
+                    "Immutable base, provided only for context and never to be repeated:\n"
+                    + fallback
+                    + "\n\nContinuation contract:\n"
+                    f"- Return {minimum_addition} to {maximum_addition} entirely new words.\n"
+                    "- Add prompt-specific setting depth, environmental response, "
+                    "composition, motivated light, materials, texture, atmosphere, and "
+                    "non-contact body language that reinforce the existing scene.\n"
+                    "- Do not add or restate people, anatomy, sexual actions, objects, "
+                    "contacts, counts, identities, positions, dialogue, or outcomes.\n"
+                    "- Do not use synonyms to paraphrase the base or pad with generic "
+                    "quality adjectives.\n"
+                    f"- Visual mode: {mode}. Detail level: {detail_level}.\n"
+                    f"- Preset direction: {preset_guidance}\n"
+                    "Write the continuation now."
+                )
+                try:
+                    expanded_fallback_response = chat_completion(
+                        base_url=base_url,
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": expansion_system},
+                            {"role": "user", "content": expansion_user},
+                        ],
+                        temperature=max(
+                            0.3,
+                            min(0.5, float(temperature) + 0.05),
+                        ),
+                        max_tokens=max_tokens,
+                        timeout=timeout,
+                        api_key=api_key,
+                        seed=derived_sampling_seed(
+                            seed,
+                            2 + repair_attempts,
+                        ),
+                        cancel_check=cancel_check,
+                    )
+                except RuntimeError as exc:
+                    if cancel_check is not None:
+                        cancel_check()
+                    report_diagnostic(
+                        "Immutable-base creative expansion failed: " + str(exc)
+                    )
+                else:
+                    expanded_fallback = enforce_mechanical_contracts(
+                        append_creative_continuation(
+                            fallback,
+                            expanded_fallback_response,
+                            max_added_words=maximum_addition,
+                        )
+                    )
+                    if expanded_fallback:
+                        candidates.append(expanded_fallback)
+                        added_word_count = max(
+                            0,
+                            word_count(expanded_fallback) - word_count(fallback),
+                        )
+                        report_diagnostic(
+                            "Immutable-base creative expansion appended "
+                            f"{added_word_count} words before validation."
+                        )
+                        expanded_fallback_issues = compliance_issues(
+                            expanded_fallback
+                        )
+                        report_issue_summary(
+                            "Immutable-base creative expansion candidate",
+                            expanded_fallback_issues,
+                        )
+                        if not expanded_fallback_issues:
+                            report_diagnostic(
+                                "Immutable-base creative expansion passed validation."
+                            )
+                            return expanded_fallback
+                        final_prompt = min(candidates, key=candidate_rank)
+                        hard_issues, _soft_issues = split_compliance_issues(
+                            compliance_issues(final_prompt)
+                        )
         if hard_issues:
             summary = "; ".join(hard_issues[:4])
             report_diagnostic(

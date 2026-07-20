@@ -252,7 +252,7 @@ Generator profiles are editable JSON objects containing prompt style, negative-p
 
 For ComfyUI, export a workflow in API format, choose its JSON file, enter the positive CLIP text node ID, and click **Enqueue current prompt**. PromptCorrector copies the corrected prompt into that node and posts the workflow to the configured `/prompt` endpoint. No ComfyUI dependency is required inside PromptCorrector.
 
-The draft and latest result are autosaved while you work and restored after the next launch. The counters below both editors show word totals and approximate token usage. Use the **Changes** tab to inspect additions, removals, and replacements. Concise, Balanced, and Detailed remain qualitative length preferences. **Expanded** is a concrete 115–260-word contract; if a local model returns less than 115 words, the correction pipeline performs one targeted expansion repair.
+The draft and latest result are autosaved while you work and restored after the next launch. The counters below both editors show word totals and approximate token usage. Use the **Changes** tab to inspect additions, removals, and replacements. Concise, Balanced, and Detailed remain qualitative length preferences. **Expanded** is a concrete 140–280-word contract; if a local model returns less than 140 words, the correction pipeline performs one targeted expansion repair. With **Creative enhancement**, Expanded must add prompt-specific visual development rather than paraphrasing or adjective padding.
 
 The final corrected output contains only the image prompt. Krea generation controls are deliberately kept outside it. Krea Turbo is useful for fast iteration; Krea Medium or Large is the better final pass when prompt and style fidelity matter most.
 
@@ -320,7 +320,7 @@ Multi-panel example:
 three-panel comic strip, panel 1 the red-cloaked knight discovers the broken gate, panel 2 the same knight raises her shield as arrows strike, panel 3 she reaches the courtyard and says "Close the gate!"
 ```
 
-**Invent and extend story** is disabled in the default Exact and Improve workflows. Explore enables it. When enabled, the model may fill gaps with a coherent setup, motivation, escalation, reaction, transition, consequence, and payoff while preserving core identities, world, tone, required outcome, and fixed panel count.
+**Invent and extend story** is disabled in the default Exact and Improve workflows. Explore enables it. When enabled, the model may fill gaps with a coherent setup, motivation, escalation, reaction, transition, consequence, and payoff while preserving core identities, world, tone, required outcome, and fixed panel count. At Expanded + Creative enhancement, supplied Single Image story elements are mandatory visible content and the model must make the larger causal arc legible through the chosen decisive moment.
 
 For a single image, story development chooses the strongest decisive moment and implies the wider arc through expressions, damage, tracks, displaced objects, environmental response, and other visible before-and-after evidence. For multi-panel work, it distributes the extended beats across the requested panels while maintaining continuity.
 

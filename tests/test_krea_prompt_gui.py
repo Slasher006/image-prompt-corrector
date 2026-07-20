@@ -450,6 +450,25 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         self.assertNotIn("identity, count, or position", diagnostic["next_step"])
 
+    def test_creative_development_error_gives_expansion_specific_recovery_guidance(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "Creative development contract: too little prompt-specific development",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn(
+            "collapsing too close to the source",
+            diagnostic["next_step"],
+        )
+        self.assertIn(
+            "target prompt-specific scene and story development",
+            diagnostic["next_step"],
+        )
+        self.assertNotIn("identity, count, or position", diagnostic["next_step"])
+
     def test_unexpected_worker_exception_unlocks_ui_and_preserves_result(self):
         self.controller.draft_text.setPlainText("A red car under streetlights")
         self.controller.corrected_text.setPlainText("Previous successful result")
@@ -2082,8 +2101,8 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
     def test_invent_repair_reports_exact_contract_issues_and_uses_full_budget(self):
         oversized = (
-            "one two three four five six seven eight nine ten eleven twelve "
-            "thirteen fourteen fifteen"
+            "Prominent visual elements: one two three four five six seven eight "
+            "nine ten eleven twelve thirteen fourteen fifteen"
         )
         with mock.patch(
             "krea_prompt_gui.chat_completion",
@@ -2096,7 +2115,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     RuntimeError,
                     r"Invent field contract failed for single\.focus after repair: "
-                    r"Invented field exceeds 14 words",
+                    r".*Invented field exceeds 14 words",
                 ):
                     self.controller._normalize_or_repair_invent(
                         request_id=self.controller.active_request_id,
@@ -2116,6 +2135,42 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         logged = "\n".join(call.args[0] for call in activity.call_args_list)
         self.assertIn("Invent candidate rejected for single.focus", logged)
         self.assertIn("Invent repair rejected for single.focus", logged)
+
+    def test_invent_repair_recovers_length_only_overflow_deterministically(self):
+        oversized = " ".join(f"detail{index}" for index in range(1, 176))
+        with mock.patch(
+            "krea_prompt_gui.chat_completion",
+            return_value=oversized,
+        ) as repair:
+            with mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity:
+                result = self.controller._normalize_or_repair_invent(
+                    request_id=self.controller.active_request_id,
+                    base_url="http://127.0.0.1:1234/v1",
+                    model="test-model",
+                    workspace="single",
+                    field="draft",
+                    response=oversized,
+                    seed_value="detail1 detail2 courier",
+                    temperature=0.7,
+                    seed=None,
+                )
+
+        self.assertEqual(repair.call_count, 1)
+        self.assertLessEqual(len(result.split()), 160)
+        self.assertEqual(
+            gui.invent_field_issues(
+                "single",
+                "draft",
+                result,
+                seed_value="detail1 detail2 courier",
+            ),
+            [],
+        )
+        logged = "\n".join(call.args[0] for call in activity.call_args_list)
+        self.assertIn("deterministic length recovery", logged)
 
     def test_concepts_invent_deterministically_keeps_the_existing_seed(self):
         with mock.patch("krea_prompt_gui.chat_completion") as repair:
