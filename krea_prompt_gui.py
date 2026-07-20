@@ -105,6 +105,7 @@ from krea_prompt_corrector import (
     recover_invent_length_overflow,
     canonicalize_saved_invent_value,
     normalize_lm_studio_base_url,
+    natural_visual_direction,
     parse_concepts,
     parse_concept_mix,
     normalize_concept_mix_groups,
@@ -237,22 +238,6 @@ def push_prompt_to_comfyui_bridge(
     return result
 
 
-def natural_visual_direction(value: object) -> str:
-    """Convert categorized picker text into one natural Krea-ready clause."""
-
-    pieces: list[str] = []
-    for raw_piece in re.split(r"[;\n]+", str(value or "")):
-        piece = re.sub(r"\s+", " ", raw_piece).strip(" .")
-        if not piece:
-            continue
-        piece = re.sub(
-            r"^[A-Za-z][A-Za-z /&-]{1,48}:\s*",
-            "",
-            piece,
-        ).strip(" .")
-        if piece:
-            pieces.append(piece)
-    return ", ".join(dict.fromkeys(pieces))
 CAMERA_CONTROL_AUTO = "Auto (use prompt)"
 CAMERA_CONTROL_PRESETS = (
     CAMERA_CONTROL_AUTO,
@@ -8547,7 +8532,6 @@ class PromptCorrectorApp:
 
         requested_prompt = draft
         draft = self._apply_camera_direction(draft, destination)
-        draft = self._apply_visual_direction(draft, destination)
         effective_visual_direction = {
             "comic": self.comic_visual_direction_var.get(),
             "meme": self.meme_visual_direction_var.get(),

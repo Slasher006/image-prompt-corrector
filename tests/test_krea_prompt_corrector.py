@@ -2300,7 +2300,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
         joined = "\n".join(issues)
         self.assertIn("ambiguous person references", joined)
-        self.assertIn("missing distinct position labels", joined)
+        self.assertIn("action verbs are not clearly bound", joined)
 
     def test_multi_person_role_issues_accept_clear_role_positions(self):
         issues = corrector.multi_person_role_issues(
@@ -2323,7 +2323,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
         issues = corrector.multi_person_role_issues(prompt)
 
-        self.assertIn("missing distinct position labels for each person", issues)
+        self.assertEqual(issues, [])
         self.assertFalse(
             any("ambiguous person references: both" in issue for issue in issues)
         )
@@ -2364,6 +2364,7 @@ class PromptCorrectorTests(unittest.TestCase):
     def test_same_gender_aliases_still_detect_explicitly_distinct_people(self):
         for prompt in (
             "A woman kisses another female beside a window.",
+            "A woman greets another woman beside a window.",
             "A man stands opposite another male in a boxing ring.",
             "A woman greets a female doctor in a clinic.",
             "Two women stand together beneath warm light.",
@@ -2520,10 +2521,54 @@ class PromptCorrectorTests(unittest.TestCase):
         issues = corrector.multi_person_role_issues(prompt)
         bound = corrector.bind_unpositioned_distinct_people(prompt)
 
-        self.assertIn("missing distinct position labels for each person", issues)
+        self.assertEqual(issues, [])
         self.assertIn("woman on image-left", bound)
         self.assertIn("man on image-right", bound)
         self.assertEqual(corrector.multi_person_role_issues(bound), [])
+
+    def test_repeated_clear_roles_do_not_require_invented_frame_positions(self):
+        prompt = (
+            "A doctor holds a patient's arm during an examination. "
+            "The doctor checks the bandage while the patient sits calmly."
+        )
+
+        self.assertTrue(corrector.appears_multi_person_scene(prompt))
+        self.assertEqual(corrector._unique_person_descriptors(prompt), [])
+        self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
+    def test_clear_pair_group_pronouns_do_not_require_frame_positions(self):
+        prompt = (
+            "A doctor greets a patient at the clinic entrance. "
+            "They walk toward the examination room together."
+        )
+
+        self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
+    def test_post_completion_accepts_clear_repeated_roles_without_positions(self):
+        prompt = (
+            "A doctor holds a patient's arm during an examination. "
+            "The doctor checks the bandage while the patient sits calmly."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=prompt,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=prompt,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                output_length="Concise",
+                audit_repair=False,
+                altered_text_encoder=False,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertEqual(result, prompt)
+        self.assertEqual(corrector.multi_person_role_issues(result), [])
 
     def test_extended_relational_bindings_are_accepted(self):
         for prompt in (
@@ -2533,10 +2578,7 @@ class PromptCorrectorTests(unittest.TestCase):
         ):
             with self.subTest(prompt=prompt):
                 issues = corrector.multi_person_role_issues(prompt)
-                self.assertNotIn(
-                    "missing distinct position labels for each person",
-                    issues,
-                )
+                self.assertEqual(issues, [])
 
     def test_spouse_pronoun_becomes_the_positioned_spouse_label(self):
         prompt = "A wife hugs her husband in a kitchen."
@@ -3058,7 +3100,7 @@ class PromptCorrectorTests(unittest.TestCase):
                 explicit_nsfw=True,
                 audit_repair=False,
                 final_gate_repair=False,
-            )
+        )
 
         self.assertEqual(completion.call_count, 1)
         self.assertEqual(result, source)
@@ -3450,6 +3492,46 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertTrue(any("Multi-person role ambiguity" in issue for issue in issues))
         hard, _soft = corrector.split_compliance_issues(issues)
         self.assertTrue(any("Multi-person role ambiguity" in issue for issue in hard))
+
+    def test_source_ambiguity_is_advisory_instead_of_a_terminal_contract(self):
+        source = (
+            "Two people stand in a cave; he holds a torch while she helps them."
+        )
+        issues = corrector.final_compliance_issues(
+            source,
+            original_prompt=source,
+            output_length="Concise",
+        )
+
+        hard, soft = corrector.split_compliance_issues(issues)
+        self.assertFalse(any("Multi-person role ambiguity" in issue for issue in hard))
+        self.assertTrue(
+            any("Source multi-person ambiguity preserved" in issue for issue in soft)
+        )
+
+    def test_post_completion_returns_preserved_source_ambiguity_without_failing(self):
+        source = (
+            "Two people stand in a cave; he holds a torch while she helps them."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=source,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                output_length="Concise",
+                audit_repair=False,
+                altered_text_encoder=False,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertEqual(result, corrector.normalize_final_prompt_text(source))
 
     def test_final_compliance_issues_reports_dropped_gender_identity(self):
         issues = corrector.final_compliance_issues(
@@ -5803,6 +5885,45 @@ class PromptCorrectorTests(unittest.TestCase):
             ),
             "A lighthouse in a dark maritime atmosphere.",
         )
+        self.assertEqual(
+            corrector.enforce_visual_direction_contract(
+                "joyful and celebratory. A family raises a toast.",
+                "Mood and emotional tone: joyful and celebratory.",
+            ),
+            "joyful and celebratory. A family raises a toast.",
+        )
+        self.assertEqual(
+            corrector.enforce_visual_direction_contract(
+                "Mood and emotional tone: joyful and celebratory. A family raises a toast.",
+                "Mood and emotional tone: joyful and celebratory.",
+            ),
+            "joyful and celebratory. A family raises a toast.",
+        )
+
+    @patch(
+        "krea_prompt_corrector.chat_completion",
+        return_value="joyful and celebratory. A family raises a toast.",
+    )
+    def test_post_completion_does_not_repeat_labeled_visual_direction(self, _chat):
+        result = corrector.post_chat_completion(
+            base_url="http://127.0.0.1:1234/v1",
+            model="qwen3-vl-4b-instruct",
+            prompt="A family raises a toast.",
+            temperature=0.2,
+            max_tokens=300,
+            timeout=30,
+            api_key="test",
+            visual_direction="Mood and emotional tone: joyful and celebratory.",
+            output_length="Concise",
+            audit_repair=False,
+        )
+
+        self.assertEqual(
+            result,
+            "joyful and celebratory. A family raises a toast.",
+        )
+        self.assertEqual(result.casefold().count("joyful and celebratory"), 1)
+        self.assertNotIn("Mood and emotional tone:", result)
 
     @patch(
         "krea_prompt_corrector.chat_completion",

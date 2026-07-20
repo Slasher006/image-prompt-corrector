@@ -2014,6 +2014,25 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "Mood: ominous; Lighting: moonlit; Weather: low fog.",
         )
 
+    def test_selected_visual_direction_is_not_duplicated_in_worker_draft(self):
+        self.controller.draft_text.setPlainText("A family raises a toast.")
+        self.controller.visual_direction_var.set(
+            "Mood and emotional tone: joyful and celebratory."
+        )
+
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+
+        worker_args = thread_class.call_args.kwargs["args"]
+        bound = inspect.signature(self.controller._correct_prompt_worker).bind(
+            *worker_args
+        )
+        self.assertEqual(bound.arguments["draft"], "A family raises a toast.")
+        self.assertEqual(
+            bound.arguments["visual_direction"],
+            "Mood and emotional tone: joyful and celebratory.",
+        )
+
     def test_camera_and_visual_controls_form_one_ordered_krea_opening(self):
         self.controller.camera_control_var.set(
             "Wide establishing shot, 24mm lens"

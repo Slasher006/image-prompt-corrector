@@ -3085,6 +3085,14 @@ def appears_multi_person_scene(prompt: str) -> bool:
         searchable,
     ):
         return True
+    if any(
+        re.search(
+            rf"\b(?:another|second|third|fourth)\s+(?:adult\s+)?{re.escape(role)}\b",
+            searchable,
+        )
+        for role in PERSON_ROLE_WORDS
+    ):
+        return True
     if _single_gender_alias_scene(searchable):
         return False
     return len(role_mentions) >= 2
@@ -3105,8 +3113,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         if role not in {"adult", "character", "person"}
     }
     role_pattern = _role_pattern()
-    relational_role_binding = _relational_role_binding(searchable)
-    position_count = _bound_role_position_count(searchable)
     reciprocal_is_unambiguous = (
         len(distinct_roles) >= 2 and "each other" in searchable
     )
@@ -3140,7 +3146,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     )
     group_reference_is_clear = (
         len(distinct_roles) >= 2
-        and (position_count >= 2 or relational_role_binding)
     )
     allowed_references: set[str] = set()
     if female_reference_is_unique:
@@ -3170,9 +3175,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     if ambiguous:
         issues.append("ambiguous person references: " + ", ".join(ambiguous[:6]))
 
-    if position_count < 2 and not relational_role_binding:
-        issues.append("missing distinct position labels for each person")
-
     action_count = sum(
         1
         for word in ACTION_POSE_KEYWORDS
@@ -3189,18 +3191,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     )
     if action_count and not has_role_bound_action:
         issues.append("action verbs are not clearly bound to a named person")
-
-    gender_terms = [
-        term
-        for term in ("man", "woman", "male", "female", "men", "women", "boy", "girl")
-        if re.search(rf"\b{term}\b", searchable)
-    ]
-    if (
-        len(gender_terms) >= 2
-        and position_count < 2
-        and not relational_role_binding
-    ):
-        issues.append("gendered subjects need explicit role and position binding")
 
     return issues
 
@@ -5010,8 +5000,10 @@ def enforce_style_mode_contract(
 def enforce_visual_direction_contract(prompt: str, visual_direction: str) -> str:
     """Keep a selected GUI direction visible without adding private labels."""
 
-    direction = normalize_final_prompt_text(visual_direction)
-    candidate = normalize_final_prompt_text(prompt)
+    direction = natural_visual_direction(visual_direction)
+    candidate = naturalize_visual_direction_labels(
+        normalize_final_prompt_text(prompt)
+    )
     if not direction or direction.casefold().startswith("auto"):
         return candidate
     terms = [
@@ -5024,6 +5016,67 @@ def enforce_visual_direction_contract(prompt: str, visual_direction: str) -> str
     if direction.casefold() in candidate.casefold():
         return candidate
     return normalize_final_prompt_text(f"{direction}. {candidate}")
+
+
+VISUAL_DIRECTION_CATEGORY_LABEL_PATTERN = re.compile(
+    r"(?i)(^\s*|[.!?;,\n]\s*)(?:"
+    r"mood and emotional tone"
+    r"|mood"
+    r"|lighting"
+    r"|color palette"
+    r"|palette"
+    r"|time and season"
+    r"|time"
+    r"|season"
+    r"|weather and atmosphere"
+    r"|weather"
+    r"|atmosphere"
+    r"|composition and hierarchy"
+    r"|composition"
+    r"|depth and focus"
+    r"|depth"
+    r"|focus"
+    r"|motion and energy"
+    r"|motion"
+    r"|energy"
+    r"|environment"
+    r"|surface and texture"
+    r"|surface"
+    r"|texture"
+    r"|art direction and genre"
+    r"|art direction"
+    r"|genre"
+    r"|image finish and color grade"
+    r"|finish"
+    r"|color grade"
+    r"|subject presentation"
+    r"|optical effects"
+    r")\s*:\s*"
+)
+
+
+def naturalize_visual_direction_labels(text: str) -> str:
+    """Remove picker category labels while preserving their visible content."""
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    cleaned_parts: list[str] = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            cleaned_parts.append(part)
+            continue
+        cleaned_parts.append(VISUAL_DIRECTION_CATEGORY_LABEL_PATTERN.sub(r"\1", part))
+    return normalize_final_prompt_text("".join(cleaned_parts))
+
+
+def natural_visual_direction(value: object) -> str:
+    """Convert categorized picker text into one natural image-direction clause."""
+
+    pieces: list[str] = []
+    for raw_piece in re.split(r"[;\n]+", str(value or "")):
+        piece = naturalize_visual_direction_labels(raw_piece).strip(" .")
+        if piece and piece.casefold() not in {value.casefold() for value in pieces}:
+            pieces.append(piece)
+    return ", ".join(pieces)
 
 
 def entity_consistency_issues(prompt: str) -> list[str]:
@@ -5929,7 +5982,36 @@ def final_compliance_issues(
         issues.extend(entity_issues)
     role_issues = multi_person_role_issues(cleaned)
     if role_issues:
-        issues.append("Multi-person role ambiguity: " + ", ".join(role_issues))
+        source_role_issues = multi_person_role_issues(
+            "\n".join(
+                value
+                for value in (original_prompt, story_elements)
+                if value.strip()
+            )
+        )
+        source_issue_kinds = {
+            issue.partition(":")[0]
+            for issue in source_role_issues
+        }
+        new_role_issues = [
+            issue
+            for issue in role_issues
+            if issue.partition(":")[0] not in source_issue_kinds
+        ]
+        preserved_role_issues = [
+            issue
+            for issue in role_issues
+            if issue.partition(":")[0] in source_issue_kinds
+        ]
+        if new_role_issues:
+            issues.append(
+                "Multi-person role ambiguity: " + ", ".join(new_role_issues)
+            )
+        if preserved_role_issues:
+            issues.append(
+                "Source multi-person ambiguity preserved: "
+                + ", ".join(preserved_role_issues)
+            )
     gender_issues = gender_identity_contract_issues(
         cleaned,
         f"{original_prompt}\n{story_elements}",
