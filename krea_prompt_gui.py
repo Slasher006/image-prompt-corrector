@@ -79,9 +79,9 @@ from krea_prompt_corrector import (
     collect_reference_image_diagnostics,
     collect_targeted_prompt_research,
     collect_vague_prompt_research,
-    concept_mix_instruction,
-    concept_mix_to_concepts,
-    concept_mix_to_weighted_terms,
+    concept_mix_groups_instruction,
+    concept_mix_groups_to_concepts,
+    concept_mix_groups_to_weighted_terms,
     build_all_comic_panels_suggestion_messages,
     build_comic_field_suggestion_messages,
     build_invent_field_repair_messages,
@@ -107,6 +107,7 @@ from krea_prompt_corrector import (
     normalize_lm_studio_base_url,
     parse_concepts,
     parse_concept_mix,
+    normalize_concept_mix_groups,
     parse_weighted_terms,
     post_chat_completion,
     probe_model_visual_knowledge,
@@ -120,6 +121,10 @@ from krea_prompt_corrector import (
     unload_lm_studio_model,
     vague_prompt_issues,
     vague_prompt_needs_clarification_research,
+)
+from krea_prompt_corrector import (
+    CONCEPT_MIX_GROUP_LIMIT,
+    CONCEPT_MIX_GROUP_TARGETS,
 )
 from action_emotion_presets import (
     ALL_ACTION_PRESET_KEYS,
@@ -1426,6 +1431,7 @@ class PromptCorrectorApp:
         self.chat_messages: list[dict[str, str]] = []
         self.chat_stream_text = ""
         self.custom_presets: dict[str, dict[str, object]] = {}
+        self.concept_mix_groups: list[dict[str, str]] = []
         self.visual_preset_selections: dict[str, list[str]] = {
             "prompt": [],
             "comic": [],
@@ -1590,7 +1596,11 @@ class PromptCorrectorApp:
             "invent_recall_values": self.invent_recall_values,
             "invent_recall_groups": self.invent_recall_groups,
             "draft_prompt": self.draft_text.toPlainText() if hasattr(self, "draft_text") else self.recovered_draft,
-            "corrected_prompt": self.corrected_text.toPlainText() if hasattr(self, "corrected_text") else self.recovered_corrected,
+            "corrected_prompt": strip_private_prompt_guidance(
+                self.corrected_text.toPlainText()
+                if hasattr(self, "corrected_text")
+                else self.recovered_corrected
+            ),
             "local_reference_paths": self.local_reference_paths,
             "workspace_reference_paths": {
                 "prompt": self.local_reference_paths,
@@ -1604,6 +1614,7 @@ class PromptCorrectorApp:
             "lm_timeout": self._lm_timeout_seconds(),
             "concepts": self.concepts_var.get(),
             "concept_mix": self.concept_mix_var.get(),
+            "concept_mix_groups": self.concept_mix_groups,
             "concept_preset_selections": self.concept_preset_selections,
             "narrative_preset_selections": self.narrative_preset_selections,
             "visual_direction": self.visual_direction_var.get(),
@@ -1927,6 +1938,9 @@ class PromptCorrectorApp:
                 "concept_mix",
                 settings.get("concept_mix", self.concept_mix_var.get()),
             )
+        )
+        self.concept_mix_groups = normalize_concept_mix_groups(
+            settings.get("concept_mix_groups", [])
         )
         self.visual_direction_var.set(
             str(settings.get("visual_direction", self.visual_direction_var.get()))
@@ -2341,6 +2355,9 @@ class PromptCorrectorApp:
                 story_elements = str(item.get("story_elements", "")).strip()
                 concepts = str(item.get("concepts", "")).strip()
                 concept_mix = str(item.get("concept_mix", "")).strip()
+                concept_mix_groups = normalize_concept_mix_groups(
+                    item.get("concept_mix_groups", [])
+                )
                 model_instructions = str(item.get("model_instructions", "")).strip()
                 generation_feedback = str(item.get("generation_feedback", "")).strip()
                 risk_level = str(item.get("risk_level", "")).strip()
@@ -2371,6 +2388,7 @@ class PromptCorrectorApp:
                 story_elements = ""
                 concepts = ""
                 concept_mix = ""
+                concept_mix_groups = []
                 model_instructions = ""
                 generation_feedback = ""
                 risk_level = ""
@@ -2391,6 +2409,7 @@ class PromptCorrectorApp:
                 "story_elements": story_elements,
                 "concepts": concepts,
                 "concept_mix": concept_mix,
+                "concept_mix_groups": concept_mix_groups,
                 "model_instructions": model_instructions,
                 "generation_feedback": generation_feedback,
                 "risk_level": risk_level,
@@ -3290,9 +3309,16 @@ class PromptCorrectorApp:
         )[:MIX_INGREDIENT_LIMIT]
         return names, apply_mode.currentText() == "Replace all mixer rows"
 
-    def _open_concept_mix_editor(self, _checked: bool = False) -> None:
+    def _open_concept_mix_editor(
+        self,
+        _checked: bool = False,
+        *,
+        initial_value: str | None = None,
+        title: str = "Concept and style mix",
+        save_to_primary: bool = True,
+    ) -> str | None:
         dialog = QDialog(self.root)
-        dialog.setWindowTitle("Concept and style mix")
+        dialog.setWindowTitle(title)
         dialog.setMinimumWidth(680)
         outer = QVBoxLayout(dialog)
         intro = QLabel(
@@ -3308,7 +3334,11 @@ class PromptCorrectorApp:
         share_header = QLabel("Share")
         grid.addWidget(name_header, 0, 0)
         grid.addWidget(share_header, 0, 1)
-        parsed = parse_concept_mix(self.concept_mix_var.get())
+        parsed = parse_concept_mix(
+            self.concept_mix_var.get()
+            if initial_value is None
+            else initial_value
+        )
         row_edits: list[QLineEdit] = []
         row_spins: list[QSpinBox] = []
         for row in range(6):
@@ -3434,15 +3464,246 @@ class PromptCorrectorApp:
         normalize_button.clicked.connect(normalize)
         refresh_total()
 
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.concept_mix_var.set(
-                ", ".join(
-                    f"{row_edits[index].text().strip()}:{row_spins[index].value()}%"
-                    for index in active_rows()
-                )
-            )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        value = ", ".join(
+            f"{row_edits[index].text().strip()}:{row_spins[index].value()}%"
+            for index in active_rows()
+        )
+        if save_to_primary:
+            self.concept_mix_var.set(value)
             self._save_settings()
             self.status_var.set("Updated concept and style mix")
+        return value
+
+    def _edit_scoped_mix_group(
+        self,
+        group: dict[str, str] | None = None,
+    ) -> dict[str, str] | None:
+        current = dict(group or {})
+        dialog = QDialog(self.root)
+        dialog.setWindowTitle(
+            "Edit scoped mix group" if group else "Add scoped mix group"
+        )
+        dialog.setMinimumWidth(620)
+        outer = QVBoxLayout(dialog)
+        intro = QLabel(
+            "Each group has its own 100% blend and stays bound to one visual "
+            "target. Percentages are private guidance and are not printed in "
+            "the final image prompt."
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        grid = QGridLayout()
+        grid.addWidget(QLabel("Group name"), 0, 0)
+        name_edit = QLineEdit(current.get("name", ""))
+        name_edit.setClearButtonEnabled(True)
+        name_edit.setPlaceholderText("e.g. Alien toy surface")
+        grid.addWidget(name_edit, 0, 1)
+        grid.addWidget(QLabel("Visual target"), 1, 0)
+        target_combo = QComboBox()
+        target_combo.addItems(CONCEPT_MIX_GROUP_TARGETS)
+        target_combo.setEditable(True)
+        target_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        if target_combo.lineEdit() is not None:
+            target_combo.lineEdit().setClearButtonEnabled(True)
+            target_combo.lineEdit().setPlaceholderText(
+                "Preset or named target, e.g. Alice"
+            )
+        target_combo.setCurrentText(current.get("target", "Global image"))
+        grid.addWidget(target_combo, 1, 1)
+        grid.addWidget(QLabel("Blend"), 2, 0)
+        mix_edit = QLineEdit(current.get("mix", ""))
+        mix_edit.setReadOnly(True)
+        mix_edit.setPlaceholderText("Choose ingredients and percentages…")
+        grid.addWidget(mix_edit, 2, 1)
+        edit_mix_button = QtButton("Edit blend…")
+        grid.addWidget(edit_mix_button, 2, 2)
+        clear_mix_button = QtButton("Clear blend")
+        grid.addWidget(clear_mix_button, 2, 3)
+        grid.setColumnStretch(1, 1)
+        outer.addLayout(grid)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        outer.addWidget(buttons)
+
+        def refresh_save() -> None:
+            save_button.setEnabled(
+                bool(name_edit.text().strip())
+                and bool(parse_concept_mix(mix_edit.text()))
+            )
+
+        def edit_blend() -> None:
+            value = self._open_concept_mix_editor(
+                initial_value=mix_edit.text(),
+                title=f"Blend for {name_edit.text().strip() or 'new group'}",
+                save_to_primary=False,
+            )
+            if value is not None:
+                mix_edit.setText(value)
+                refresh_save()
+
+        name_edit.textChanged.connect(lambda _value: refresh_save())
+        edit_mix_button.clicked.connect(edit_blend)
+        clear_mix_button.clicked.connect(
+            lambda: (mix_edit.clear(), refresh_save())
+        )
+        refresh_save()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        normalized = normalize_concept_mix_groups(
+            [
+                {
+                    "name": name_edit.text(),
+                    "target": target_combo.currentText(),
+                    "mix": mix_edit.text(),
+                }
+            ]
+        )
+        return normalized[0] if normalized else None
+
+    def _open_concept_mix_groups_editor(
+        self,
+        _checked: bool = False,
+    ) -> None:
+        groups = [dict(group) for group in self.concept_mix_groups]
+        dialog = QDialog(self.root)
+        dialog.setWindowTitle("Scoped concept mix groups")
+        dialog.resize(780, 560)
+        outer = QVBoxLayout(dialog)
+        intro = QLabel(
+            f"Create up to {CONCEPT_MIX_GROUP_LIMIT} independent blends. Each "
+            "group totals 100% separately and targets a subject, environment, "
+            "props, mood and lighting, rendering style, or the global image."
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        group_list = QListWidget()
+        group_list.setObjectName("conceptMixGroupList")
+        outer.addWidget(group_list, 1)
+        count_label = QLabel()
+        outer.addWidget(count_label)
+
+        actions = QHBoxLayout()
+        add_button = QtButton("Add group")
+        edit_button = QtButton("Edit")
+        duplicate_button = QtButton("Duplicate")
+        remove_button = QtButton("Remove")
+        clear_button = QtButton("Clear groups")
+        for button in (
+            add_button,
+            edit_button,
+            duplicate_button,
+            remove_button,
+            clear_button,
+        ):
+            actions.addWidget(button)
+        actions.addStretch()
+        outer.addLayout(actions)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        outer.addWidget(buttons)
+
+        def selected_index() -> int:
+            row = group_list.currentRow()
+            return row if 0 <= row < len(groups) else -1
+
+        def rebuild(selected: int = -1) -> None:
+            group_list.clear()
+            for group in groups:
+                blend = ", ".join(
+                    f"{name} {share}%"
+                    for name, share in parse_concept_mix(group["mix"])
+                )
+                group_list.addItem(
+                    f'{group["name"]}  ·  {group["target"]}\n{blend}'
+                )
+            count_label.setText(
+                f"{len(groups)} of {CONCEPT_MIX_GROUP_LIMIT} groups"
+            )
+            if groups:
+                group_list.setCurrentRow(
+                    min(
+                        max(selected, 0),
+                        len(groups) - 1,
+                    )
+                )
+            refresh_action_state()
+
+        def refresh_action_state() -> None:
+            has_selection = selected_index() >= 0
+            add_button.setEnabled(len(groups) < CONCEPT_MIX_GROUP_LIMIT)
+            edit_button.setEnabled(has_selection)
+            duplicate_button.setEnabled(
+                has_selection and len(groups) < CONCEPT_MIX_GROUP_LIMIT
+            )
+            remove_button.setEnabled(has_selection)
+            clear_button.setEnabled(bool(groups))
+
+        def add_group() -> None:
+            if len(groups) >= CONCEPT_MIX_GROUP_LIMIT:
+                return
+            created = self._edit_scoped_mix_group()
+            if created:
+                groups.append(created)
+                rebuild(len(groups) - 1)
+
+        def edit_group() -> None:
+            index = selected_index()
+            if index < 0:
+                return
+            edited = self._edit_scoped_mix_group(groups[index])
+            if edited:
+                groups[index] = edited
+                rebuild(index)
+
+        def duplicate_group() -> None:
+            index = selected_index()
+            if index < 0 or len(groups) >= CONCEPT_MIX_GROUP_LIMIT:
+                return
+            duplicate = dict(groups[index])
+            duplicate["name"] = (duplicate["name"] + " copy")[:60]
+            groups.insert(index + 1, duplicate)
+            rebuild(index + 1)
+
+        def remove_group() -> None:
+            index = selected_index()
+            if index < 0:
+                return
+            del groups[index]
+            rebuild(min(index, len(groups) - 1))
+
+        add_button.clicked.connect(add_group)
+        edit_button.clicked.connect(edit_group)
+        duplicate_button.clicked.connect(duplicate_group)
+        remove_button.clicked.connect(remove_group)
+        clear_button.clicked.connect(lambda: (groups.clear(), rebuild()))
+        group_list.itemDoubleClicked.connect(lambda _item: edit_group())
+        group_list.currentRowChanged.connect(
+            lambda _row: refresh_action_state()
+        )
+        rebuild(0)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.concept_mix_groups = normalize_concept_mix_groups(groups)
+        self._save_settings()
+        self.status_var.set(
+            f"Updated {len(self.concept_mix_groups)} scoped concept mix group(s)"
+        )
 
     def _narrative_preset_target(self, destination: str) -> Value:
         return {
@@ -4240,10 +4501,21 @@ class PromptCorrectorApp:
 
     def _effective_mix_inputs(self) -> tuple[str, str, str, str]:
         mix = self.concept_mix_var.get().strip()
-        concepts = concept_mix_to_concepts(self.concepts_var.get().strip(), mix)
-        weighted_terms = concept_mix_to_weighted_terms(self.weighted_terms_var.get().strip(), mix)
+        concepts = concept_mix_groups_to_concepts(
+            self.concepts_var.get().strip(),
+            mix,
+            self.concept_mix_groups,
+        )
+        weighted_terms = concept_mix_groups_to_weighted_terms(
+            self.weighted_terms_var.get().strip(),
+            mix,
+            self.concept_mix_groups,
+        )
         instructions = self.model_instructions_var.get().strip()
-        private_instructions = concept_mix_instruction(mix)
+        private_instructions = concept_mix_groups_instruction(
+            mix,
+            self.concept_mix_groups,
+        )
         return concepts, weighted_terms, instructions, private_instructions
 
     def _custom_preset_snapshot(self) -> dict[str, object]:
@@ -4258,6 +4530,7 @@ class PromptCorrectorApp:
                 for kind, values in self.narrative_preset_selections["prompt"].items()
             },
             "concept_mix": self.concept_mix_var.get(),
+            "concept_mix_groups": self.concept_mix_groups,
             "visual_direction": self.visual_direction_var.get(),
             "visual_preset_selection": list(
                 self.visual_preset_selections.get("prompt", [])
@@ -4318,6 +4591,9 @@ class PromptCorrectorApp:
             ("generation_feedback", self.generation_feedback_var),
         ):
             variable.set(str(snapshot.get(key, variable.get())))
+        self.concept_mix_groups = normalize_concept_mix_groups(
+            snapshot.get("concept_mix_groups", [])
+        )
         stored_visual_presets = snapshot.get("visual_preset_selection", [])
         if isinstance(stored_visual_presets, list):
             self.visual_preset_selections["prompt"] = [
@@ -4752,6 +5028,17 @@ class PromptCorrectorApp:
                 self._help(mix_button, "Mix...")
                 mix_button.clicked.connect(self._open_concept_mix_editor)
                 mix_controls.addWidget(mix_button)
+                groups_button = QtButton("Groups…")
+                self._set_help(
+                    groups_button,
+                    "Create independent 100% concept blends scoped to different "
+                    "subjects or visual layers.",
+                    "Use one blend for the main subject and another for the environment.",
+                )
+                groups_button.clicked.connect(
+                    self._open_concept_mix_groups_editor
+                )
+                mix_controls.addWidget(groups_button)
                 direction_grid.addLayout(mix_controls, row, 1)
             elif variable is self.visual_direction_var:
                 field = self._bind_line(variable)
@@ -6499,15 +6786,22 @@ class PromptCorrectorApp:
             if hasattr(self, "draft_text")
             else self.recovered_draft.strip()
         )
+        (
+            effective_concepts,
+            effective_weighted_terms,
+            _effective_model_instructions,
+            private_mix_guidance,
+        ) = self._effective_mix_inputs()
         return {
             "draft": draft,
-            "concepts": self.concepts_var.get().strip(),
+            "concepts": effective_concepts,
             "concept_mix": self.concept_mix_var.get().strip(),
+            "concept_mix_guidance": private_mix_guidance,
             "visual_direction": self.visual_direction_var.get().strip(),
             "goal_headline": self.goal_headline_var.get().strip(),
             "focus": self.focus_var.get().strip(),
             "story_elements": self.story_elements_var.get().strip(),
-            "weighted_terms": self.weighted_terms_var.get().strip(),
+            "weighted_terms": effective_weighted_terms,
             "model_instructions": self.model_instructions_var.get().strip(),
             "generation_feedback": self.generation_feedback_var.get().strip(),
             "mode": self.mode_var.get().strip(),
@@ -6757,7 +7051,11 @@ class PromptCorrectorApp:
         candidate = preserve_invent_seed_value(
             workspace,
             field,
-            normalize_invent_candidate(workspace, field, response),
+            normalize_invent_candidate(
+                workspace,
+                field,
+                strip_private_prompt_guidance(response),
+            ),
             seed_value=seed_value,
         )
         issues = invent_field_issues(
@@ -6798,7 +7096,7 @@ class PromptCorrectorApp:
             normalize_invent_candidate(
                 workspace,
                 field,
-                repair_response,
+                strip_private_prompt_guidance(repair_response),
             ),
             seed_value=seed_value,
         )
@@ -6917,6 +7215,9 @@ class PromptCorrectorApp:
         goal_headline = str(context.get("goal_headline", "")).strip()
         focus = str(context.get("focus", "")).strip()
         model_instructions = str(context.get("model_instructions", "")).strip()
+        concept_mix_guidance = str(
+            context.get("concept_mix_guidance", "")
+        ).strip()
         generation_feedback = str(
             context.get("generation_feedback", "")
         ).strip()
@@ -6977,6 +7278,7 @@ class PromptCorrectorApp:
                 "story_elements": story_elements,
                 "weighted_terms": weighted_terms,
                 "model_instructions": model_instructions,
+                "concept_mix_guidance": concept_mix_guidance,
                 "generation_feedback": generation_feedback,
                 "visual_direction": visual_direction,
                 "camera_direction": camera_direction,
@@ -8357,6 +8659,7 @@ class PromptCorrectorApp:
                 "story_elements": story_elements.strip(),
                 "weighted_terms": effective_weighted_terms.strip(),
                 "model_instructions": self.model_instructions_var.get().strip(),
+                "concept_mix_guidance": effective_private_model_instructions.strip(),
                 "generation_feedback": effective_generation_feedback,
                 "visual_direction": self.visual_direction_var.get().strip(),
                 "camera_direction": self._camera_direction(),
@@ -8476,13 +8779,27 @@ class PromptCorrectorApp:
         if (
             destination == "prompt"
             and effective_concepts
-            and self.concept_mix_var.get().strip()
-        ):
-            mix_summary = ", ".join(
-                f"{name}:{percentage}%"
-                for name, percentage in parse_concept_mix(self.concept_mix_var.get())
+            and (
+                self.concept_mix_var.get().strip()
+                or self.concept_mix_groups
             )
-            self._log_activity(f"Concept/style mix: {mix_summary}")
+        ):
+            if self.concept_mix_var.get().strip():
+                mix_summary = ", ".join(
+                    f"{name}:{percentage}%"
+                    for name, percentage in parse_concept_mix(
+                        self.concept_mix_var.get()
+                    )
+                )
+                self._log_activity(f"Concept/style mix: {mix_summary}")
+            for group in self.concept_mix_groups:
+                self._log_activity(
+                    f'Scoped mix "{group["name"]}" -> {group["target"]}: '
+                    + ", ".join(
+                        f"{name}:{percentage}%"
+                        for name, percentage in parse_concept_mix(group["mix"])
+                    )
+                )
         if effective_goal_headline:
             self._log_activity(f"Goal headline: {effective_goal_headline}")
         if effective_focus:
@@ -9046,6 +9363,11 @@ class PromptCorrectorApp:
                     if workspace == "prompt"
                     else ""
                 ),
+                "concept_mix_groups": (
+                    self.concept_mix_groups
+                    if workspace == "prompt"
+                    else []
+                ),
                 "model_instructions": (
                     self.model_instructions_var.get().strip()
                     if workspace == "prompt"
@@ -9105,6 +9427,9 @@ class PromptCorrectorApp:
         self.story_elements_var.set(str(entry.get("story_elements", "")))
         self.concepts_var.set(str(entry.get("concepts", "")))
         self.concept_mix_var.set(str(entry.get("concept_mix", "")))
+        self.concept_mix_groups = normalize_concept_mix_groups(
+            entry.get("concept_mix_groups", [])
+        )
         self.model_instructions_var.set(str(entry.get("model_instructions", "")))
         self.generation_feedback_var.set(str(entry.get("generation_feedback", "")))
         if requested_prompt:
@@ -10152,6 +10477,7 @@ class PromptCorrectorApp:
             self.generation_feedback_var,
         ):
             variable.set("")
+        self.concept_mix_groups = []
         self.concept_preset_selections["prompt"] = []
         self.narrative_preset_selections["prompt"] = {
             "action": [],

@@ -275,6 +275,14 @@ class PromptCorrectorTests(unittest.TestCase):
             draft="A courier reaches a flooded city gate.",
             concepts="solarpunk, storm photography",
             concept_mix="watercolor:60%, ink:40%",
+            concept_mix_guidance=(
+                'Private scoped concept mix groups: keep each blend bound only '
+                'to its named visual target. Do not average percentages between '
+                'groups, move attributes between targets, or print group names, '
+                'targets, percentages, or numeric weights in the final image '
+                'prompt.\n- Group "Courier clothing" targets Alice: linen 70%, '
+                "chrome 30%."
+            ),
             visual_direction="Ominous mood, cool moonlight, and low valley mist.",
             goal_headline="A hopeful arrival during a dangerous flood",
             focus="the courier's medicine satchel",
@@ -298,6 +306,12 @@ class PromptCorrectorTests(unittest.TestCase):
             messages[0]["content"],
         )
         self.assertIn("Eye-level medium shot", messages[1]["content"])
+        self.assertIn(
+            'Group "Courier clothing" targets Alice',
+            messages[1]["content"],
+        )
+        self.assertIn("private control context", messages[0]["content"])
+        self.assertIn("never quote or expose", messages[0]["content"])
         self.assertIn(
             "Current field value: The courier keeps the medicine dry.",
             messages[1]["content"],
@@ -2301,6 +2315,19 @@ class PromptCorrectorTests(unittest.TestCase):
             [],
         )
 
+    def test_both_hands_is_not_treated_as_a_person_reference(self):
+        prompt = (
+            "A woman and a doctor stand in a park while the woman grips "
+            "a green dildo with both hands."
+        )
+
+        issues = corrector.multi_person_role_issues(prompt)
+
+        self.assertIn("missing distinct position labels for each person", issues)
+        self.assertFalse(
+            any("ambiguous person references: both" in issue for issue in issues)
+        )
+
     def test_single_person_gender_aliases_do_not_become_fake_multi_person_scenes(self):
         for prompt in (
             "A woman stands alone while the female subject raises her hands.",
@@ -2317,6 +2344,22 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(corrector.person_role_mentions(prompt), ["woman"])
         self.assertFalse(corrector.appears_multi_person_scene(prompt))
         self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
+    def test_adult_magazine_style_is_not_a_second_person_role(self):
+        prompt = (
+            "Photoreal, glossy adult magazine finish. A mature adult woman "
+            "kneels in a sunny park and grips a green dildo with both hands."
+        )
+
+        self.assertEqual(corrector.person_role_mentions(prompt), ["woman"])
+        self.assertFalse(corrector.appears_multi_person_scene(prompt))
+        self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
+        self.assertTrue(
+            corrector.appears_multi_person_scene(
+                "An adult stands beside a woman in a studio."
+            )
+        )
 
     def test_same_gender_aliases_still_detect_explicitly_distinct_people(self):
         for prompt in (
@@ -2922,6 +2965,22 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertNotIn("their own genitals", translated)
         self.assertIn("her hot vulva", translated)
         self.assertEqual(corrector.explicit_adult_grammar_issues(translated), [])
+
+    def test_explicit_translation_repairs_clear_pronoun_self_reference(self):
+        translated = corrector.translate_explicit_adult_language(
+            "A mature adult woman kneels in a park. "
+            "During self-stimulation of their own genitals, she grips a dildo. "
+            "She performs self-stimulation of their own genitals."
+        )
+        self.assertIn(
+            "She performs self-stimulation of her own genitals",
+            translated,
+        )
+        self.assertIn(
+            "During self-stimulation of her own genitals",
+            translated,
+        )
+        self.assertNotIn("their own genitals", translated)
 
     def test_deterministic_fallback_preserves_blank_line_separated_source(self):
         source = (
@@ -3646,7 +3705,12 @@ class PromptCorrectorTests(unittest.TestCase):
             )
 
         self.assertIn("A woman walks through a rainy city street", result)
-        self.assertIn("Required visual elements: red umbrella", result)
+        self.assertIn(
+            "prominently integrate red umbrella into the existing subject and object design",
+            result,
+        )
+        self.assertNotIn("Required visual elements", result)
+        self.assertNotIn("Prominent visual elements", result)
         self.assertFalse(
             corrector.missing_required_concepts(result, "red umbrella")
         )
@@ -4098,7 +4162,7 @@ class PromptCorrectorTests(unittest.TestCase):
             (
                 "A woman masturbates and then has an orgasm.",
                 (
-                    "woman performs self-stimulation of their own genitals",
+                    "woman performs self-stimulation of her own genitals",
                     "shows a visible peak sexual response",
                     "muscle tension, altered breathing, and facial reaction",
                 ),
@@ -5270,6 +5334,61 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("cyberpunk 30%", instruction)
         self.assertIn("relative creative influence", instruction)
         self.assertIn("not a literal pixel measurement", instruction)
+        self.assertIn("do not create an additional person", instruction)
+
+    def test_scoped_concept_mix_groups_remain_independent(self):
+        groups = corrector.normalize_concept_mix_groups(
+            [
+                {
+                    "name": "Subject surface",
+                    "target": "Main subject",
+                    "mix": "xenomorph:70%, porcelain:30%",
+                },
+                {
+                    "name": "Room treatment",
+                    "target": "Alice",
+                    "mix": "greenhouse:25%, brutalism:75%",
+                },
+            ]
+        )
+
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(groups[0]["mix"], "xenomorph:70%, porcelain:30%")
+        self.assertEqual(groups[1]["mix"], "greenhouse:25%, brutalism:75%")
+        self.assertEqual(
+            corrector.concept_mix_groups_to_concepts("", "", groups),
+            "xenomorph, porcelain, greenhouse, brutalism",
+        )
+        instruction = corrector.concept_mix_groups_instruction("", groups)
+        self.assertIn(
+            'Group "Subject surface" targets Main subject: '
+            "xenomorph 70%, porcelain 30%",
+            instruction,
+        )
+        self.assertIn(
+            'Group "Room treatment" targets Alice: '
+            "greenhouse 25%, brutalism 75%",
+            instruction,
+        )
+        self.assertIn("Do not average percentages between groups", instruction)
+
+    def test_scoped_concept_mix_groups_are_bounded_and_canonical(self):
+        raw = [
+            {
+                "name": f"  Mix   {index}  ",
+                "target": "unsupported" if index == 0 else "Rendering style",
+                "mix": "ink, pastel",
+            }
+            for index in range(8)
+        ]
+        raw.extend([{"name": "bad", "target": "Environment", "mix": ""}, "bad"])
+
+        groups = corrector.normalize_concept_mix_groups(raw)
+
+        self.assertEqual(len(groups), corrector.CONCEPT_MIX_GROUP_LIMIT)
+        self.assertEqual(groups[0]["name"], "Mix 0")
+        self.assertEqual(groups[0]["target"], "unsupported")
+        self.assertEqual(groups[0]["mix"], "ink:50%, pastel:50%")
 
     def test_adjust_weighted_terms_text_changes_term_at_cursor(self):
         text, cursor = corrector.adjust_weighted_terms_text(
@@ -6988,7 +7107,62 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertNotIn("Deliberate concept and style blend", cleaned)
         self.assertNotIn("relative creative influence", cleaned)
         self.assertNotIn("every nonzero ingredient", cleaned)
+        self.assertNotIn("additional person", cleaned)
         self.assertNotIn("numeric weights", cleaned)
+        self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
+
+    def test_adult_fidelity_audit_summary_is_removed_from_visible_output(self):
+        visible = "An adult uses a dildo in a direct vaginal self-stimulation scene."
+        leaked = (
+            visible
+            + " All facts preserved: action=toy use, self-stimulation of their "
+            "own genitals, contact=vaginal, object=dildo. No euphemism, no added "
+            "identity or dynamic."
+        )
+
+        self.assertTrue(corrector.internal_prompt_guidance_issues(leaked))
+        cleaned = corrector.strip_private_prompt_guidance(leaked)
+
+        self.assertEqual(cleaned, visible)
+        self.assertNotIn("All facts preserved", cleaned)
+        self.assertNotIn("action=", cleaned)
+        self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
+
+    def test_scoped_mix_control_text_is_removed_from_visible_output(self):
+        guidance = corrector.concept_mix_groups_instruction(
+            "",
+            [
+                {
+                    "name": "Subject",
+                    "target": "Main subject",
+                    "mix": "ink:60%, pastel:40%",
+                }
+            ],
+        )
+        visible = "An ink-lined subject with restrained pastel shading."
+
+        cleaned = corrector.strip_private_prompt_guidance(
+            visible + " " + guidance
+        )
+
+        self.assertEqual(cleaned, visible)
+        self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
+
+    def test_visual_element_control_labels_are_removed_from_visible_output(self):
+        leaked = (
+            "A green alien-textured toy in a sunny park. "
+            "Required visual elements: xenomorph. "
+            "Prominent visual elements: xenomorph."
+        )
+
+        self.assertTrue(corrector.internal_prompt_guidance_issues(leaked))
+        cleaned = corrector.naturalize_krea_workflow_labels(
+            corrector.strip_private_prompt_guidance(leaked)
+        )
+
+        self.assertNotIn("Required visual elements", cleaned)
+        self.assertNotIn("Prominent visual elements", cleaned)
+        self.assertIn("xenomorph", cleaned)
         self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
 
     def test_private_revision_block_is_removed_from_visible_output(self):
@@ -7051,6 +7225,35 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertNotIn("Mandatory user constraints", result)
         self.assertNotIn("every nonzero ingredient", result)
         self.assertNotIn("relative creative influence", result)
+
+    def test_post_completion_removes_adult_fidelity_audit_summary(self):
+        visible = "An adult woman vaginally stimulates herself with a dildo."
+        leaked = (
+            visible
+            + " All facts preserved: action=toy use, self-stimulation of their "
+            "own genitals, contact=vaginal, object=dildo. No euphemism, no added "
+            "identity or dynamic."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=leaked,
+        ):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="qwen3-vl-4b-instruct",
+                prompt=visible,
+                temperature=0.2,
+                max_tokens=300,
+                timeout=12,
+                api_key="test-key",
+                explicit_nsfw=True,
+                context_token_budget=4096,
+                audit_repair=False,
+                final_gate_repair=False,
+            )
+
+        self.assertEqual(result, visible)
+        self.assertFalse(corrector.internal_prompt_guidance_issues(result))
 
     def test_internal_prompt_guidance_is_a_hard_compliance_issue(self):
         issues = corrector.final_compliance_issues(

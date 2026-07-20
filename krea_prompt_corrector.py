@@ -2415,6 +2415,53 @@ def translate_explicit_adult_language(text: str) -> str:
         translated,
         flags=re.IGNORECASE,
     )
+    translated = re.sub(
+        r"\b(she)\s+((?:perform(?:s|ing)?|performed)\s+"
+        r"(?:visible\s+)?self-stimulation\s+of)\s+their\s+own\s+genitals\b",
+        lambda match: (
+            f"{match.group(1)} {match.group(2)} her own genitals"
+        ),
+        translated,
+        flags=re.IGNORECASE,
+    )
+    translated = re.sub(
+        r"\b(he)\s+((?:perform(?:s|ing)?|performed)\s+"
+        r"(?:visible\s+)?self-stimulation\s+of)\s+their\s+own\s+genitals\b",
+        lambda match: (
+            f"{match.group(1)} {match.group(2)} his own genitals"
+        ),
+        translated,
+        flags=re.IGNORECASE,
+    )
+    if not appears_multi_person_scene(translated):
+        has_female_subject = bool(
+            re.search(
+                r"\b(?:woman|female|lady|wife|mother|sister|daughter|bride)\b",
+                translated,
+                flags=re.IGNORECASE,
+            )
+        )
+        has_male_subject = bool(
+            re.search(
+                r"\b(?:man|male|gentleman|husband|father|brother|son|groom)\b",
+                translated,
+                flags=re.IGNORECASE,
+            )
+        )
+        if has_female_subject and not has_male_subject:
+            translated = re.sub(
+                r"\btheir\s+own\s+genitals\b",
+                "her own genitals",
+                translated,
+                flags=re.IGNORECASE,
+            )
+        elif has_male_subject and not has_female_subject:
+            translated = re.sub(
+                r"\btheir\s+own\s+genitals\b",
+                "his own genitals",
+                translated,
+                flags=re.IGNORECASE,
+            )
     return translated
 
 
@@ -2793,6 +2840,11 @@ KREA_WORKFLOW_LABEL_PATTERN = re.compile(
     r"|shared camera framing and viewpoint across the comic panels"
     r"|visual direction"
     r"|visible action details"
+    r"|required visual elements"
+    r"|shared required visual elements across the page"
+    r"|prominent visual elements"
+    r"|primary visual focus"
+    r"|overall visual intent"
     r")\s*:\s*"
 )
 
@@ -2863,7 +2915,9 @@ def person_role_mentions(prompt: str) -> list[str]:
     if "adult" in mentions:
         role_without_compound_adults = re.sub(
             r"\badult\s+(?:woman|man|female|male|lady|partner|person|subject|"
-            r"performer|bride|groom|wife|husband)\b",
+            r"performer|bride|groom|wife|husband|magazine|editorial|photography|"
+            r"photo|film|cinema|content|imagery|entertainment|aesthetic|style|"
+            r"visuals?|genre|finish)\b",
             " ",
             searchable,
         )
@@ -3095,10 +3149,16 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         allowed_references.update(("he", "him", "his"))
     if group_reference_is_clear:
         allowed_references.update(("both", "they", "their", "them"))
+    reference_searchable = re.sub(
+        r"\bboth\s+(?:hands?|arms?|legs?|feet|knees?|eyes?|shoulders?|hips?|"
+        r"thighs?|wrists?|ankles?|palms?|fingers?|sides?|ends?)\b",
+        " ",
+        searchable,
+    )
     ambiguous = [
         word
         for word in AMBIGUOUS_MULTI_PERSON_REFERENCES
-        if re.search(rf"\b{re.escape(word)}\b", searchable)
+        if re.search(rf"\b{re.escape(word)}\b", reference_searchable)
         and word not in allowed_references
         and not (
             reciprocal_is_unambiguous
@@ -6441,20 +6501,55 @@ def deterministic_fidelity_fallback(
     )
     additions: list[str] = []
     missing_concepts = missing_required_concepts(fallback, concept_keywords)
-    if missing_concepts:
-        label = (
-            "Shared required visual elements across the page"
-            if appears_multi_panel_story(original_prompt, story_elements)
-            else "Required visual elements"
-        )
-        additions.append(f"{label}: {', '.join(missing_concepts)}")
-    if focus.strip() and focus_issue(fallback, focus.strip()):
-        additions.append(f"Primary visual focus: {normalize_concept_text(focus.strip())}")
     missing_weighted = missing_weighted_terms(fallback, weighted_terms)
-    if missing_weighted:
-        additions.append(f"Prominent visual elements: {', '.join(missing_weighted)}")
+    prominent_terms = [
+        re.sub(
+            r"\s*\([^)]*visual\s+priority[^)]*\)\s*$",
+            "",
+            term,
+            flags=re.IGNORECASE,
+        ).strip()
+        for term in missing_weighted
+    ]
+    prominent_terms = [term for term in prominent_terms if term]
+    required_only = [
+        concept
+        for concept in missing_concepts
+        if not any(
+            semantic_term_present(concept, prominent)
+            or semantic_term_present(prominent, concept)
+            for prominent in prominent_terms
+        )
+    ]
+    page_prefix = (
+        "Across the page, "
+        if appears_multi_panel_story(original_prompt, story_elements)
+        else ""
+    )
+    if prominent_terms:
+        additions.append(
+            page_prefix
+            + "prominently integrate "
+            + ", ".join(prominent_terms)
+            + " into the existing subject and object design"
+        )
+    if required_only:
+        additions.append(
+            page_prefix
+            + "visibly integrate "
+            + ", ".join(required_only)
+            + " into the existing scene design"
+        )
+    if focus.strip() and focus_issue(fallback, focus.strip()):
+        additions.append(
+            "Center visual attention on "
+            + normalize_concept_text(focus.strip())
+        )
     if goal_headline.strip() and intent_lock_issues(original_prompt, fallback, goal_headline):
-        additions.append(f"Overall visual intent: {normalize_concept_text(goal_headline.strip())}")
+        additions.append(
+            "The scene visually emphasizes "
+            + normalize_concept_text(goal_headline.strip())
+        )
     if additions:
         fallback = normalize_final_prompt_text(
             fallback.rstrip(" .") + ". " + ". ".join(additions) + "."
@@ -8395,11 +8490,130 @@ def concept_mix_instruction(concept_mix: str) -> str:
         "relative creative influence, not a literal pixel measurement. Build one coherent hybrid "
         "visual language, keep every nonzero ingredient visibly recognizable, and let larger shares "
         "control more of the composition, materials, palette, lighting, shape language, and detail. "
+        "Treat ingredients as visual influence on the existing requested subjects and objects; do not "
+        "create an additional person, character, creature, or actor unless the user explicitly asks for one. "
         "Do not print percentages or numeric weights in the final image prompt."
     )
 
 
+CONCEPT_MIX_GROUP_LIMIT = 6
+CONCEPT_MIX_GROUP_TARGETS = (
+    "Global image",
+    "Main subject",
+    "Secondary subject",
+    "Environment",
+    "Clothing and props",
+    "Mood and lighting",
+    "Rendering style",
+)
+
+
+def normalize_concept_mix_groups(value: object) -> list[dict[str, str]]:
+    """Return bounded, canonical independent mix groups from saved/UI data."""
+
+    if not isinstance(value, list):
+        return []
+    groups: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        parsed = parse_concept_mix(str(item.get("mix", "")))
+        if not parsed:
+            continue
+        mix = ", ".join(f"{name}:{share}%" for name, share in parsed)
+        target = re.sub(
+            r"\s+",
+            " ",
+            str(item.get("target", "Global image")),
+        ).strip()[:80]
+        if not target:
+            target = "Global image"
+        name = re.sub(r"\s+", " ", str(item.get("name", ""))).strip()[:60]
+        if not name:
+            name = f"Mix {index + 1}"
+        signature = (name.casefold(), target.casefold(), mix.casefold())
+        if signature in seen:
+            continue
+        groups.append({"name": name, "target": target, "mix": mix})
+        seen.add(signature)
+        if len(groups) >= CONCEPT_MIX_GROUP_LIMIT:
+            break
+    return groups
+
+
+def concept_mix_groups_to_concepts(
+    concept_keywords: str,
+    concept_mix: str,
+    groups: object,
+) -> str:
+    concepts = concept_mix_to_concepts(concept_keywords, concept_mix)
+    for group in normalize_concept_mix_groups(groups):
+        concepts = concept_mix_to_concepts(concepts, group["mix"])
+    return concepts
+
+
+def concept_mix_groups_to_weighted_terms(
+    weighted_terms: str,
+    concept_mix: str,
+    groups: object,
+) -> str:
+    weighted = concept_mix_to_weighted_terms(weighted_terms, concept_mix)
+    for group in normalize_concept_mix_groups(groups):
+        weighted = concept_mix_to_weighted_terms(weighted, group["mix"])
+    return weighted
+
+
+def concept_mix_groups_instruction(
+    concept_mix: str,
+    groups: object,
+) -> str:
+    """Build private entity-scoped mix guidance without changing visible syntax."""
+
+    sections: list[str] = []
+    primary = concept_mix_instruction(concept_mix)
+    if primary:
+        sections.append(primary)
+    normalized_groups = normalize_concept_mix_groups(groups)
+    if normalized_groups:
+        lines = [
+            "Private scoped concept mix groups: keep each blend bound only to "
+            "its named visual target. Do not average percentages between groups, "
+            "move attributes between targets, or print group names, targets, "
+            "percentages, or numeric weights in the final image prompt."
+        ]
+        for group in normalized_groups:
+            blend = ", ".join(
+                f"{name} {share}%"
+                for name, share in parse_concept_mix(group["mix"])
+            )
+            lines.append(
+                f'- Group "{group["name"]}" targets {group["target"]}: {blend}.'
+            )
+        sections.append("\n".join(lines))
+    return "\n".join(sections)
+
+
 PRIVATE_PROMPT_GUIDANCE_PATTERNS: tuple[tuple[str, str], ...] = (
+    (
+        r"(?i)\bAll\s+facts\s+preserved\s*:\s*[^.!?\n]*"
+        r"(?:[.!?](?=\s|$)|$)\s*",
+        "",
+    ),
+    (
+        r"(?i)\bNo\s+euphemism\s*,\s*no\s+added\s+identity\s+or\s+dynamic\s*[.!]?\s*",
+        "",
+    ),
+    (
+        r"(?is)\bPrivate\s+scoped\s+concept\s+mix\s+groups\s*:\s*"
+        r".*?\bfinal\s+image\s+prompt\s*\.\s*",
+        "",
+    ),
+    (
+        r"(?i)(?:^|\s)-\s*Group\s+\"[^\"]+\"\s+targets\s+[^:\n]+:\s*"
+        r"[^.!?\n]*(?:[.!?](?=\s|$)|$)\s*",
+        " ",
+    ),
     (
         r"(?i)\s*\(\s*(?:dominant|strong|clear|mild|secondary)\s+"
         r"visual\s+priority\s*,\s*[0-9]+(?:\s*\.\s*[0-9]+)?\s*\)",
@@ -8481,10 +8695,38 @@ PRIVATE_PROMPT_GUIDANCE_PATTERNS: tuple[tuple[str, str], ...] = (
         r"(?i)\bDo\s+not\s+print\s+percentages\s+or\s+numeric\s+weights\s+in\s+the\s+final\s+image\s+prompt\s*\.\s*",
         "",
     ),
+    (
+        r"(?i)\bTreat\s+ingredients\s+as\s+visual\s+influence\s+on\s+the\s+existing\s+requested\s+"
+        r"subjects\s+and\s+objects\s*;\s*do\s+not\s+create\s+an\s+additional\s+person\s*,\s*"
+        r"character\s*,\s*creature\s*,\s*or\s+actor\s+unless\s+the\s+user\s+explicitly\s+asks\s+"
+        r"for\s+one\s*\.\s*",
+        "",
+    ),
 )
 
 
 INTERNAL_PROMPT_GUIDANCE_MARKERS: tuple[tuple[str, str], ...] = (
+    (
+        r"(?i)\b(?:Required|Prominent)\s+visual\s+elements\s*:",
+        "visual-element control label",
+    ),
+    (r"(?i)\bAll\s+facts\s+preserved\s*:", "adult fidelity audit summary"),
+    (
+        r"(?i)\baction\s*=\s*[^.!?\n]{0,300}\b(?:contact|object)\s*=",
+        "adult fidelity audit summary",
+    ),
+    (
+        r"(?i)\bNo\s+euphemism\s*,\s*no\s+added\s+identity\s+or\s+dynamic\b",
+        "adult fidelity audit summary",
+    ),
+    (
+        r"(?i)\bPrivate\s+scoped\s+concept\s+mix\s+groups\s*:",
+        "scoped concept-mix control text",
+    ),
+    (
+        r"(?i)\bGroup\s+(?:\"[^\"]+\"|\s*)\s*targets\s+[^:\n]{1,80}\s*:",
+        "scoped concept-mix control text",
+    ),
     (r"(?i)\bRewrite\s+rule\s+strength\s*:", "rewrite-rule control text"),
     (r"(?i)\bMandatory\s+user\s+constraints\s*:", "mandatory-constraint label"),
     (r"(?i)\bPrivate\s+revision\s+guidance\b", "private revision guidance"),
@@ -8524,7 +8766,13 @@ INTERNAL_PROMPT_GUIDANCE_MARKERS: tuple[tuple[str, str], ...] = (
 def strip_private_prompt_guidance(text: str) -> str:
     """Remove known application control language from a model-facing result."""
 
-    parts = re.split(r'("[^"]*")', str(text or ""))
+    source = re.sub(
+        r"(?i)(?:^|\s)-\s*Group\s+\"[^\"]+\"\s+targets\s+[^:\n]+:\s*"
+        r"[^.!?\n]*(?:[.!?](?=\s|$)|$)\s*",
+        " ",
+        str(text or ""),
+    )
+    parts = re.split(r'("[^"]*")', source)
     cleaned_parts: list[str] = []
     for index, part in enumerate(parts):
         if index % 2:
@@ -11185,6 +11433,7 @@ def build_single_image_field_suggestion_messages(
     draft: str = "",
     concepts: str = "",
     concept_mix: str = "",
+    concept_mix_guidance: str = "",
     visual_direction: str = "",
     goal_headline: str = "",
     focus: str = "",
@@ -11257,6 +11506,14 @@ def build_single_image_field_suggestion_messages(
         + research_rule
         + seed_format_rule
         + (
+            "The supplied concept-mix guidance is private control context. Apply "
+            "each named blend only to its stated visual target, but never quote "
+            "or expose its group name, target label, percentage, or numeric "
+            "weight in the invented field. "
+            if concept_mix_guidance.strip()
+            else ""
+        )
+        + (
             ARTISTIC_DETAIL_FREEDOM_INSTRUCTION + " "
             if artistic_detail_freedom
             else ""
@@ -11275,6 +11532,12 @@ def build_single_image_field_suggestion_messages(
             f"Image prompt: {draft.strip() or 'not supplied'}",
             f"Concepts: {concepts.strip() or 'not supplied'}",
             f"Concept and style mix: {concept_mix.strip() or 'not supplied'}",
+            (
+                "Private concept-mix guidance:\n"
+                + concept_mix_guidance.strip()
+                if concept_mix_guidance.strip()
+                else "Private concept-mix guidance: not supplied"
+            ),
             f"Visual direction: {visual_direction.strip() or 'not supplied'}",
             f"Goal headline: {goal_headline.strip() or 'not supplied'}",
             f"Focus: {focus.strip() or 'not supplied'}",

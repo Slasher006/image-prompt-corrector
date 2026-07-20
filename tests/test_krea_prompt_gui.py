@@ -298,6 +298,14 @@ class PromptCorrectorGuiTests(unittest.TestCase):
     def test_custom_presets_and_searchable_pinned_history(self):
         self.controller.focus_var.set("sharp armor")
         self.controller.concept_mix_var.set("watercolor:65%, cyberpunk:35%")
+        scoped_groups = [
+            {
+                "name": "Armor surface",
+                "target": "the knight",
+                "mix": "steel:80%, moss:20%",
+            }
+        ]
+        self.controller.concept_mix_groups = scoped_groups
         concept_key = gui.concept_preset_key(
             "Character archetypes",
             "reluctant hero",
@@ -314,11 +322,13 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertTrue(self.controller._store_custom_preset("Armor"))
         self.controller.focus_var.set("changed")
         self.controller.concept_mix_var.set("")
+        self.controller.concept_mix_groups = []
         self.controller.concept_preset_selections["prompt"] = []
         self.controller.narrative_preset_selections["prompt"]["emotion"] = []
         self.assertTrue(self.controller._apply_custom_preset("Armor"))
         self.assertEqual(self.controller.focus_var.get(), "sharp armor")
         self.assertEqual(self.controller.concept_mix_var.get(), "watercolor:65%, cyberpunk:35%")
+        self.assertEqual(self.controller.concept_mix_groups, scoped_groups)
         self.assertEqual(
             self.controller.concept_preset_selections["prompt"],
             [concept_key],
@@ -665,6 +675,140 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             ["custom user style", "Watercolor", "courier", "soft window light"],
         )
         self.assertEqual(sum(share for _name, share in parsed), 100)
+
+    def test_effective_mix_inputs_include_scoped_groups_and_targets(self):
+        self.controller.concepts_var.set("portrait")
+        self.controller.weighted_terms_var.set("face:2")
+        self.controller.concept_mix_var.set("watercolor:60%, ink:40%")
+        self.controller.concept_mix_groups = [
+            {
+                "name": "Subject material",
+                "target": "Main subject",
+                "mix": "porcelain:70%, chrome:30%",
+            },
+            {
+                "name": "Room style",
+                "target": "Environment",
+                "mix": "greenhouse:25%, brutalism:75%",
+            },
+        ]
+
+        concepts, weighted, public_instructions, private_guidance = (
+            self.controller._effective_mix_inputs()
+        )
+
+        self.assertEqual(
+            gui.parse_concepts(concepts),
+            [
+                "portrait",
+                "watercolor",
+                "ink",
+                "porcelain",
+                "chrome",
+                "greenhouse",
+                "brutalism",
+            ],
+        )
+        self.assertEqual(public_instructions, "")
+        self.assertIn(
+            'Group "Subject material" targets Main subject',
+            private_guidance,
+        )
+        self.assertIn(
+            'Group "Room style" targets Environment',
+            private_guidance,
+        )
+        weighted_names = [
+            name for name, _weight in gui.parse_weighted_terms(weighted)
+        ]
+        self.assertEqual(
+            weighted_names,
+            [
+                "face",
+                "watercolor",
+                "ink",
+                "porcelain",
+                "chrome",
+                "greenhouse",
+                "brutalism",
+            ],
+        )
+
+    def test_scoped_mix_groups_editor_adds_multiple_independent_groups(self):
+        created = [
+            {
+                "name": "Alice surface",
+                "target": "Alice",
+                "mix": "porcelain:70%, chrome:30%",
+            },
+            {
+                "name": "Room treatment",
+                "target": "Environment",
+                "mix": "greenhouse:25%, brutalism:75%",
+            },
+        ]
+
+        def add_groups_and_save():
+            dialog = next(
+                widget
+                for widget in self.application.topLevelWidgets()
+                if (
+                    isinstance(widget, gui.QDialog)
+                    and widget.windowTitle() == "Scoped concept mix groups"
+                )
+            )
+            add_button = next(
+                button
+                for button in dialog.findChildren(gui.QPushButton)
+                if button.text() == "Add group"
+            )
+            add_button.click()
+            add_button.click()
+            group_list = dialog.findChild(
+                gui.QListWidget,
+                "conceptMixGroupList",
+            )
+            self.assertEqual(group_list.count(), 2)
+            self.assertIn("Alice", group_list.item(0).text())
+            self.assertIn("Environment", group_list.item(1).text())
+            return gui.QDialog.DialogCode.Accepted
+
+        with mock.patch.object(
+            self.controller,
+            "_edit_scoped_mix_group",
+            side_effect=created,
+        ):
+            with mock.patch.object(
+                gui.QDialog,
+                "exec",
+                side_effect=add_groups_and_save,
+            ):
+                self.controller._open_concept_mix_groups_editor()
+
+        self.assertEqual(self.controller.concept_mix_groups, created)
+
+    def test_scoped_mix_groups_persist_and_clear_with_single_image(self):
+        expected = [
+            {
+                "name": "Subject material",
+                "target": "Main subject",
+                "mix": "porcelain:70%, chrome:30%",
+            }
+        ]
+        self.controller.concept_mix_groups = expected
+        self.controller.corrected_text.setPlainText(
+            "Visible prompt. All facts preserved: action=toy use, "
+            "contact=vaginal, object=dildo. No euphemism, no added identity "
+            "or dynamic."
+        )
+        self.controller._save_settings()
+
+        saved = json.loads(gui.SETTINGS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(saved["concept_mix_groups"], expected)
+        self.assertEqual(saved["corrected_prompt"], "Visible prompt.")
+
+        self.controller.clear_single_image()
+        self.assertEqual(self.controller.concept_mix_groups, [])
 
     def test_local_reference_image_gets_thumbnail_and_candidate(self):
         image_path = Path(self.temp_dir.name) / "reference.png"
@@ -2508,6 +2652,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 "story_elements": "",
                 "weighted_terms": "",
                 "model_instructions": "",
+                "concept_mix_guidance": "",
                 "generation_feedback": "",
                 "visual_direction": "",
                 "camera_direction": "",
