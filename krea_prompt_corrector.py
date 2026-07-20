@@ -2028,6 +2028,44 @@ def slider_value(value: int) -> int:
     return max(-100, min(100, int(value)))
 
 
+def rule_strength_value(value: int) -> int:
+    """Clamp the user-facing rewrite-rule strength control."""
+
+    return max(0, min(100, int(value)))
+
+
+def rule_strength_instruction(value: int) -> str:
+    """Describe how strongly optional rewrite guidance should be enforced."""
+
+    strength = rule_strength_value(value)
+    if strength >= 85:
+        return ""
+    if strength >= 55:
+        optional_guidance = (
+            "Use optional polish with moderate flexibility."
+        )
+    elif strength >= 25:
+        optional_guidance = (
+            "Use optional polish gently and skip unnecessary elaboration."
+        )
+    else:
+        optional_guidance = (
+            "Use the lightest rewrite touch and only essential cleanup."
+        )
+    return (
+        f"Rewrite rule strength: {strength}/100. {optional_guidance} "
+        "Explicit user requirements, counts, positions, quoted text, safety, and "
+        "private-control cleanup remain strict."
+    )
+
+
+def apply_rule_strength_instruction(system_prompt: str, value: int) -> str:
+    """Prepend non-default rule strength without padding strict prompts."""
+
+    instruction = rule_strength_instruction(value)
+    return f"{instruction}\n\n{system_prompt}" if instruction else system_prompt
+
+
 def normalize_concept_text(text: str) -> str:
     def replace_word(match: re.Match[str]) -> str:
         word = match.group(0)
@@ -5475,6 +5513,28 @@ def split_compliance_issues(issues: list[str]) -> tuple[list[str], list[str]]:
     return hard, soft
 
 
+def rule_strength_compliance_issues(
+    issues: list[str],
+    value: int,
+) -> list[str]:
+    """Relax advisory validators while retaining every hard user contract."""
+
+    strength = rule_strength_value(value)
+    if strength >= 85:
+        return list(issues)
+    hard, soft = split_compliance_issues(issues)
+    if strength >= 55:
+        retained_soft_prefixes = (
+            "Possible spelling errors",
+            "Weak or non-visual phrasing",
+            "Untranslated slang",
+        )
+        return hard + [
+            issue for issue in soft if issue.startswith(retained_soft_prefixes)
+        ]
+    return hard
+
+
 def prompt_fidelity_penalty(original_prompt: str, candidate: str) -> int:
     original_terms = set(top_significant_terms(original_prompt, limit=80))
     candidate_terms = set(top_significant_terms(candidate, limit=100))
@@ -7322,6 +7382,16 @@ def strip_weighted_term_syntax(prompt: str, weighted_terms: str) -> str:
                 flags=re.IGNORECASE,
             )
 
+        # This priority parenthetical is private control prose regardless of
+        # whether it belongs to a currently supplied weighted term.
+        segment = re.sub(
+            r"\s*\(\s*(?:dominant|strong|clear|mild|secondary)\s+"
+            r"visual\s+priority\s*,\s*[0-9]+(?:\s*\.\s*[0-9]+)?\s*\)",
+            "",
+            segment,
+            flags=re.IGNORECASE,
+        )
+
         # Small models sometimes invent numeric priority syntax even when the
         # Weighted words field is empty. A decimal after a word is weight-like;
         # numeric ratios such as 3:2 do not match and remain untouched.
@@ -7437,6 +7507,16 @@ def concept_mix_instruction(concept_mix: str) -> str:
 
 PRIVATE_PROMPT_GUIDANCE_PATTERNS: tuple[tuple[str, str], ...] = (
     (
+        r"(?i)\s*\(\s*(?:dominant|strong|clear|mild|secondary)\s+"
+        r"visual\s+priority\s*,\s*[0-9]+(?:\s*\.\s*[0-9]+)?\s*\)",
+        "",
+    ),
+    (
+        r"(?is)\bRewrite\s+rule\s+strength\s*:\s*\d{1,3}/100\s*\.\s*"
+        r".*?\bprivate-control\s+cleanup\s+remain\s+strict\s*\.\s*",
+        "",
+    ),
+    (
         r"(?is)\bSafe-for-work\s+output\s+is\s+mandatory\s*\.\s*"
         r"Preserve\s+the\s+core\s+subject,\s*identity,\s*action,\s*composition,\s*and\s+tone,\s*"
         r"but\s+replace\s+explicit\s+nudity,\s*exposed\s+intimate\s+anatomy,\s*sexual\s+activity,\s*"
@@ -7511,6 +7591,7 @@ PRIVATE_PROMPT_GUIDANCE_PATTERNS: tuple[tuple[str, str], ...] = (
 
 
 INTERNAL_PROMPT_GUIDANCE_MARKERS: tuple[tuple[str, str], ...] = (
+    (r"(?i)\bRewrite\s+rule\s+strength\s*:", "rewrite-rule control text"),
     (r"(?i)\bMandatory\s+user\s+constraints\s*:", "mandatory-constraint label"),
     (r"(?i)\bPrivate\s+revision\s+guidance\b", "private revision guidance"),
     (r"(?i)\bDeliberate\s+concept\s+and\s+style\s+blend\s*:", "concept-mix control text"),
@@ -7586,6 +7667,15 @@ def weighted_term_priority_label(weight: float) -> str:
     return "secondary visual priority"
 
 
+def format_adjusted_weight(weight: float) -> str:
+    """Keep familiar one-decimal integers while allowing 0.05 precision."""
+
+    rounded = round(weight, 2)
+    if rounded.is_integer():
+        return f"{rounded:.1f}"
+    return f"{rounded:.2f}".rstrip("0")
+
+
 def adjust_weighted_terms_text(
     weighted_terms: str,
     cursor_index: int,
@@ -7617,8 +7707,10 @@ def adjust_weighted_terms_text(
 
     term = core
     current_weight = 1.0
+    has_explicit_weight = False
     match = re.match(r"^(.+?)\s*(?::|=|\*)\s*([0-9]+(?:\.[0-9]+)?)$", core)
     if match:
+        has_explicit_weight = True
         term = match.group(1).strip()
         try:
             current_weight = float(match.group(2))
@@ -7629,8 +7721,22 @@ def adjust_weighted_terms_text(
     if not term:
         return weighted_terms, cursor_index
 
-    new_weight = round(max(0.1, min(3.0, current_weight + delta)), 1)
-    replacement = f"{leading}{term}:{new_weight:.1f}{trailing}"
+    new_weight = round(
+        max(
+            0.1,
+            min(
+                3.0,
+                (
+                    current_weight + delta
+                    if has_explicit_weight or delta <= 0
+                    else max(1.1, current_weight + delta)
+                ),
+            ),
+        ),
+        2,
+    )
+    formatted_weight = format_adjusted_weight(new_weight)
+    replacement = f"{leading}{term}:{formatted_weight}{trailing}"
     new_text = (
         weighted_terms[: selected_match.start()]
         + replacement
@@ -7667,15 +7773,18 @@ def adjust_named_weighted_term(
                 current_weight = 1.0
         parsed_term = parsed_term.strip(" ()[]{}:;")
         if parsed_term.lower() == target_key:
-            new_weight = round(max(0.1, min(3.0, current_weight + delta)), 1)
-            rebuilt.append(f"{parsed_term}:{new_weight:.1f}")
+            new_weight = round(max(0.1, min(3.0, current_weight + delta)), 2)
+            formatted_weight = format_adjusted_weight(new_weight)
+            rebuilt.append(f"{parsed_term}:{formatted_weight}")
             updated = True
         else:
             rebuilt.append(core)
 
     if not updated:
-        new_weight = round(max(0.1, min(3.0, 1.0 + delta)), 1)
-        rebuilt.append(f"{term}:{new_weight:.1f}")
+        initial_weight = 1.0 + delta if delta <= 0 else max(1.1, 1.0 + delta)
+        new_weight = round(max(0.1, min(3.0, initial_weight)), 2)
+        formatted_weight = format_adjusted_weight(new_weight)
+        rebuilt.append(f"{term}:{formatted_weight}")
 
     return ", ".join(rebuilt)
 
@@ -9697,6 +9806,7 @@ def build_meme_generation_messages(
     compact_model: bool = False,
     artistic_detail_freedom: bool = False,
     explicit_nsfw: bool = False,
+    rule_strength: int = 100,
 ) -> list[dict[str, object]]:
     target = normalize_generator_target(generator_target)
     variation_rule = (
@@ -9757,6 +9867,7 @@ Return prompt text only, with no notes, analysis, or markdown."""
             + previous_attempt.strip()
             + "\n\nReplace it with a genuinely finished and more inventive meme prompt."
         )
+    system = apply_rule_strength_instruction(system, rule_strength)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": "\n\n".join(user_parts)},
@@ -11363,6 +11474,7 @@ def post_meme_completion(
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
     artistic_detail_freedom: bool = False,
+    rule_strength: int = 100,
     cancel_check: Callable[[], None] | None = None,
     diagnostic_callback: Callable[[str], None] | None = None,
 ) -> str:
@@ -11394,6 +11506,7 @@ def post_meme_completion(
                 compact_model=compact_model,
                 artistic_detail_freedom=artistic_detail_freedom,
                 explicit_nsfw=explicit_nsfw,
+                rule_strength=rule_strength,
             ),
             temperature=effective_temperature,
             max_tokens=max_tokens,
@@ -11553,6 +11666,7 @@ def post_chat_completion(
     intensity: int = 0,
     complexity: int = 0,
     movement: int = 0,
+    rule_strength: int = 100,
     audit_repair: bool = False,
     research_context: str = "",
     image_context: str = "",
@@ -11724,6 +11838,7 @@ def post_chat_completion(
             safe_for_work=safe_for_work,
             explicit_nsfw=explicit_nsfw,
             artistic_detail_freedom=artistic_detail_freedom,
+            rule_strength=rule_strength,
             cancel_check=cancel_check,
             diagnostic_callback=diagnostic_callback,
         )
@@ -11821,7 +11936,13 @@ def post_chat_completion(
             artistic_detail_freedom=artistic_detail_freedom,
         )
     correction_messages = [
-        {"role": "system", "content": correction_system},
+        {
+            "role": "system",
+            "content": apply_rule_strength_instruction(
+                correction_system,
+                rule_strength,
+            ),
+        },
         {"role": "user", "content": correction_user},
     ]
     try:
@@ -11910,31 +12031,34 @@ def post_chat_completion(
         return strip_unexpected_scripts(candidate, source_script_context)
 
     def compliance_issues(candidate: str) -> list[str]:
-        return final_compliance_issues(
-            candidate,
-            original_prompt=prompt,
-            concept_keywords=concept_keywords,
-            goal_headline=goal_headline,
-            focus=focus,
-            model_instructions=model_instructions,
-            weighted_terms=weighted_terms,
-            story_elements=story_elements,
-            output_length=output_length,
-            output_min_words=output_min_words,
-            output_max_words=output_max_words,
-            altered_text_encoder=altered_text_encoder,
-            variation_count=variation_count,
-            include_krea_settings=include_krea_settings,
-            creativity=creativity,
-            intensity=intensity,
-            complexity=complexity,
-            movement=movement,
-            content_format=normalized_format,
-            mode=mode,
-            risk_level=risk_level,
-            develop_story=develop_story,
-            safe_for_work=safe_for_work,
-            explicit_nsfw=explicit_nsfw,
+        return rule_strength_compliance_issues(
+            final_compliance_issues(
+                candidate,
+                original_prompt=prompt,
+                concept_keywords=concept_keywords,
+                goal_headline=goal_headline,
+                focus=focus,
+                model_instructions=model_instructions,
+                weighted_terms=weighted_terms,
+                story_elements=story_elements,
+                output_length=output_length,
+                output_min_words=output_min_words,
+                output_max_words=output_max_words,
+                altered_text_encoder=altered_text_encoder,
+                variation_count=variation_count,
+                include_krea_settings=include_krea_settings,
+                creativity=creativity,
+                intensity=intensity,
+                complexity=complexity,
+                movement=movement,
+                content_format=normalized_format,
+                mode=mode,
+                risk_level=risk_level,
+                develop_story=develop_story,
+                safe_for_work=safe_for_work,
+                explicit_nsfw=explicit_nsfw,
+            ),
+            rule_strength,
         )
 
     initial_candidate = enforce_mechanical_contracts(
@@ -12013,7 +12137,10 @@ def post_chat_completion(
                 messages=[
                     {
                         "role": "system",
-                        "content": audit_system,
+                        "content": apply_rule_strength_instruction(
+                            audit_system,
+                            rule_strength,
+                        ),
                     },
                     {
                         "role": "user",
@@ -12090,7 +12217,7 @@ def post_chat_completion(
     else:
         repair_issues = issues
 
-    repair_system = (build_small_model_system_prompt(
+    base_repair_system = (build_small_model_system_prompt(
         generator_target=generator_target,
         content_format=normalized_format,
         output_length=output_length,
@@ -12135,6 +12262,10 @@ def post_chat_completion(
         develop_story=develop_story,
         variation_count=variation_count,
         include_krea_settings=include_krea_settings,
+    )
+    repair_system = apply_rule_strength_instruction(
+        base_repair_system,
+        rule_strength,
     )
 
     maximum_development = (
@@ -12704,6 +12835,16 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Krea movement slider value from -100 to 100. Default: 0.",
     )
+    parser.add_argument(
+        "--rule-strength",
+        type=int,
+        default=100,
+        help=(
+            "Rewrite-rule strength from 0 to 100. Lower values relax optional "
+            "polish without weakening explicit user, safety, count, position, "
+            "or quoted-text contracts."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -12821,6 +12962,7 @@ def main() -> int:
             intensity=slider_value(args.intensity),
             complexity=slider_value(args.complexity),
             movement=slider_value(args.movement),
+            rule_strength=rule_strength_value(args.rule_strength),
             audit_repair=args.audit_repair,
             research_context=research_context,
             image_context=image_context,

@@ -173,6 +173,8 @@ Sexual content involving an underage or ambiguous-age subject is rejected before
 
 Use **Advanced setup** only when you need concepts, research, custom rewrite rules, or model controls. **Improve** permits restrained polish. **Explore** permits new supporting ideas and story development.
 
+Under **Advanced setup > Processing > Rewrite rules**, use **Rewrite rule strength** to reduce optional rewrite, polish, and advisory audit pressure when a result feels over-constrained. `100` applies all enabled guidance firmly; lower values allow progressively more flexibility. Explicit user requirements, requested counts and positions, exact quoted text, selected safety mode, and removal of private control language always remain strict.
+
 ## Model Chat
 
 Open the **Model Chat** work-mode tab to talk directly to the selected LM Studio model without the prompt-correction instructions or repair passes.
@@ -252,6 +254,13 @@ Generator profiles are editable JSON objects containing prompt style, negative-p
 
 For ComfyUI, export a workflow in API format, choose its JSON file, enter the positive CLIP text node ID, and click **Enqueue current prompt**. PromptCorrector copies the corrected prompt into that node and posts the workflow to the configured `/prompt` endpoint. No ComfyUI dependency is required inside PromptCorrector.
 
+For a pull-based workflow, install the bundled
+`comfyui_promptcorrector_bridge` custom node. It exposes the newest saved
+Prompt Corrector, Comic Story, or Meme Creator result as a normal ComfyUI
+`STRING` output, with automatic queue-time refresh and an editable manual mode.
+See [`comfyui_promptcorrector_bridge/README.md`](comfyui_promptcorrector_bridge/README.md)
+for installation and usage.
+
 The draft and latest result are autosaved while you work and restored after the next launch. The counters below both editors show word totals and approximate token usage. Use the **Changes** tab to inspect additions, removals, and replacements. Concise, Balanced, and Detailed remain qualitative length preferences. **Expanded** is a concrete 140–280-word contract; if a local model returns less than 140 words, the correction pipeline performs one targeted expansion repair. With **Creative enhancement**, Expanded must add prompt-specific visual development rather than paraphrasing or adjective padding.
 
 The final corrected output contains only the image prompt. Krea generation controls are deliberately kept outside it. Krea Turbo is useful for fast iteration; Krea Medium or Large is the better final pass when prompt and style fidelity matter most.
@@ -326,9 +335,9 @@ For a single image, story development chooses the strongest decisive moment and 
 
 **Weighted words**
 
-Comma-separated words or short phrases that should receive stronger visual priority. Use Krea-friendly natural emphasis, not Stable Diffusion syntax. The app accepts `term:weight`, `term=weight`, or `term*weight`, clamps weights to `0.1` through `3.0`, and tells LM Studio to express the priority through composition, lighting, framing, detail, or action binding.
+Comma-separated words or short phrases that should receive stronger visual priority. Use Krea-friendly natural emphasis, not Stable Diffusion syntax. The app accepts `term:weight`, `term=weight`, or `term*weight`, including two-decimal values such as `1.15`, clamps weights to `0.1` through `3.0`, and tells LM Studio to express the priority through composition, lighting, framing, detail, or action binding.
 
-With the cursor inside a weighted term, press `Ctrl+Up` to increase its weight by `0.1` or `Ctrl+Down` to decrease it by `0.1`. If the term has no weight yet, the shortcut adds one.
+With the cursor inside a weighted term, press `Ctrl+Up` to increase its weight by `0.05` or `Ctrl+Down` to decrease it by `0.05`. If the term has no weight yet, the shortcut adds one.
 
 You can also select a word or phrase in **Your prompt** and press `Ctrl+Up` to add or increase that phrase in **Weighted words**. Press `Ctrl+Down` on the selected phrase to reduce its weight.
 

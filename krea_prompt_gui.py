@@ -109,6 +109,7 @@ from krea_prompt_corrector import (
     prompt_research_targets,
     reconcile_model_knowledge_with_web,
     resolve_comic_layout,
+    rule_strength_value,
     slider_value,
     strip_unexpected_scripts,
     strip_private_prompt_guidance,
@@ -1266,6 +1267,7 @@ class PromptCorrectorApp:
         self.develop_story_var = Value(False)
         self.artistic_detail_freedom_var = Value(False)
         self.clean_constraints_var = Value(True)
+        self.rule_strength_var = Value(100)
         self.safe_for_work_var = Value(False)
         self.explicit_nsfw_var = Value(False)
         self.safe_for_work_var.subscribe(
@@ -1525,6 +1527,7 @@ class PromptCorrectorApp:
             "develop_story": self.develop_story_var.get(),
             "artistic_detail_freedom": self.artistic_detail_freedom_var.get(),
             "clean_constraints": self.clean_constraints_var.get(),
+            "rule_strength": rule_strength_value(self.rule_strength_var.get()),
             "safe_for_work": self.safe_for_work_var.get(),
             "explicit_nsfw": self.explicit_nsfw_var.get(),
             "altered_text_encoder": self.altered_encoder_var.get(),
@@ -1575,6 +1578,7 @@ class PromptCorrectorApp:
             "develop_story": self.develop_story_var.get(),
             "artistic_detail_freedom": self.artistic_detail_freedom_var.get(),
             "clean_constraints": self.clean_constraints_var.get(),
+            "rule_strength": rule_strength_value(self.rule_strength_var.get()),
             "safe_for_work": self.safe_for_work_var.get(),
             "explicit_nsfw": self.explicit_nsfw_var.get(),
             "altered_text_encoder": self.altered_encoder_var.get(),
@@ -1898,6 +1902,14 @@ class PromptCorrectorApp:
             )
         )
         self.clean_constraints_var.set(bool(settings.get("clean_constraints", self.clean_constraints_var.get())))
+        self.rule_strength_var.set(
+            self._int_setting(
+                settings.get("rule_strength"),
+                0,
+                100,
+                self.rule_strength_var.get(),
+            )
+        )
         self.safe_for_work_var.set(
             self._bool_setting(settings.get("safe_for_work"), self.safe_for_work_var.get())
         )
@@ -2475,10 +2487,10 @@ class PromptCorrectorApp:
         return "break"
 
     def _increase_weighted_term(self, _event: object | None = None) -> str:
-        return self._adjust_weighted_term(0.1)
+        return self._adjust_weighted_term(0.05)
 
     def _decrease_weighted_term(self, _event: object | None = None) -> str:
-        return self._adjust_weighted_term(-0.1)
+        return self._adjust_weighted_term(-0.05)
 
     def _draft_weight_target(self) -> str:
         cursor = self.draft_text.textCursor()
@@ -2506,10 +2518,10 @@ class PromptCorrectorApp:
         return "break"
 
     def _increase_draft_weighted_term(self, _event: object | None = None) -> str:
-        return self._adjust_draft_weighted_term(0.1)
+        return self._adjust_draft_weighted_term(0.05)
 
     def _decrease_draft_weighted_term(self, _event: object | None = None) -> str:
-        return self._adjust_draft_weighted_term(-0.1)
+        return self._adjust_draft_weighted_term(-0.05)
 
     def _bool_setting(self, value: object, default: bool) -> bool:
         if isinstance(value, bool):
@@ -2598,6 +2610,14 @@ class PromptCorrectorApp:
             )
         )
         self.clean_constraints_var.set(self._bool_setting(entry.get("clean_constraints"), self.clean_constraints_var.get()))
+        self.rule_strength_var.set(
+            self._int_setting(
+                entry.get("rule_strength"),
+                0,
+                100,
+                self.rule_strength_var.get(),
+            )
+        )
         self.safe_for_work_var.set(
             self._bool_setting(entry.get("safe_for_work"), self.safe_for_work_var.get())
         )
@@ -4750,6 +4770,7 @@ class PromptCorrectorApp:
         )
         for index, (label, variable) in enumerate(rewrite_vars):
             rewrite_grid.addWidget(self._bind_check(label, variable), index // 2, index % 2)
+        self._add_rule_strength_slider(rewrite_grid, 5)
         options_layout.addWidget(rewrite_group, 2)
 
         quality_group = QGroupBox("Quality and session")
@@ -6153,6 +6174,37 @@ class PromptCorrectorApp:
         controls.addWidget(slider, 1)
         controls.addWidget(spin)
         layout.addLayout(controls, row, 1, 1, 3)
+
+    def _add_rule_strength_slider(self, layout: QGridLayout, row: int) -> None:
+        label = QLabel("Rewrite rule strength")
+        self._set_help(
+            label,
+            "Controls how firmly optional rewrite and polish rules are applied; explicit requirements and safety stay strict.",
+            "Set 65 for a looser, more natural correction while preserving requested subjects, counts, positions, and quoted text.",
+        )
+        layout.addWidget(label, row, 0)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        self._set_help(
+            slider,
+            "Controls how firmly optional rewrite and polish rules are applied; explicit requirements and safety stay strict.",
+            "Lower from 100 to 65 when the correction feels over-constrained.",
+        )
+        slider.setRange(0, 100)
+        slider.setValue(rule_strength_value(self.rule_strength_var.get()))
+        spin = self._bind_spin(self.rule_strength_var, 0, 100)
+        self._set_help(
+            spin,
+            "Exact rewrite-rule strength from 0 to 100.",
+            "Use 65 for moderate flexibility or 100 for full enforcement.",
+        )
+        slider.valueChanged.connect(self.rule_strength_var.set)
+        self.rule_strength_var.subscribe(
+            lambda value, widget=slider: widget.setValue(rule_strength_value(value))
+        )
+        controls = QHBoxLayout()
+        controls.addWidget(slider, 1)
+        controls.addWidget(spin)
+        layout.addLayout(controls, row, 1)
 
     def test_lm_studio_connection(self) -> None:
         base_url = self._current_base_url()
@@ -8078,6 +8130,11 @@ class PromptCorrectorApp:
         self._log_activity(
             f"Target: {self.generator_target_var.get()} | Format: {self.content_format_var.get()} | Risk: {self.risk_level_var.get()} | Preset: {self.prompt_preset_var.get()}"
         )
+        self._log_activity(
+            "Rewrite rule strength: "
+            f"{rule_strength_value(self.rule_strength_var.get())}/100 "
+            "(explicit requirements and safety remain strict)"
+        )
         enabled = [
             label
             for label, enabled_flag in (
@@ -8205,6 +8262,7 @@ class PromptCorrectorApp:
                 self.develop_story_var.get(),
                 self.artistic_detail_freedom_var.get(),
                 self.clean_constraints_var.get(),
+                rule_strength_value(self.rule_strength_var.get()),
                 self.safe_for_work_var.get(),
                 self.explicit_nsfw_var.get(),
                 self.altered_encoder_var.get(),
@@ -9167,6 +9225,7 @@ class PromptCorrectorApp:
         develop_story: bool,
         artistic_detail_freedom: bool,
         clean_constraints: bool,
+        rule_strength: int,
         safe_for_work: bool,
         explicit_nsfw: bool,
         altered_text_encoder: bool,
@@ -9455,6 +9514,7 @@ class PromptCorrectorApp:
                 develop_story=develop_story,
                 artistic_detail_freedom=artistic_detail_freedom,
                 clean_constraints=clean_constraints,
+                rule_strength=rule_strength,
                 safe_for_work=safe_for_work,
                 explicit_nsfw=explicit_nsfw,
                 altered_text_encoder=altered_text_encoder,

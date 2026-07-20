@@ -1684,6 +1684,25 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(corrector.slider_value(42), 42)
         self.assertEqual(corrector.slider_value(150), 100)
 
+    def test_rule_strength_clamps_and_relaxes_only_advisory_issues(self):
+        self.assertEqual(corrector.rule_strength_value(-5), 0)
+        self.assertEqual(corrector.rule_strength_value(65), 65)
+        self.assertEqual(corrector.rule_strength_value(120), 100)
+        issues = [
+            "Missing quoted rendered text: KEEP OUT",
+            "Weak or non-visual phrasing: beautiful",
+            "Plausibility risk: accidental artifact",
+        ]
+
+        self.assertEqual(
+            corrector.rule_strength_compliance_issues(issues, 20),
+            ["Missing quoted rendered text: KEEP OUT"],
+        )
+        self.assertIn(
+            "explicit user requirements",
+            corrector.rule_strength_instruction(65).casefold(),
+        )
+
     def test_normalize_lm_studio_base_url_accepts_remote_hosts(self):
         self.assertEqual(
             corrector.normalize_lm_studio_base_url("192.168.1.50:1234"),
@@ -4576,7 +4595,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
     def test_parse_weighted_terms_reads_priority_values(self):
         terms = corrector.parse_weighted_terms(
-            "face:1.6, red cloak=1.3, torchlight*1.2, face:1.1, background:4"
+            "face:1.6, red cloak=1.3, torchlight*1.15, face:1.1, background:4"
         )
 
         self.assertEqual(
@@ -4584,7 +4603,7 @@ class PromptCorrectorTests(unittest.TestCase):
             [
                 ("face", 1.6),
                 ("red cloak", 1.3),
-                ("torchlight", 1.2),
+                ("torchlight", 1.15),
                 ("background", 3.0),
             ],
         )
@@ -4629,6 +4648,15 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertEqual(text, "face:1.5, red cloak:1.1, torchlight:2.0")
         self.assertEqual(cursor, len("face:1.5, red cloak:1.1"))
+
+    def test_adjust_weighted_terms_text_supports_five_hundredths(self):
+        text, _cursor = corrector.adjust_weighted_terms_text(
+            "face:1.1",
+            2,
+            0.05,
+        )
+
+        self.assertEqual(text, "face:1.15")
 
     def test_adjust_weighted_terms_text_clamps_weight_range(self):
         high, _ = corrector.adjust_weighted_terms_text("face:3.0", 2, 0.1)
@@ -4688,6 +4716,24 @@ class PromptCorrectorTests(unittest.TestCase):
             cleaned,
             'A Car beside a Bus and Bike, aspect ratio 3:2, clock at 10:30, '
             'sign reading "CAR:1.3".',
+        )
+
+    def test_strip_weighted_term_syntax_removes_priority_prose_globally(self):
+        leaked = (
+            'A fox (clear visual priority, 1.3) beside a lantern '
+            '(strong visual priority, 1. 65), sign reading '
+            '"priority (clear visual priority, 1.3)".'
+        )
+        cleaned = corrector.strip_weighted_term_syntax(leaked, "")
+
+        self.assertEqual(
+            cleaned,
+            'A fox beside a lantern, sign reading '
+            '"priority (clear visual priority, 1.3)".',
+        )
+        self.assertEqual(
+            corrector.strip_private_prompt_guidance(leaked),
+            cleaned,
         )
 
     def test_post_completion_removes_leaked_weight_syntax_from_final_prompt(self):
@@ -6088,6 +6134,17 @@ class PromptCorrectorTests(unittest.TestCase):
             cleaned,
             "A red-cloaked knight at a castle gate under warm torchlight.",
         )
+
+    def test_private_rule_strength_instruction_is_removed_from_visible_output(self):
+        leaked = (
+            "A red-cloaked knight at a castle gate. "
+            + corrector.rule_strength_instruction(65)
+        )
+
+        cleaned = corrector.strip_private_prompt_guidance(leaked)
+
+        self.assertEqual(cleaned, "A red-cloaked knight at a castle gate.")
+        self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
 
     def test_post_completion_keeps_mix_guidance_private(self):
         private_guidance = corrector.concept_mix_instruction(

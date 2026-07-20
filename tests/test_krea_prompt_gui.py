@@ -780,6 +780,26 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         labels = [checkbox.text() for checkbox in self.root.findChildren(gui.QCheckBox)]
         self.assertIn("Safe for work", labels)
 
+    def test_rule_strength_slider_is_persistent_preset_bound_and_sent_to_worker(self):
+        self.controller.rule_strength_var.set(65)
+        snapshot = self.controller._settings_snapshot()
+        self.assertEqual(snapshot["rule_strength"], 65)
+        self.assertEqual(self.controller._prompt_option_snapshot()["rule_strength"], 65)
+        labels = [label.text() for label in self.root.findChildren(gui.QLabel)]
+        self.assertIn("Rewrite rule strength", labels)
+
+        self.controller.draft_text.setPlainText("A knight at a gate.")
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+        worker_args = thread_class.call_args.kwargs["args"]
+        bound = inspect.signature(self.controller._correct_prompt_worker).bind(*worker_args)
+        self.assertEqual(bound.arguments["rule_strength"], 65)
+
+        self.assertTrue(self.controller._store_custom_preset("Loose rules"))
+        self.controller.rule_strength_var.set(100)
+        self.assertTrue(self.controller._apply_custom_preset("Loose rules"))
+        self.assertEqual(self.controller.rule_strength_var.get(), 65)
+
     def test_explicit_adult_mode_is_persistent_mutually_exclusive_and_worker_bound(self):
         self.controller.explicit_nsfw_var.set(True)
         self.assertFalse(self.controller.safe_for_work_var.get())
