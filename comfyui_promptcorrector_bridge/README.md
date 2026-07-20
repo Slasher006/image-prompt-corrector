@@ -32,6 +32,12 @@ Use **Pull latest corrected prompt** to copy the selected saved result into the
 visible multiline field. Switch to **Use displayed text** when you want ComfyUI
 to keep manual edits made in that field.
 
+PromptCorrector's result panes also provide **Send to ComfyUI**. This saves the
+visible result and immediately updates every open bridge node set to either
+**Latest result** or the matching workspace. The node's transfer mode is not
+changed: **Refresh on queue** remains available and continues to load the newest
+saved result whenever the workflow runs.
+
 ## Privacy
 
 The node definition keeps its default prompt empty so ComfyUI's global node

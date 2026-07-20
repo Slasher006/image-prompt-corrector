@@ -84,6 +84,83 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         correct_prompt.assert_called_once_with()
 
+    def test_send_to_comfyui_buttons_cover_each_result_workspace(self):
+        button_labels = [
+            button.text()
+            for button in self.root.findChildren(gui.QPushButton)
+        ]
+        self.assertEqual(button_labels.count("Send to ComfyUI"), 3)
+
+        self.controller.corrected_text.setPlainText(
+            "A corrected prompt ready for ComfyUI."
+        )
+        self.controller.workbench_widget.comfy_url.setText(
+            "http://127.0.0.1:8199"
+        )
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.send_result_to_comfyui("Prompt Corrector")
+
+        thread = thread_class.return_value
+        thread.start.assert_called_once_with()
+        self.assertEqual(
+            thread_class.call_args.kwargs["args"],
+            (
+                "http://127.0.0.1:8199",
+                "A corrected prompt ready for ComfyUI.",
+                "Prompt Corrector",
+            ),
+        )
+        self.assertEqual(
+            self.controller.status_var.get(),
+            "Sending result to ComfyUI...",
+        )
+        saved = json.loads(gui.SETTINGS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["corrected_prompt"],
+            "A corrected prompt ready for ComfyUI.",
+        )
+
+    def test_send_to_comfyui_rejects_empty_result_before_network_thread(self):
+        self.controller.corrected_text.clear()
+        with (
+            mock.patch.object(gui.messagebox, "showwarning") as warning,
+            mock.patch("krea_prompt_gui.threading.Thread") as thread_class,
+        ):
+            self.controller.send_result_to_comfyui("Prompt Corrector")
+
+        warning.assert_called_once()
+        thread_class.assert_not_called()
+
+    def test_push_prompt_to_comfyui_bridge_posts_selected_result(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok": true, "workspace": "Comic Story", "characters": 17}'
+        )
+        with mock.patch(
+            "krea_prompt_gui.urllib.request.urlopen",
+            return_value=response,
+        ) as urlopen:
+            result = gui.push_prompt_to_comfyui_bridge(
+                server_url="http://127.0.0.1:8188/",
+                prompt="  Comic page result  ",
+                workspace="Comic Story",
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:8188/promptcorrector_bridge/push",
+        )
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(
+            json.loads(request.data.decode("utf-8")),
+            {
+                "prompt": "Comic page result",
+                "workspace": "Comic Story",
+            },
+        )
+        self.assertTrue(result["ok"])
+
     def test_iteration_feedback_stays_separate_from_persistent_model_instructions(self):
         self.controller.draft_text.setPlainText("A red knight at a castle gate.")
         self.controller.model_instructions_var.set("Keep the knight's red cloak.")

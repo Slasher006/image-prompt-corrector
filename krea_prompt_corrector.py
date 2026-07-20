@@ -371,6 +371,11 @@ VISUAL_SLANG_TRANSLATIONS = (
 )
 EXPLICIT_ADULT_PHRASE_TRANSLATIONS = (
     (
+        r"\bdildo[- ]?fucking\b",
+        "rhythmic penetrative use of a dildo",
+        "dildo fucking",
+    ),
+    (
         r"\b((?:his|her|their|the)\s+)climaxing\s+body\b",
         r"\1body showing a visible orgasm reaction",
         "climaxing body",
@@ -550,7 +555,8 @@ EXPLICIT_ADULT_PHRASE_TRANSLATIONS = (
     ),
     (
         r"\bgangbangs?\b",
-        "group sex centered on one receiving adult with multiple penetrating adults",
+        "sexual activity among multiple clearly separated adults centered on one "
+        "receiving adult with multiple penetrating adults",
         "gangbang",
     ),
     (r"\borg(?:y|ies)\b", "group sexual activity among adults", "orgy"),
@@ -637,7 +643,7 @@ EXPLICIT_ADULT_PHRASE_TRANSLATIONS = (
     ),
     (
         r"\b(?:get(?:s|ting)?|got)\s+laid\b",
-        "has sexual intercourse",
+        "has physically readable penetrative intercourse",
         "get laid",
     ),
     (r"\bquickie\b", "brief sexual encounter", "quickie"),
@@ -907,7 +913,7 @@ EXPLICIT_ADULT_STANDARD_ACT_TRANSLATIONS = (
     ),
     (
         r"\bfemale\s+ejaculation\b",
-        "visible fluid release from the vulva during orgasm",
+        "visible fluid release from the vulva during peak sexual response",
         "female ejaculation",
     ),
     (
@@ -1301,12 +1307,12 @@ EXPLICIT_ADULT_BDSM_AND_FETISH_TRANSLATIONS = (
     ),
     (
         r"\bchastity\s+(?:play|device)\b",
-        "visible locked adult chastity device with consensual power-exchange context",
+        "visible locked adult genital restraint with consensual power-exchange context",
         "chastity play",
     ),
     (
         r"\btease\s+and\s+denial\b",
-        "repeated sexual stimulation stopped before orgasm",
+        "repeated sexual stimulation stopped before peak sexual response",
         "tease and denial",
     ),
 )
@@ -2179,6 +2185,28 @@ def polish_prompt_phrasing(text: str) -> str:
     for pattern, replacement in PHRASING_REWRITES:
         polished = re.sub(pattern, replacement, polished, flags=re.IGNORECASE)
     return polished
+
+
+def canonical_validation_text(text: str) -> str:
+    """Return the same visible meaning that final-output cleanup validates.
+
+    User control fields retain their authored wording in settings and Activity,
+    but semantic validators must compare the normalized meaning produced by the
+    output pipeline. Exact quoted rendered text remains untouched.
+    """
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    canonical: list[str] = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            canonical.append(part)
+            continue
+        cleaned = normalize_concept_text(part)
+        cleaned = translate_visual_slang(cleaned)
+        cleaned = polish_prompt_phrasing(cleaned)
+        cleaned = translate_explicit_adult_language(cleaned)
+        canonical.append(cleaned)
+    return re.sub(r"\s{2,}", " ", "".join(canonical)).strip()
 
 
 def visual_slang_terms(text: str) -> list[str]:
@@ -3090,8 +3118,12 @@ def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
 def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
     """Keep explicit gender identities from being generalized or dropped."""
 
-    source = text_without_negative_constraints(normalize_concept_text(original_prompt)).lower()
-    candidate = text_without_negative_constraints(normalize_concept_text(final_prompt)).lower()
+    source = text_without_negative_constraints(
+        canonical_validation_text(original_prompt)
+    ).lower()
+    candidate = text_without_negative_constraints(
+        canonical_validation_text(final_prompt)
+    ).lower()
     issues: list[str] = []
     for label, terms in (
         ("female", FEMALE_PERSON_IDENTITY_WORDS),
@@ -3295,8 +3327,12 @@ def unrequested_gender_trait_issues(
 ) -> list[str]:
     """Reject invented gender identities and cross-gender genital anatomy."""
 
-    source = text_without_negative_constraints(normalize_concept_text(original_prompt)).lower()
-    candidate = text_without_negative_constraints(normalize_concept_text(final_prompt)).lower()
+    source = text_without_negative_constraints(
+        canonical_validation_text(original_prompt)
+    ).lower()
+    candidate = text_without_negative_constraints(
+        canonical_validation_text(final_prompt)
+    ).lower()
     issues: list[str] = []
     for label, pattern in UNREQUESTED_GENDER_TRAIT_PATTERNS:
         if pattern.search(candidate) and not pattern.search(source):
@@ -3534,7 +3570,9 @@ def _panel_term_key(word: str) -> str:
 def _panel_anchor_terms(description: str) -> set[str]:
     return {
         _panel_term_key(word)
-        for word in significant_words(unquoted_text(description))
+        for word in significant_words(
+            canonical_validation_text(unquoted_text(description))
+        )
         if word not in PANEL_BEAT_STOP_WORDS and len(word) >= 4
     }
 
@@ -4031,7 +4069,9 @@ def explicit_instruction_clauses(
 def _directive_anchor_terms(clause: str) -> set[str]:
     return {
         _panel_term_key(word)
-        for word in significant_words(unquoted_text(clause))
+        for word in significant_words(
+            canonical_validation_text(unquoted_text(clause))
+        )
         if word not in DIRECTIVE_ANCHOR_STOP_WORDS and len(word) >= 4
     }
 
@@ -4197,7 +4237,11 @@ def _number_value(token: str) -> int:
 def extract_count_contracts(text: str) -> list[tuple[int, str, str]]:
     contracts: list[tuple[int, str, str]] = []
     for match in COUNT_CONTRACT_PATTERN.finditer(normalize_concept_text(text)):
-        object_phrase = re.sub(r"\s+", " ", match.group("object")).strip().lower()
+        object_phrase = re.sub(
+            r"\s+",
+            " ",
+            canonical_validation_text(match.group("object")),
+        ).strip().lower()
         head = object_phrase.split()[-1].rstrip("s")
         if head in {"panel", "frame", "variation"}:
             continue
@@ -4208,7 +4252,7 @@ def extract_count_contracts(text: str) -> list[tuple[int, str, str]]:
 
 
 def count_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
-    final = normalize_concept_text(final_prompt).lower()
+    final = canonical_validation_text(final_prompt).lower()
     issues: list[str] = []
     for count, head, source in extract_count_contracts(original_prompt):
         count_tokens = [str(count)] + [word for word, value in NUMBER_VALUES.items() if value == count]
@@ -4254,7 +4298,7 @@ def count_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
 def _spatial_anchors(text: str) -> set[str]:
     return {
         _panel_term_key(word)
-        for word in significant_words(text)
+        for word in significant_words(canonical_validation_text(text))
         if word not in RELATION_GENERIC_WORDS and len(word) >= 3
     }
 
@@ -4288,7 +4332,10 @@ def extract_spatial_contracts(text: str) -> list[tuple[str, set[str], set[str], 
 
 def spatial_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
     final_clauses: list[str] = []
-    for clause in re.split(r"[,.!?;\n]+", normalize_concept_text(final_prompt)):
+    for clause in re.split(
+        r"[,.!?;\n]+",
+        canonical_validation_text(final_prompt),
+    ):
         final_clauses.extend(
             segment.lower().strip()
             for segment in re.split(
@@ -4328,7 +4375,8 @@ def extract_excluded_terms(text: str) -> list[str]:
         )
         for part in re.split(r"\s*(?:,|\bor\b|\band\b)\s*", tail):
             words = [
-                word for word in significant_words(part)
+                word
+                for word in significant_words(canonical_validation_text(part))
                 if word not in RELATION_GENERIC_WORDS
             ]
             if not words:
@@ -4340,13 +4388,13 @@ def extract_excluded_terms(text: str) -> list[str]:
 
 
 def _term_has_positive_occurrence(term: str, text: str) -> bool:
-    searchable = unquoted_text(normalize_concept_text(text)).lower()
+    searchable = unquoted_text(canonical_validation_text(text)).lower()
     negative_ranges = [match.span() for match in NEGATIVE_CONSTRAINT_PATTERN.finditer(searchable)]
     special_forms = {
         "people": ("people", "person", "persons", "human", "humans", "man", "men", "woman", "women", "child", "children"),
         "person": ("person", "persons", "people", "human", "humans", "man", "men", "woman", "women", "child", "children"),
     }
-    words = term.split()
+    words = canonical_validation_text(term).split()
     head = words[-1]
     if head in special_forms:
         heads = special_forms[head]
@@ -4583,7 +4631,9 @@ def intent_lock_issues(original_prompt: str, final_prompt: str, goal_headline: s
     # draft.  Without one, keep only the earliest core subject/action anchors so
     # repair instructions such as "wrong hand" or contradictory modifier tails
     # do not become mandatory output terms.
-    source = goal_headline.strip() or original_prompt.strip()
+    source = canonical_validation_text(
+        goal_headline.strip() or original_prompt.strip()
+    )
     if not source:
         return []
     excluded = {
@@ -4668,12 +4718,51 @@ def concept_is_represented(concept: str, prompt: str) -> bool:
     if semantic_term_present(concept_key, prompt):
         return True
 
+    # Explicit-mode catalog entries are normalized into concrete visible
+    # language before final validation. Match that canonical meaning rather
+    # than requiring the private catalog label to leak into the final prompt.
+    # When the canonical entry describes an act or object, compare structured
+    # facts first so a passive prop mention cannot satisfy an active concept.
+    canonical_key = canonical_validation_text(concept_key).lower().strip()
+    canonical_prompt = canonical_validation_text(prompt)
+    if canonical_key and canonical_key != concept_key:
+        source_contract = extract_nsfw_scene_contract(canonical_key)
+        required_acts = set(source_contract.get("acts", []))
+        required_objects = set(source_contract.get("objects", []))
+        if required_acts or required_objects:
+            candidate_contract = extract_nsfw_scene_contract(canonical_prompt)
+            candidate_acts = set(candidate_contract.get("acts", []))
+            for act in required_acts:
+                if act == "intercourse" and candidate_acts.intersection(
+                    {"intercourse", "anal sex", "vaginal intercourse"}
+                ):
+                    continue
+                if act not in candidate_acts:
+                    return False
+            candidate_objects = set(candidate_contract.get("objects", []))
+            for requested_object in required_objects:
+                if requested_object == "adult toy" and candidate_objects.intersection(
+                    {"adult toy", "dildo", "vibrator", "strap-on", "anal toy"}
+                ):
+                    continue
+                if requested_object not in candidate_objects:
+                    return False
+            return True
+
+        canonical_words = significant_words(canonical_key)
+        if not canonical_words:
+            return semantic_term_present(canonical_key, canonical_prompt)
+        if semantic_match_count(canonical_words, canonical_prompt) >= math.ceil(
+            len(canonical_words) * 0.6
+        ):
+            return True
+
     words = significant_words(concept_key)
     if not words:
         return True
     if len(words) == 1:
-        return semantic_term_present(words[0], prompt)
-    matched = semantic_match_count(words, prompt)
+        return semantic_term_present(words[0], canonical_prompt)
+    matched = semantic_match_count(words, canonical_prompt)
     return matched >= math.ceil(len(words) * 0.6)
 
 
@@ -4690,20 +4779,10 @@ def missing_weighted_terms(prompt: str, weighted_terms: str) -> list[str]:
     for term, weight in parse_weighted_terms(weighted_terms):
         if weight < 1.3:
             continue
-        # Visible Explicit-mode output uses concrete canonical language while
-        # the private weighted field may contain supported slang. Validate the
-        # translated visual meaning so normalization cannot create a false
-        # missing-emphasis failure (for example blowjob -> oral stimulation).
-        validation_term = translate_explicit_adult_language(term)
-        significant = significant_words(validation_term)
-        if significant:
-            represented = (
-                semantic_match_count(significant[:4], prompt)
-                >= math.ceil(len(significant[:4]) * 0.6)
-            )
-        else:
-            represented = semantic_term_present(validation_term, prompt)
-        if not represented:
+        # Use the same canonical and structured semantic contract as required
+        # concepts. This accepts normalized wording while preventing a passive
+        # object mention from satisfying an active weighted action.
+        if not concept_is_represented(term, prompt):
             missing.append(f"{term} ({weighted_term_priority_label(weight)}, {weight:g})")
     return missing
 
@@ -4755,11 +4834,9 @@ def contradiction_issues(prompt: str, original_prompt: str = "") -> list[str]:
 
 
 def focus_issue(prompt: str, focus: str) -> str | None:
-    words = significant_words(focus)
-    if not words:
+    if not significant_words(canonical_validation_text(focus)):
         return None
-    required = max(1, math.ceil(len(words) * 0.6))
-    if semantic_match_count(words, prompt) < required:
+    if not concept_is_represented(focus, prompt):
         return f"Requested focus not represented: {focus.strip()}"
     return None
 
@@ -4860,7 +4937,7 @@ def single_image_story_element_issues(
     issues: list[str] = []
     for clause in clauses:
         anchors: list[str] = []
-        for term in significant_words(clause):
+        for term in significant_words(canonical_validation_text(clause)):
             key = _panel_term_key(term)
             if len(key) <= 3 or key in anchors:
                 continue
@@ -4901,10 +4978,12 @@ def creative_development_issues(
     if not source or not final_prompt.strip():
         return []
 
+    canonical_source = canonical_validation_text(source)
+    canonical_final = canonical_validation_text(final_prompt)
     added_terms = {
         term
-        for term in significant_words(final_prompt)
-        if not semantic_term_present(term, source)
+        for term in significant_words(canonical_final)
+        if not semantic_term_present(term, canonical_source)
     }
     required_added_terms = 18 if develop_story else 14
     issues: list[str] = []
@@ -5536,8 +5615,18 @@ def rule_strength_compliance_issues(
 
 
 def prompt_fidelity_penalty(original_prompt: str, candidate: str) -> int:
-    original_terms = set(top_significant_terms(original_prompt, limit=80))
-    candidate_terms = set(top_significant_terms(candidate, limit=100))
+    original_terms = set(
+        top_significant_terms(
+            canonical_validation_text(original_prompt),
+            limit=80,
+        )
+    )
+    candidate_terms = set(
+        top_significant_terms(
+            canonical_validation_text(candidate),
+            limit=100,
+        )
+    )
     missing = len(original_terms - candidate_terms)
     # Useful visual clarification is not fidelity drift. Hard-contract and
     # intent validators already reject unrelated additions, so ranking should
@@ -11085,8 +11174,11 @@ def invent_field_issues(
         normalized_field in seed_locked_fields
         or re.fullmatch(r"panel_\d+", normalized_field)
     ):
-        seed_terms = top_significant_terms(seed_value, limit=6)
-        searchable = normalize_concept_text(cleaned).casefold()
+        seed_terms = top_significant_terms(
+            canonical_validation_text(seed_value),
+            limit=6,
+        )
+        searchable = canonical_validation_text(cleaned).casefold()
         candidate_words = set(significant_words(searchable))
 
         def comparison_root(word: str) -> str:

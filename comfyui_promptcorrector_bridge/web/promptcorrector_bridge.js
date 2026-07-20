@@ -1,6 +1,52 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
+function matchingBridgeNodes(workspace) {
+    return (app.graph?._nodes || []).filter((node) => {
+        if (node.type !== "PromptCorrectorBridge") {
+            return false;
+        }
+        const workspaceWidget = node.widgets?.find(
+            (widget) => widget.name === "workspace",
+        );
+        const selected = workspaceWidget?.value || "Latest result";
+        return selected === "Latest result" || selected === workspace;
+    });
+}
+
+function updateBridgeNode(node, payload, status) {
+    const promptWidget = node.widgets?.find(
+        (widget) => widget.name === "prompt",
+    );
+    if (!promptWidget) {
+        return;
+    }
+    promptWidget.value = payload.prompt;
+    promptWidget.callback?.(payload.prompt);
+    if (node.promptCorrectorBridgeButton) {
+        node.promptCorrectorBridgeButton.name = status;
+        window.setTimeout(() => {
+            if (node.promptCorrectorBridgeButton) {
+                node.promptCorrectorBridgeButton.name =
+                    "Pull latest corrected prompt";
+                node.setDirtyCanvas(true, true);
+            }
+        }, 2500);
+    }
+    node.setDirtyCanvas(true, true);
+}
+
+api.addEventListener("promptcorrector_bridge_prompt", ({ detail }) => {
+    if (!detail?.prompt || !detail?.workspace) {
+        return;
+    }
+    const nodes = matchingBridgeNodes(detail.workspace);
+    for (const node of nodes) {
+        updateBridgeNode(node, detail, `Pushed: ${detail.source}`);
+    }
+    app.graph?.setDirtyCanvas(true, true);
+});
+
 app.registerExtension({
     name: "promptcorrector.bridge",
     async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -60,6 +106,7 @@ app.registerExtension({
                     }, 2500);
                 },
             );
+            this.promptCorrectorBridgeButton = button;
             this.size = [
                 Math.max(this.size[0], 360),
                 Math.max(this.size[1], 300),

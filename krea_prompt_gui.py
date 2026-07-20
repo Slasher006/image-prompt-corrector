@@ -11,7 +11,9 @@ import os
 import re
 from pathlib import Path
 import threading
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime
 import time
 
@@ -166,6 +168,66 @@ from nsfw_scene_contract import nsfw_preset_compatibility_issues
 from workbench_gui import PromptWorkbench
 
 WORKFLOW_PROFILES = ("Exact", "Improve", "Explore")
+DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
+COMFYUI_BRIDGE_WORKSPACES = (
+    "Prompt Corrector",
+    "Comic Story",
+    "Meme Creator",
+)
+
+
+def push_prompt_to_comfyui_bridge(
+    *,
+    server_url: str,
+    prompt: str,
+    workspace: str,
+    timeout: float = 5.0,
+) -> dict[str, object]:
+    """Push one visible result to the installed ComfyUI bridge."""
+
+    cleaned_prompt = str(prompt or "").strip()
+    if not cleaned_prompt:
+        raise ValueError("The result is empty.")
+    if workspace not in COMFYUI_BRIDGE_WORKSPACES:
+        raise ValueError(f"Unsupported ComfyUI bridge workspace: {workspace}")
+
+    parsed = urllib.parse.urlsplit(str(server_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Enter a valid ComfyUI HTTP or HTTPS URL.")
+    endpoint = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, "/promptcorrector_bridge/push", "", "")
+    )
+    payload = json.dumps(
+        {
+            "prompt": cleaned_prompt,
+            "workspace": workspace,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            detail = str(body.get("error", "")).strip()
+        except (UnicodeError, json.JSONDecodeError, AttributeError):
+            pass
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"ComfyUI bridge rejected the result ({exc.code}){suffix}"
+        ) from exc
+    except (OSError, urllib.error.URLError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not reach the ComfyUI bridge: {exc}") from exc
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise RuntimeError("ComfyUI bridge returned an unexpected response.")
+    return result
 
 
 def natural_visual_direction(value: object) -> str:
@@ -833,6 +895,10 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "−": ("Decrease the weighted term at the cursor.", "Change fog:1.0 to fog:0.9."),
     "+": ("Increase the weighted term at the cursor.", "Change dragon:1.0 to dragon:1.1."),
     "Copy corrected": ("Copy the corrected prompt to the clipboard.", "Paste it into the selected image generator afterward."),
+    "Send to ComfyUI": (
+        "Push the visible result into matching open PromptCorrector Bridge nodes.",
+        "Keep Refresh on queue enabled for automatic updates, or use this button to update the node immediately.",
+    ),
     "Iterate result": ("Use the current result as the next draft and refine it again.", "Ask for warmer lighting while keeping the existing subject and settings."),
     "Corrected prompt": ("Review and optionally edit the model's final prompt.", "Adjust one camera detail before copying."),
     "Activity": (
@@ -4911,6 +4977,14 @@ class PromptCorrectorApp:
         copy_button = QtButton("Copy corrected")
         copy_button.clicked.connect(self.copy_corrected)
         controls.addWidget(copy_button)
+        self.comfy_push_button = QtButton("Send to ComfyUI")
+        self._help(self.comfy_push_button, "Send to ComfyUI")
+        self.comfy_push_button.clicked.connect(
+            lambda _checked=False: self.send_result_to_comfyui(
+                "Prompt Corrector"
+            )
+        )
+        controls.addWidget(self.comfy_push_button)
         self.iterate_button = QtButton("Iterate result…")
         self._help(self.iterate_button, "Iterate result")
         self.iterate_button.clicked.connect(self.iterate_corrected_prompt)
@@ -5489,6 +5563,12 @@ class PromptCorrectorApp:
         copy_button = QtButton("Copy result")
         copy_button.clicked.connect(self.copy_comic_result)
         buttons.addWidget(copy_button)
+        comfy_button = QtButton("Send to ComfyUI")
+        self._help(comfy_button, "Send to ComfyUI")
+        comfy_button.clicked.connect(
+            lambda _checked=False: self.send_result_to_comfyui("Comic Story")
+        )
+        buttons.addWidget(comfy_button)
         clear_button = QtButton("Clear story")
         clear_button.clicked.connect(self.clear_comic_story)
         buttons.addWidget(clear_button)
@@ -5892,6 +5972,12 @@ class PromptCorrectorApp:
         copy_button = QtButton("Copy result")
         copy_button.clicked.connect(self.copy_meme_result)
         buttons.addWidget(copy_button)
+        comfy_button = QtButton("Send to ComfyUI")
+        self._help(comfy_button, "Send to ComfyUI")
+        comfy_button.clicked.connect(
+            lambda _checked=False: self.send_result_to_comfyui("Meme Creator")
+        )
+        buttons.addWidget(comfy_button)
         clear_button = QtButton("Clear meme")
         clear_button.clicked.connect(self.clear_meme)
         buttons.addWidget(clear_button)
@@ -9680,6 +9766,82 @@ class PromptCorrectorApp:
 
         QApplication.clipboard().setText(corrected)
         self.status_var.set("Copied corrected prompt")
+
+    def _comfyui_bridge_server_url(self) -> str:
+        if self.workbench_widget is not None:
+            url_field = getattr(self.workbench_widget, "comfy_url", None)
+            if url_field is not None:
+                configured = url_field.text().strip()
+                if configured:
+                    return configured
+        return DEFAULT_COMFYUI_URL
+
+    def _result_for_comfyui_workspace(self, workspace: str) -> str:
+        if workspace == "Prompt Corrector":
+            return self.corrected_text.toPlainText().strip()
+        if workspace == "Comic Story" and self.comic_result_text is not None:
+            return self.comic_result_text.toPlainText().strip()
+        if workspace == "Meme Creator" and self.meme_result_text is not None:
+            return self.meme_result_text.toPlainText().strip()
+        return ""
+
+    def send_result_to_comfyui(self, workspace: str = "Prompt Corrector") -> None:
+        prompt = self._result_for_comfyui_workspace(workspace)
+        if not prompt:
+            messagebox.showwarning(
+                "Nothing to send",
+                f"Create or enter a {workspace} result first.",
+            )
+            return
+
+        # Refresh on queue reads the settings file, so save the visible edit
+        # before also broadcasting it to open bridge nodes.
+        self._save_settings()
+        server_url = self._comfyui_bridge_server_url()
+        self.status_var.set("Sending result to ComfyUI...")
+        thread = threading.Thread(
+            target=self._push_result_to_comfyui_worker,
+            args=(server_url, prompt, workspace),
+            daemon=True,
+        )
+        thread.start()
+
+    def _push_result_to_comfyui_worker(
+        self,
+        server_url: str,
+        prompt: str,
+        workspace: str,
+    ) -> None:
+        try:
+            result = push_prompt_to_comfyui_bridge(
+                server_url=server_url,
+                prompt=prompt,
+                workspace=workspace,
+            )
+        except (ValueError, RuntimeError) as exc:
+            self._after_threadsafe(
+                0,
+                self._show_comfyui_push_error,
+                str(exc),
+            )
+            return
+        characters = int(result.get("characters", len(prompt)))
+        self._log_activity_threadsafe(
+            f"Sent {workspace} result to ComfyUI ({characters} characters).",
+            {
+                "Prompt Corrector": "prompt",
+                "Comic Story": "comic",
+                "Meme Creator": "meme",
+            }.get(workspace, "system"),
+        )
+        self._set_status_threadsafe(f"Sent {workspace} result to ComfyUI")
+
+    def _show_comfyui_push_error(self, error: str) -> None:
+        self.status_var.set("ComfyUI push failed")
+        messagebox.showerror(
+            "ComfyUI push failed",
+            f"{error}\n\nStart ComfyUI with the PromptCorrector Bridge installed, then try again.",
+        )
 
     def iterate_corrected_prompt(self) -> None:
         """Promote the current result to a new draft and run another pass."""

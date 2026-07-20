@@ -29,10 +29,36 @@ TOP_LEVEL_RESULT_KEYS = {
     "Meme Creator": "meme_result",
 }
 MAX_SETTINGS_BYTES = 20 * 1024 * 1024
+MAX_PUSHED_PROMPT_CHARACTERS = 1_000_000
 
 
 class PromptCorrectorBridgeError(RuntimeError):
     """Raised when the PromptCorrector state cannot provide usable text."""
+
+
+def validate_bridge_push_payload(payload: Any) -> dict[str, str]:
+    """Validate a result sent by the desktop app before broadcasting it."""
+
+    if not isinstance(payload, dict):
+        raise PromptCorrectorBridgeError("The push payload must be a JSON object.")
+    prompt = payload.get("prompt")
+    workspace = str(payload.get("workspace", "")).strip()
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise PromptCorrectorBridgeError("The pushed prompt is empty.")
+    prompt = prompt.strip()
+    if len(prompt) > MAX_PUSHED_PROMPT_CHARACTERS:
+        raise PromptCorrectorBridgeError(
+            "The pushed prompt exceeds the bridge size limit."
+        )
+    if workspace not in WORKSPACE_CHOICES[1:]:
+        raise PromptCorrectorBridgeError(
+            f"Unsupported pushed workspace: {workspace}"
+        )
+    return {
+        "prompt": prompt,
+        "workspace": workspace,
+        "source": workspace,
+    }
 
 
 def _resolve_settings_path(settings_path: Path | None = None) -> Path:

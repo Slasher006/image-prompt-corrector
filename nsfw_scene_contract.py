@@ -76,11 +76,20 @@ ACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("anal sex", re.compile(r"\b(?:anal\s+(?:sex|intercourse|penetration|intimacy)|rear-entry\s+anal)\b", re.IGNORECASE)),
+    (
+        "anal sex",
+        re.compile(
+            r"\b(?:anal\s+(?:sex|intercourse|penetration|intimacy)|"
+            r"penetration\s+at\s+(?:the\s+)?(?:anus|anal\s+opening)|"
+            r"rear-entry\s+anal)\b",
+            re.IGNORECASE,
+        ),
+    ),
     (
         "vaginal intercourse",
         re.compile(
             r"\b(?:vaginal\s+(?:sex|intercourse|penetration)|"
+            r"penetration\s+at\s+(?:the\s+)?vaginal\s+opening|"
             r"(?:missionary|face-to-face|seated|standing|side-by-side|rear-entry)\s+intercourse)\b",
             re.IGNORECASE,
         ),

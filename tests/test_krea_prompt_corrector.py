@@ -1830,6 +1830,31 @@ class PromptCorrectorTests(unittest.TestCase):
             ),
         )
 
+    def test_required_explicit_concepts_match_canonical_visible_actions(self):
+        candidate = (
+            "A mature adult woman performs oral stimulation of the penis while "
+            "straddling a dildo with rhythmic penetrative motion."
+        )
+
+        self.assertEqual(
+            corrector.missing_required_concepts(
+                candidate,
+                "blowjob, dildo fucking",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.missing_required_concepts(
+                "A mature adult woman poses beside a boxed dildo on a shelf.",
+                "blowjob, dildo fucking",
+            ),
+            ["blowjob", "dildo fucking"],
+        )
+        self.assertEqual(
+            corrector.translate_explicit_adult_language("dildo fucking"),
+            "rhythmic penetrative use of a dildo",
+        )
+
     def test_compact_model_gets_one_targeted_expanded_length_repair(self):
         source = "A red car crosses a stone bridge at dawn."
         short = "A red car crosses a stone bridge at dawn."
@@ -2809,6 +2834,57 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("wet vulva", result)
         self.assertEqual(corrector.explicit_adult_language_terms(result), [])
 
+    def test_post_completion_accepts_canonical_selected_adult_concepts(self):
+        source = (
+            "A mature adult woman uses a large green dildo for vaginal penetration "
+            "while performing a blowjob on an adult man in an alley."
+        )
+        candidate = (
+            "On the left, a mature adult woman straddles a large green dildo "
+            "with rhythmic penetrative use for vaginal penetration while "
+            "performing oral stimulation of the penis of an adult man standing "
+            "on the right in a rain-darkened alley."
+        )
+        diagnostics: list[str] = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=candidate,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                concept_keywords="blowjob, dildo fucking",
+                weighted_terms="blowjob:1.3, dildo fucking:1.75",
+                explicit_nsfw=True,
+                audit_repair=True,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 2)
+        self.assertEqual(
+            corrector.missing_required_concepts(
+                result,
+                "blowjob, dildo fucking",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.missing_weighted_terms(
+                result,
+                "blowjob:1.3, dildo fucking:1.75",
+            ),
+            [],
+        )
+        self.assertFalse(
+            any("Missing required concepts" in message for message in diagnostics)
+        )
+
     def test_untranslated_explicit_slang_is_a_hard_contract_issue(self):
         issues = corrector.final_compliance_issues(
             "A solo adult woman is fucking herself.",
@@ -3344,6 +3420,40 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertNotIn(" baddie ", f" {normalized.lower()} ")
         self.assertNotIn(" drip ", f" {normalized.lower()} ")
 
+    def test_visual_slang_controls_match_their_normalized_visible_meaning(self):
+        for _pattern, replacement, label in corrector.VISUAL_SLANG_TRANSLATIONS:
+            with self.subTest(label=label):
+                canonical = corrector.translate_visual_slang(label)
+                self.assertNotEqual(canonical, label)
+                self.assertEqual(
+                    corrector.missing_required_concepts(canonical, label),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.missing_weighted_terms(
+                        canonical,
+                        f"{label}:1.7",
+                    ),
+                    [],
+                )
+                self.assertIsNone(corrector.focus_issue(canonical, label))
+                self.assertEqual(
+                    corrector.single_image_story_element_issues(canonical, label),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.intent_lock_issues(
+                        label,
+                        canonical,
+                        goal_headline=label,
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.translate_visual_slang(replacement),
+                    replacement,
+                )
+
     def test_explicit_adult_language_translates_slang_to_renderable_terms(self):
         prompt = (
             "A solo MILF woman fucking herself with a big thick sextoy while "
@@ -3460,6 +3570,132 @@ class PromptCorrectorTests(unittest.TestCase):
                 re.compile(pattern, flags=re.IGNORECASE)
                 self.assertTrue(replacement.strip())
                 self.assertTrue(label.strip())
+                self.assertEqual(
+                    corrector.translate_explicit_adult_language(replacement),
+                    replacement,
+                )
+                self.assertEqual(
+                    corrector.explicit_adult_language_terms(replacement),
+                    [],
+                )
+
+    def test_translatable_adult_labels_match_all_semantic_control_validators(self):
+        checked = 0
+        for _pattern, _replacement, label in (
+            corrector.EXPLICIT_ADULT_LANGUAGE_TRANSLATIONS
+        ):
+            canonical = corrector.translate_explicit_adult_language(label)
+            if canonical == label:
+                continue
+            checked += 1
+            with self.subTest(label=label):
+                self.assertEqual(
+                    corrector.missing_required_concepts(canonical, label),
+                    [],
+                )
+                if "," not in label:
+                    self.assertEqual(
+                        corrector.missing_weighted_terms(
+                            canonical,
+                            f"{label}:1.7",
+                        ),
+                        [],
+                    )
+                self.assertIsNone(corrector.focus_issue(canonical, label))
+                self.assertEqual(
+                    corrector.single_image_story_element_issues(canonical, label),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.intent_lock_issues(
+                        label,
+                        canonical,
+                        goal_headline=label,
+                    ),
+                    [],
+                )
+        self.assertGreaterEqual(checked, 200)
+
+    def test_canonical_adult_actions_match_scene_and_identity_contracts(self):
+        for source in ("vaginal sex", "anal sex", "female ejaculation"):
+            canonical = corrector.translate_explicit_adult_language(source)
+            with self.subTest(source=source):
+                self.assertEqual(
+                    corrector.nsfw_scene_contract_issues(canonical, source),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.gender_identity_contract_issues(canonical, source),
+                    [],
+                )
+
+    def test_canonical_semantics_cover_instruction_panels_and_fidelity_ranking(self):
+        source = (
+            "Panel 1: a baddie with main character energy. "
+            "Panel 2: the baddie shows drip and rizz."
+        )
+        canonical = corrector.canonical_validation_text(source)
+
+        self.assertEqual(
+            corrector.panel_description_issues(canonical, source),
+            [],
+        )
+        self.assertEqual(
+            corrector.missing_explicit_instructions(
+                canonical,
+                "",
+                "Keep the main character energy and drip",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.prompt_fidelity_penalty(source, canonical),
+            0,
+        )
+
+    def test_canonical_semantics_cover_count_spatial_exclusion_and_invent_seed(self):
+        count_source = "Exactly one baddie stands beneath the light."
+        count_final = corrector.canonical_validation_text(count_source)
+        spatial_source = "A baddie on the left, a red car on the right."
+        spatial_final = corrector.canonical_validation_text(spatial_source)
+        excluded_source = "No baddie. A product photograph."
+        excluded_final = (
+            "A confident glamorous stylish person stands in the product photograph."
+        )
+
+        self.assertEqual(
+            corrector.count_contract_issues(count_final, count_source),
+            [],
+        )
+        self.assertEqual(
+            corrector.spatial_contract_issues(spatial_final, spatial_source),
+            [],
+        )
+        self.assertIn(
+            "Excluded content appears positively: stylish person",
+            corrector.exclusion_contract_issues(
+                excluded_final,
+                excluded_source,
+            ),
+        )
+        self.assertEqual(
+            corrector.invent_field_issues(
+                "single",
+                "focus",
+                "confident glamorous stylish person",
+                seed_value="baddie",
+            ),
+            [],
+        )
+
+    def test_weighted_active_adult_concept_rejects_passive_prop_only(self):
+        self.assertIn(
+            "dildo fucking (strong visual priority, 1.7)",
+            corrector.missing_weighted_terms(
+                "A boxed dildo sits unopened on a product shelf.",
+                "dildo fucking:1.7",
+            ),
+        )
 
     def test_explicit_adult_standard_language_is_made_visually_concrete(self):
         cases = (

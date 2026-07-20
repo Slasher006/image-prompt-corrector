@@ -1,14 +1,19 @@
+import asyncio
 import importlib.util
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 try:
+    import comfyui_promptcorrector_bridge as bridge_package
     from comfyui_promptcorrector_bridge import nodes
 except ModuleNotFoundError:
+    bridge_package = None
     node_path = Path(__file__).resolve().parents[1] / "nodes.py"
     spec = importlib.util.spec_from_file_location(
         "promptcorrector_bridge_nodes",
@@ -98,6 +103,103 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
         self.assertIn(
             "prompt corrector",
             nodes.PromptCorrectorBridge.SEARCH_ALIASES,
+        )
+
+    def test_push_payload_is_validated_without_unrelated_state(self):
+        result = nodes.validate_bridge_push_payload(
+            {
+                "prompt": "  Visible corrected prompt  ",
+                "workspace": "Prompt Corrector",
+                "ignored": {"private": "setting"},
+            }
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "prompt": "Visible corrected prompt",
+                "workspace": "Prompt Corrector",
+                "source": "Prompt Corrector",
+            },
+        )
+
+    def test_push_payload_rejects_empty_or_unknown_workspace(self):
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "empty",
+        ):
+            nodes.validate_bridge_push_payload(
+                {"prompt": "", "workspace": "Prompt Corrector"}
+            )
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "Unsupported",
+        ):
+            nodes.validate_bridge_push_payload(
+                {"prompt": "Result", "workspace": "Latest result"}
+            )
+
+    @unittest.skipIf(
+        bridge_package is None,
+        "Route registration is tested from the repository package layout.",
+    )
+    def test_push_route_broadcasts_validated_prompt_event(self):
+        registered = {}
+
+        class Routes:
+            @staticmethod
+            def get(path):
+                return lambda handler: registered.setdefault(("GET", path), handler)
+
+            @staticmethod
+            def post(path):
+                return lambda handler: registered.setdefault(("POST", path), handler)
+
+        instance = types.SimpleNamespace(
+            routes=Routes(),
+            send_sync=lambda event, payload: registered.setdefault(
+                ("EVENT", event),
+                payload,
+            ),
+        )
+        server_module = types.ModuleType("server")
+        server_module.PromptServer = types.SimpleNamespace(instance=instance)
+        aiohttp_module = types.ModuleType("aiohttp")
+        aiohttp_module.web = types.SimpleNamespace(
+            json_response=lambda payload, status=200: (payload, status)
+        )
+
+        with patch.dict(
+            sys.modules,
+            {
+                "server": server_module,
+                "aiohttp": aiohttp_module,
+            },
+        ):
+            bridge_package._register_latest_prompt_route()
+
+        handler = registered[
+            ("POST", "/promptcorrector_bridge/push")
+        ]
+
+        class Request:
+            async def json(self):
+                return {
+                    "prompt": "Pushed result",
+                    "workspace": "Meme Creator",
+                }
+
+        response, status = asyncio.run(handler(Request()))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(response["characters"], len("Pushed result"))
+        self.assertEqual(
+            registered[("EVENT", "promptcorrector_bridge_prompt")],
+            {
+                "prompt": "Pushed result",
+                "workspace": "Meme Creator",
+                "source": "Meme Creator",
+            },
         )
 
     def test_invalid_settings_raise_actionable_error(self):

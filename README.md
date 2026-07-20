@@ -258,6 +258,8 @@ For a pull-based workflow, install the bundled
 `comfyui_promptcorrector_bridge` custom node. It exposes the newest saved
 Prompt Corrector, Comic Story, or Meme Creator result as a normal ComfyUI
 `STRING` output, with automatic queue-time refresh and an editable manual mode.
+Each PromptCorrector result pane also has **Send to ComfyUI**, which immediately
+updates matching bridge nodes without disabling **Refresh on queue**.
 See [`comfyui_promptcorrector_bridge/README.md`](comfyui_promptcorrector_bridge/README.md)
 for installation and usage.
 
