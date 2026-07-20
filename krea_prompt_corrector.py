@@ -54,6 +54,18 @@ ARTISTIC_DETAIL_FREEDOM_INSTRUCTION = (
     "the same core idea. Do not replace what the image is about, add a competing main subject, "
     "change the requested event, or bury the focal action under random clutter."
 )
+KREA_OFFICIAL_EXPANSION_INSTRUCTION = (
+    "Krea Official expansion contract: faithfulness comes first. Preserve every original "
+    "subject, action, color, spatial relationship, and explicitly requested medium. Do not "
+    "add a new subject, object, prop, character, animal, specific clothing item, color, "
+    "material, or scene fact unless the request clearly implies it. Group each subject with "
+    "its own attributes, action, pose, interaction, and position. Choose style, medium, "
+    "framing, composition, and lighting internally, but expose no planning text. Put exact "
+    "visible words in double quotes. If the source is already detailed, lightly polish and "
+    "finalize it instead of expanding it. Treat people with dignity and keep genitals and "
+    "intimate anatomy covered. Return one cohesive natural-language paragraph "
+    "with no bullets, JSON, Markdown, labels, or notes."
+)
 
 PROMPT_MODES = (
     "Auto",
@@ -1855,11 +1867,15 @@ PLAUSIBILITY_PROBLEM_PATTERNS = (
     (r"\b(?:macro wide full body close-up|wide-angle macro close-up full body)\b", "impossible camera/framing combination"),
 )
 COMMON_CONCEPT_FIXES = {
+    "arroused": "aroused",
     "charachter": "character",
     "compositon": "composition",
+    "curyosity": "curiosity",
     "detial": "detail",
     "detialed": "detailed",
     "enviroment": "environment",
+    "geting": "getting",
+    "kneeing": "kneeling",
     "lighbulb": "lightbulb",
     "ligth": "light",
     "ligthing": "lighting",
@@ -1868,9 +1884,76 @@ COMMON_CONCEPT_FIXES = {
     "midieval": "medieval",
     "reflecion": "reflection",
     "reflecions": "reflections",
+    "righ": "right",
     "seperate": "separate",
     "silouette": "silhouette",
+    "toungue": "tongue",
 }
+
+EXPLICIT_ADULT_GRAMMAR_PROBLEM_PATTERNS = (
+    (
+        r"\b(?:she|he|it)\s+have\b",
+        "singular subject uses 'have' instead of 'has'",
+    ),
+    (
+        r"\b(?:i|we|you|they)\s+has\b",
+        "plural or first-person subject uses 'has' instead of 'have'",
+    ),
+    (
+        r"\bbecause\s+its\s+(?:so|too|very|quite)\b",
+        "its is used where 'it is' is required",
+    ),
+    (
+        r"\b(?:a|an)\s+(?:adult\s+)?(?:mans|womans)\b",
+        "malformed possessive adult role",
+    ),
+    (
+        r"\b(?:blowjobs?|handjobs?|fellatio|cunnilingus|anilingus|"
+        r"masturbation|fingering|foreplay|aftercare|pegging|scissoring|"
+        r"frottage|frotting|(?:sexual\s+)?intercourse|"
+        r"dildo[- ]?fucking)['’]s\b",
+        "adult action noun has a dangling possessive suffix",
+    ),
+    (
+        r"\b(?:she|he|they|"
+        r"(?:the|an?)\s+(?:mature\s+)?adult\s+(?:woman|man|person|partner))"
+        r"\s+(?:oral|manual)\s+stimulation\b",
+        "adult action is missing a performing verb",
+    ),
+    (
+        r"\ba\s+(?:oral|manual)\s+stimulation\b",
+        "adult action uses the wrong indefinite article",
+    ),
+    (
+        r"\bpenis['’]s\s+(?:a|an|the)\s+(?:adult\s+)?(?:man|male)\b",
+        "adult participant and anatomy ownership are reversed",
+    ),
+    (
+        r"(?:^|[.!?]\s+)penis\s+in\s+(?:her|his|their\s+)?mouth\b",
+        "orphan anatomy/contact sentence fragment",
+    ),
+    (
+        r"\b(?:her|his|their)\s+(?:hot|wet)\s+and\s+"
+        r"(?:vulva|vagina|pussy)\b",
+        "malformed adjective coordination before genital anatomy",
+    ),
+)
+EXPLICIT_ADULT_POSSESSIVE_ACTION_REWRITES = (
+    (r"blowjobs?", "oral stimulation of the penis"),
+    (r"handjobs?", "manual stimulation of the penis"),
+    (r"fellatio", "oral stimulation of the penis"),
+    (r"cunnilingus", "oral stimulation of the vulva and clitoris"),
+    (r"anilingus", "oral stimulation of the anus"),
+    (r"masturbation", "self-stimulation of the genitals"),
+    (r"fingering", "manual genital stimulation with fingers"),
+    (r"foreplay", "pre-intercourse intimate touching"),
+    (r"aftercare", "post-sex comforting contact"),
+    (r"pegging", "strap-on anal penetration"),
+    (r"scissoring", "intertwined-leg vulva-to-vulva rubbing"),
+    (r"(?:frottage|frotting)", "rhythmic genital-to-genital rubbing"),
+    (r"(?:sexual\s+)?intercourse", "penetrative intercourse"),
+    (r"dildo[- ]?fucking", "rhythmic penetrative use of a dildo"),
+)
 
 
 class DuckDuckGoResultParser(HTMLParser):
@@ -2111,6 +2194,154 @@ def translate_visual_slang(text: str) -> str:
     return translated
 
 
+def normalize_explicit_adult_grammar(text: str) -> str:
+    """Repair high-confidence malformed adult-action grammar outside quotes."""
+
+    cleaned = str(text or "")
+    cleaned = re.sub(
+        r"\b(?P<article>a|an)\s+(?:adult\s+)?"
+        r"(?P<role>man|woman)(?:s|['’]s)?\s*[.]?\s+"
+        r"(?P<body>penis|vulva|vagina|genitals?)\b",
+        lambda match: (
+            "the "
+            + match.group("body").lower()
+            + " of an adult "
+            + match.group("role").lower()
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    actor = (
+        r"(?P<actor>she|he|they|"
+        r"(?:the|an?)\s+(?:mature\s+)?adult\s+"
+        r"(?:woman|man|person|partner))"
+    )
+    penis_owner = (
+        r"(?P<receiver>the\s+penis\s+of\s+(?:an?|the)\s+(?:adult\s+)?man|"
+        r"(?:an?|the)\s+(?:adult\s+)?man['’]s\s+penis|"
+        r"(?:his|their)\s+penis)"
+    )
+    cleaned = re.sub(
+        rf"\b{actor}\s+blowjobs?(?:['’]s)?\s+"
+        rf"(?:(?:on|to)\s+)?{penis_owner}"
+        r"(?:\s+in\s+(?:her|his|their\s+)?mouth)?\b",
+        lambda match: (
+            f"{match.group('actor')} performs oral stimulation on "
+            f"{match.group('receiver')} with visible mouth-to-penis contact"
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        rf"\b{actor}\s+handjobs?(?:['’]s)?\s+"
+        rf"(?:(?:on|to)\s+)?{penis_owner}\b",
+        lambda match: (
+            f"{match.group('actor')} manually stimulates "
+            f"{match.group('receiver')} with visible hand-to-penis contact"
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    receiver_role = (
+        r"(?P<receiver>(?:an?|the)\s+(?:adult\s+)?"
+        r"(?:man|person|partner|male\s+partner))"
+    )
+    def canonical_adult_receiver(value: str) -> str:
+        role = re.sub(
+            r"(?i)^(?:a|an|the)\s+(?:adult\s+)?",
+            "",
+            value.strip(),
+        )
+        return "an adult " + role.lower()
+
+    cleaned = re.sub(
+        rf"\b{actor}\s+(?:(?:gives?|performs?)\s+(?:a\s+)?)?"
+        rf"blowjobs?(?:['’]s)?\s+(?:(?:on|to)\s+)?{receiver_role}\b",
+        lambda match: (
+            f"{match.group('actor')} performs oral stimulation on the penis of "
+            f"{canonical_adult_receiver(match.group('receiver'))} "
+            "with visible mouth-to-penis contact"
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        rf"\b{actor}\s+(?:(?:gives?|performs?)\s+(?:a\s+)?)?"
+        rf"handjobs?(?:['’]s)?\s+(?:(?:on|to)\s+)?{receiver_role}\b",
+        lambda match: (
+            f"{match.group('actor')} manually stimulates the penis of "
+            f"{canonical_adult_receiver(match.group('receiver'))} "
+            "with visible hand-to-penis contact"
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    for action_pattern, canonical_action in (
+        EXPLICIT_ADULT_POSSESSIVE_ACTION_REWRITES
+    ):
+        cleaned = re.sub(
+            rf"\b(?P<owner>the|a|an|her|his|their)?\s*"
+            rf"(?P<action>{action_pattern})['’]s\s+"
+            r"(?P<quality>(?!(?:a|an|the)\b)[A-Za-z][A-Za-z-]*)\b",
+            lambda match, canonical=canonical_action: (
+                "the "
+                + match.group("quality")
+                + " of "
+                + (
+                    match.group("owner").lower() + " "
+                    if (match.group("owner") or "").lower()
+                    in {"her", "his", "their"}
+                    else "the "
+                )
+                + canonical
+            ),
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+    cleaned = re.sub(
+        r"\b(she|he|it)\s+have\b",
+        lambda match: f"{match.group(1)} has",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(i|we|you|they)\s+has\b",
+        lambda match: f"{match.group(1)} have",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bbecause\s+its\s+(?=(?:so|too|very|quite)\b)",
+        "because it is ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(?P<owner>her|his|their)\s+(?P<quality>hot|wet)\s+and\s+"
+        r"(?:vulva|vagina|pussy)\b",
+        lambda match: (
+            f"{match.group('owner')} {match.group('quality')} vulva"
+        ),
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def explicit_adult_grammar_issues(text: str) -> list[str]:
+    """Return only unambiguous malformed adult-action prose outside quotes."""
+
+    searchable = unquoted_text(text)
+    return [
+        label
+        for pattern, label in EXPLICIT_ADULT_GRAMMAR_PROBLEM_PATTERNS
+        if re.search(pattern, searchable, flags=re.IGNORECASE)
+    ]
+
+
 def translate_explicit_adult_language(text: str) -> str:
     """Translate adult slang outside quotes into concrete anatomy and actions."""
 
@@ -2146,6 +2377,7 @@ def translate_explicit_adult_language(text: str) -> str:
         if index % 2:
             translated_parts.append(part)
             continue
+        part = normalize_explicit_adult_grammar(part)
         protected_replacements: list[tuple[str, str]] = []
         for pattern, replacement, _label in EXPLICIT_ADULT_LANGUAGE_TRANSLATIONS:
             def protect_replacement(
@@ -2166,7 +2398,24 @@ def translate_explicit_adult_language(text: str) -> str:
         for token, rendered in protected_replacements:
             part = part.replace(token, rendered)
         translated_parts.append(part)
-    return re.sub(r"\s{2,}", " ", "".join(translated_parts)).strip()
+    translated = re.sub(r"\s{2,}", " ", "".join(translated_parts)).strip()
+    translated = re.sub(
+        r"(\b(?:mature\s+)?adult\s+woman\b[^.!?]{0,100}\b"
+        r"(?:perform(?:s|ing)?|performed)\s+self-stimulation\s+of)\s+"
+        r"their\s+own\s+genitals\b",
+        r"\1 her own genitals",
+        translated,
+        flags=re.IGNORECASE,
+    )
+    translated = re.sub(
+        r"(\b(?:mature\s+)?adult\s+man\b[^.!?]{0,100}\b"
+        r"(?:perform(?:s|ing)?|performed)\s+self-stimulation\s+of)\s+"
+        r"their\s+own\s+genitals\b",
+        r"\1 his own genitals",
+        translated,
+        flags=re.IGNORECASE,
+    )
+    return translated
 
 
 def explicit_adult_language_terms(text: str) -> list[str]:
@@ -3119,7 +3368,9 @@ def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> 
     """Keep explicit gender identities from being generalized or dropped."""
 
     source = text_without_negative_constraints(
-        canonical_validation_text(original_prompt)
+        canonical_validation_text(
+            translate_explicit_adult_language(original_prompt)
+        )
     ).lower()
     candidate = text_without_negative_constraints(
         canonical_validation_text(final_prompt)
@@ -3366,6 +3617,105 @@ def unrequested_gender_trait_issues(
                 f"female genital anatomy added to a male-only source: {added.group(0).lower()}"
             )
     return issues
+
+
+def explicit_support_participant_contract(
+    original_prompt: str,
+    support_context: str,
+) -> str:
+    """Ground a support-requested partnered oral act in explicit adult roles."""
+
+    source = text_without_negative_constraints(
+        canonical_validation_text(original_prompt)
+    ).casefold()
+    support = canonical_validation_text(
+        translate_explicit_adult_language(support_context)
+    ).casefold()
+    requires_penis_oral = bool(
+        re.search(
+            r"\b(?:oral stimulation (?:of|on) (?:the )?penis|"
+            r"mouth-to-penis contact|penis in (?:the )?mouth)\b",
+            support,
+        )
+    )
+    if not requires_penis_oral:
+        return ""
+    if appears_multi_person_scene(source) or re.search(
+        r"\b(?:adult\s+partner|adult\s+man|male\s+partner)\b",
+        source,
+    ):
+        return ""
+    if re.search(r"\b(?:solo|alone|no other (?:person|people|participant)s?)\b", source):
+        return ""
+    return (
+        "Participant binding required by the supplied oral-action or penis priority: "
+        "keep the mature adult woman on image-left, add exactly one adult partner on "
+        "image-right, and bind the requested oral stimulation visibly to the adult "
+        "partner's penis. Never describe either participant as young, youthful, a "
+        "teen, a girl, or a boy. Do not use they, them, or their for an individual."
+    )
+
+
+def apply_explicit_support_participant_contract(
+    candidate: str,
+    original_prompt: str,
+    support_context: str,
+) -> str:
+    """Add the minimum adult role binding needed by an authorized partnered act."""
+
+    instruction = explicit_support_participant_contract(
+        original_prompt,
+        support_context,
+    )
+    if not instruction:
+        return candidate
+    addition = (
+        "The mature adult woman is on image-left and an adult partner is on "
+        "image-right. The woman performs oral stimulation on the adult partner's "
+        "penis with visible mouth-to-penis contact."
+    )
+    return normalize_final_prompt_text(candidate.rstrip(" .") + ". " + addition)
+
+
+def explicit_support_participant_issues(
+    final_prompt: str,
+    original_prompt: str,
+    support_context: str,
+) -> list[str]:
+    """Require the support-implied oral act to keep its actor and receiver."""
+
+    if not explicit_support_participant_contract(
+        original_prompt,
+        support_context,
+    ):
+        return []
+    searchable = canonical_validation_text(final_prompt).casefold()
+    adult_roles_present = bool(
+        re.search(r"\b(?:mature\s+)?adult\s+woman\b", searchable)
+        and re.search(r"\badult\s+(?:partner|man)\b", searchable)
+    )
+    woman_actor = bool(
+        re.search(
+            r"\b(?:the\s+)?(?:mature\s+adult\s+|adult\s+)?woman\b"
+            r"[^.!?]{0,180}\b"
+            r"(?:performs?|performing|gives?|giving)\s+oral\s+stimulation\b"
+            r"[^.!?]{0,100}\b(?:adult\s+partner|adult\s+man|partner|man)\b"
+            r"[^.!?]{0,60}\bpenis\b",
+            searchable,
+        )
+        or re.search(
+            r"\b(?:adult\s+partner|adult\s+man|partner|man)(?:'s|\s+own)?\s+"
+            r"penis\b[^.!?]{0,100}\b(?:inside|in|at|against)\s+"
+            r"(?:the\s+)?(?:mature\s+)?adult\s+woman(?:'s)?\s+mouth\b",
+            searchable,
+        )
+    )
+    if adult_roles_present and woman_actor:
+        return []
+    return [
+        "Explicit support participant contract: the mature adult woman must "
+        "perform the oral action on the positioned adult partner's penis"
+    ]
 
 
 def enforce_inserted_object_contract(candidate: str, original_prompt: str) -> str:
@@ -4659,6 +5009,287 @@ def intent_lock_issues(original_prompt: str, final_prompt: str, goal_headline: s
     return []
 
 
+KREA_OFFICIAL_MEDIUM_FAMILIES = {
+    "photography": (
+        "photo",
+        "photograph",
+        "photography",
+        "camera photograph",
+    ),
+    "illustration": (
+        "illustration",
+        "illustrated",
+        "sketch",
+        "line art",
+        "ink art",
+        "anime",
+        "cel animation",
+        "vector art",
+        "comic art",
+    ),
+    "painting": (
+        "painting",
+        "painted",
+        "watercolor",
+        "gouache",
+        "oil on canvas",
+        "acrylic painting",
+        "digital painting",
+    ),
+    "three-dimensional render": (
+        "3d render",
+        "3d rendered",
+        "three dimensional render",
+        "cgi render",
+        "computer generated render",
+    ),
+    "collage": (
+        "collage",
+        "photomontage",
+        "paper cutout",
+        "mixed media",
+    ),
+    "pixel art": (
+        "pixel art",
+        "8 bit art",
+        "16 bit art",
+        "sprite art",
+    ),
+}
+
+KREA_OFFICIAL_ADDITION_GROUPS = {
+    "human subject": (
+        "woman", "man", "girl", "boy", "person", "people", "child", "children",
+        "crowd", "couple", "photographer", "soldier", "doctor",
+    ),
+    "animal subject": (
+        "dog", "cat", "horse", "bird", "fox", "mouse", "wolf", "bear", "lion",
+        "tiger", "rabbit", "deer", "fish", "snake",
+    ),
+    "vehicle": (
+        "car", "truck", "motorcycle", "bicycle", "train", "airplane", "helicopter",
+        "boat", "ship", "vehicle",
+    ),
+    "weapon": (
+        "gun", "pistol", "rifle", "knife", "sword", "dagger", "axe", "weapon",
+    ),
+}
+
+KREA_OFFICIAL_WEAPON_IMPLICATIONS = (
+    "knight",
+    "samurai",
+    "warrior",
+    "soldier",
+    "armed",
+    "battle",
+    "combat",
+)
+
+KREA_OFFICIAL_DECORATIVE_TERMS = (
+    "bouquet",
+    "flowers",
+    "lantern",
+    "lanterns",
+    "candles",
+    "jewelry",
+    "necklace",
+    "earrings",
+    "banner",
+    "banners",
+    "statue",
+    "fountain",
+    "ornament",
+    "ornaments",
+    "confetti",
+    "balloons",
+)
+
+
+def _explicit_phrase_present(text: str, phrase: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", phrase.casefold())
+    if not words:
+        return False
+    pattern = r"(?<!\w)" + r"[\s-]+".join(map(re.escape, words)) + r"(?!\w)"
+    return bool(re.search(pattern, canonical_validation_text(text).casefold()))
+
+
+def requested_medium_families(text: str) -> set[str]:
+    """Return explicit image-medium families without treating style as medium."""
+
+    return {
+        family
+        for family, phrases in KREA_OFFICIAL_MEDIUM_FAMILIES.items()
+        if any(_explicit_phrase_present(text, phrase) for phrase in phrases)
+    }
+
+
+def requested_medium_issues(final_prompt: str, original_prompt: str) -> list[str]:
+    """Protect an explicitly supplied medium across every rewrite profile."""
+
+    source_media = requested_medium_families(original_prompt)
+    if not source_media:
+        return []
+    final_media = requested_medium_families(final_prompt)
+    missing = sorted(source_media - final_media)
+    issues: list[str] = []
+    if missing:
+        issues.append(
+            "Requested medium missing or changed: " + ", ".join(missing)
+        )
+    if len(source_media) == 1:
+        conflicting = sorted(final_media - source_media)
+        if conflicting:
+            issues.append(
+                "Requested medium missing or changed: added conflicting "
+                + ", ".join(conflicting)
+            )
+    return issues
+
+
+def prompt_is_already_detailed(prompt: str) -> bool:
+    """Identify prompts that Krea recommends polishing rather than expanding."""
+
+    cleaned = normalize_final_prompt_text(prompt)
+    if word_count(cleaned) >= 65:
+        return True
+    category_patterns = (
+        r"\b(?:photo|photograph|illustration|painting|sketch|render|collage|anime)\b",
+        r"\b(?:close-up|wide shot|medium shot|low angle|high angle|perspective|framing)\b",
+        r"\b(?:lighting|sunlight|backlight|rim light|shadows?|glow)\b",
+        r"\b(?:palette|red|blue|green|yellow|orange|purple|cyan|magenta|monochrome)\b",
+        r"\b(?:foreground|background|center|left|right|depth of field|composition)\b",
+        r"\b(?:texture|material|metal|glass|wood|fabric|stone|paper|vinyl)\b",
+        r"\b(?:wearing|holding|standing|sitting|running|looking|gripping|reaching)\b",
+    )
+    matched = sum(bool(re.search(pattern, cleaned, re.IGNORECASE)) for pattern in category_patterns)
+    return word_count(cleaned) >= 35 and matched >= 5
+
+
+def krea_official_addition_issues(
+    final_prompt: str,
+    source_context: str,
+) -> list[str]:
+    """Flag only high-confidence unsupported additions in Krea Official mode."""
+
+    issues: list[str] = []
+    for label, terms in KREA_OFFICIAL_ADDITION_GROUPS.items():
+        source_has_group = any(
+            _explicit_phrase_present(source_context, term)
+            for term in terms
+        )
+        if label == "weapon" and any(
+            _explicit_phrase_present(source_context, term)
+            for term in KREA_OFFICIAL_WEAPON_IMPLICATIONS
+        ):
+            source_has_group = True
+        if source_has_group:
+            continue
+        added = [
+            term
+            for term in terms
+            if _explicit_phrase_present(final_prompt, term)
+        ]
+        if added:
+            issues.append(
+                f"Krea Official unsupported main addition ({label}): "
+                + ", ".join(added[:4])
+            )
+
+    decorative = [
+        term
+        for term in KREA_OFFICIAL_DECORATIVE_TERMS
+        if _explicit_phrase_present(final_prompt, term)
+        and not _explicit_phrase_present(source_context, term)
+    ]
+    if decorative:
+        issues.append(
+            "Krea Official advisory: unsupported decorative details: "
+            + ", ".join(decorative[:6])
+        )
+    return issues
+
+
+def krea_official_compliance_issues(
+    final_prompt: str,
+    *,
+    original_prompt: str,
+    source_context: str,
+) -> list[str]:
+    issues = krea_official_addition_issues(final_prompt, source_context)
+    if prompt_is_already_detailed(original_prompt):
+        source_words = word_count(original_prompt)
+        final_words = word_count(final_prompt)
+        allowed_words = max(source_words + 20, math.ceil(source_words * 1.25))
+        if final_words > allowed_words:
+            issues.append(
+                "Krea Official detailed-input contract: already-detailed prompt "
+                f"expanded from {source_words} to {final_words} words"
+            )
+    return issues
+
+
+def krea_guideline_status(
+    *,
+    workflow_profile: str,
+    generator_target: str,
+    content_format: str,
+    variation_count: int,
+    risk_level: str,
+    preserve_strictly: bool,
+    enhance_actions: bool,
+    develop_story: bool,
+    artistic_detail_freedom: bool,
+    safe_for_work: bool,
+    explicit_nsfw: bool,
+) -> str:
+    """Describe whether the active controls match Krea's published expansion prompt."""
+
+    profile = str(workflow_profile).strip()
+    if explicit_nsfw:
+        return (
+            "Explicit-mode exception: Krea's published expansion prompt assumes "
+            "covered intimate anatomy."
+        )
+    if (
+        normalize_generator_target(generator_target) != "Krea 2"
+        and profile != "Krea Official"
+    ):
+        return "Krea guideline not applicable: the selected generator is not Krea 2."
+    if profile in {"Improve", "Explore"}:
+        return (
+            "PromptCorrector creative extension: this profile permits development "
+            "beyond Krea's strict faithfulness-first expansion contract."
+        )
+    if profile != "Krea Official":
+        return (
+            "Krea-compatible fidelity profile: select Krea Official for explicit "
+            "published-contract validation."
+        )
+
+    deviations: list[str] = []
+    if normalize_generator_target(generator_target) != "Krea 2":
+        deviations.append("generator is not Krea 2")
+    if normalize_content_format(content_format) != "Single Image":
+        deviations.append("structured Comic or Meme output")
+    if variation_count != 1:
+        deviations.append("multiple labelled variations")
+    if risk_level != "Strict cleanup":
+        deviations.append("rewrite risk is not Strict cleanup")
+    if not preserve_strictly:
+        deviations.append("Preserve Wording is disabled")
+    if enhance_actions:
+        deviations.append("action invention is enabled")
+    if develop_story:
+        deviations.append("story invention is enabled")
+    if artistic_detail_freedom:
+        deviations.append("artistic detail freedom is enabled")
+    if not safe_for_work:
+        deviations.append("covered-anatomy safeguard is disabled")
+    if deviations:
+        return "Krea Official conditional: " + "; ".join(deviations) + "."
+    return "Krea Official compliant: published expansion contract is active."
+
+
 def research_confidence_report(context: str) -> str:
     if not context.strip():
         return "Research confidence: not used"
@@ -4833,6 +5464,32 @@ def contradiction_issues(prompt: str, original_prompt: str = "") -> list[str]:
     return issues
 
 
+def hand_use_contradiction_issues(prompt: str) -> list[str]:
+    """Reject open-palm cues when the prompt explicitly occupies both hands."""
+
+    searchable = canonical_validation_text(prompt).casefold()
+    both_hands_occupied = bool(
+        re.search(
+            r"\bboth\s+hands?\b.{0,80}\b(?:hold|holds|holding|grip|grips|"
+            r"gripping|clutch|clutches|clutching|carry|carries|carrying)\b",
+            searchable,
+        )
+        or re.search(
+            r"\b(?:hold|holds|holding|grip|grips|gripping|clutch|clutches|"
+            r"clutching|carry|carries|carrying)\b.{0,80}\bwith\s+both\s+hands?\b",
+            searchable,
+        )
+    )
+    open_palms = bool(
+        re.search(r"\b(?:open|welcoming|outstretched)\s+palms?\b", searchable)
+    )
+    if both_hands_occupied and open_palms:
+        return [
+            "Hand-use contradiction: both hands are occupied but open palms are requested"
+        ]
+    return []
+
+
 def focus_issue(prompt: str, focus: str) -> str | None:
     if not significant_words(canonical_validation_text(focus)):
         return None
@@ -4955,6 +5612,27 @@ def single_image_story_element_issues(
                 "missing or weakened story direction "
                 + ", ".join(missing[:5])
             )
+        if re.search(
+            r"(?i)\b(?:unconditional\s+acceptance|open\s+body\s+language)\b",
+            clause,
+        ):
+            visible_cues = (
+                "relaxed shoulders",
+                "uncrossed arms",
+                "open palms",
+                "welcoming palms",
+                "welcoming posture",
+                "open posture",
+            )
+            cue_matches = sum(
+                1
+                for cue in visible_cues
+                if semantic_term_present(cue, final_prompt)
+            )
+            if cue_matches < 2:
+                issues.append(
+                    "open acceptance lacks concrete visible posture cues"
+                )
     return issues
 
 
@@ -5089,6 +5767,8 @@ def final_compliance_issues(
     develop_story: bool = True,
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
+    additional_script_context: str = "",
+    krea_official: bool = False,
 ) -> list[str]:
     cleaned = normalize_final_prompt_text(final_prompt)
     normalized_format = normalize_content_format(content_format)
@@ -5103,12 +5783,28 @@ def final_compliance_issues(
     issues.extend(internal_prompt_guidance_issues(cleaned))
     issues.extend(forbidden_syntax_issues(cleaned))
     issues.extend(contradiction_issues(cleaned, original_prompt))
+    issues.extend(hand_use_contradiction_issues(cleaned))
     issues.extend(intent_lock_issues(original_prompt, cleaned, goal_headline))
+    issues.extend(requested_medium_issues(cleaned, original_prompt))
     issues.extend(explicit_instruction_issues(cleaned, original_prompt, model_instructions))
     issues.extend(count_contract_issues(cleaned, original_prompt))
     issues.extend(spatial_contract_issues(cleaned, original_prompt))
     issues.extend(exclusion_contract_issues(cleaned, original_prompt))
-    issues.extend(unexpected_script_issues(cleaned, f"{original_prompt}\n{story_elements}"))
+    script_context = "\n".join(
+        value
+        for value in (
+            original_prompt,
+            story_elements,
+            concept_keywords,
+            goal_headline,
+            focus,
+            model_instructions,
+            weighted_terms,
+            additional_script_context,
+        )
+        if value.strip()
+    )
+    issues.extend(unexpected_script_issues(cleaned, script_context))
     plausibility = plausibility_issues(cleaned, original_prompt)
     if plausibility:
         issues.append("Plausibility risk: " + ", ".join(plausibility))
@@ -5143,6 +5839,28 @@ def final_compliance_issues(
     if style_issues:
         issues.extend(style_issues)
     issues.extend(style_mode_issues(cleaned, mode))
+    if krea_official:
+        official_source_context = "\n".join(
+            value
+            for value in (
+                original_prompt,
+                concept_keywords,
+                goal_headline,
+                focus,
+                model_instructions,
+                weighted_terms,
+                story_elements,
+                additional_script_context,
+            )
+            if value.strip()
+        )
+        issues.extend(
+            krea_official_compliance_issues(
+                cleaned,
+                original_prompt=original_prompt,
+                source_context=official_source_context,
+            )
+        )
     rendered_issues = rendered_text_issues(cleaned, original_prompt)
     if rendered_issues:
         issues.extend(rendered_issues)
@@ -5165,6 +5883,12 @@ def final_compliance_issues(
                 "Untranslated explicit adult slang: "
                 + ", ".join(adult_language)
             )
+        adult_grammar = explicit_adult_grammar_issues(cleaned)
+        if adult_grammar:
+            issues.append(
+                "Explicit adult grammar contract: "
+                + ", ".join(adult_grammar)
+            )
         toy_issues = adult_toy_object_contract_issues(cleaned, original_prompt)
         if toy_issues:
             issues.append("Adult toy object contract: " + ", ".join(toy_issues))
@@ -5176,10 +5900,32 @@ def final_compliance_issues(
             )
         trait_issues = unrequested_gender_trait_issues(
             cleaned,
-            f"{original_prompt}\n{story_elements}",
+            "\n".join(
+                value
+                for value in (
+                    original_prompt,
+                    story_elements,
+                    concept_keywords,
+                    weighted_terms,
+                    focus,
+                    goal_headline,
+                    model_instructions,
+                )
+                if value.strip()
+            ),
         )
         if trait_issues:
             issues.append("Unrequested gender/anatomy traits: " + ", ".join(trait_issues))
+        participant_issues = explicit_support_participant_issues(
+            cleaned,
+            original_prompt,
+            "\n".join(
+                value
+                for value in (concept_keywords, weighted_terms)
+                if value.strip()
+            ),
+        )
+        issues.extend(participant_issues)
         adult_scene_issues = nsfw_scene_contract_issues(
             cleaned,
             f"{original_prompt}\n{story_elements}",
@@ -5550,7 +6296,9 @@ HARD_COMPLIANCE_PREFIXES = (
     "Internal prompt guidance leaked",
     "Forbidden syntax matched",
     "Contradictory terms",
+    "Hand-use contradiction",
     "Selected visual mode missing or changed",
+    "Requested medium missing or changed",
     "Intent drift risk",
     "Explicit user directives missing",
     "Count contract",
@@ -5575,9 +6323,13 @@ HARD_COMPLIANCE_PREFIXES = (
     "Adult toy object contract",
     "Inserted object/body contact contract",
     "Unrequested gender/anatomy traits",
+    "Explicit support participant contract",
     "Untranslated explicit adult slang",
+    "Explicit adult grammar contract",
     "NSFW scene fidelity contract",
     "Sexual content involving an underage or ambiguous-age subject",
+    "Krea Official unsupported main addition",
+    "Krea Official detailed-input contract",
 )
 
 
@@ -5666,12 +6418,26 @@ def deterministic_fidelity_fallback(
 ) -> str:
     """Return a conservative usable prompt when model repair loses hard facts."""
 
-    fallback = normalize_final_prompt_text(normalize_concept_text(original_prompt))
+    # User-authored blank lines separate thoughts; they are not model-written
+    # alternative paragraphs or commentary. Flatten them before the final-output
+    # extractor so deterministic recovery preserves the complete draft.
+    source_prompt = re.sub(r"[\r\n]+", " ", original_prompt)
+    fallback = normalize_final_prompt_text(normalize_concept_text(source_prompt))
     fallback = enforce_multi_panel_contract(fallback, original_prompt, story_elements)
     fallback = enforce_explicit_instruction_contract(
         fallback,
         original_prompt,
         model_instructions,
+    )
+    support_context = "\n".join(
+        value
+        for value in (concept_keywords, weighted_terms)
+        if value.strip()
+    )
+    fallback = apply_explicit_support_participant_contract(
+        fallback,
+        original_prompt,
+        support_context,
     )
     additions: list[str] = []
     missing_concepts = missing_required_concepts(fallback, concept_keywords)
@@ -5718,6 +6484,33 @@ def extend_short_fidelity_fallback(
         return fallback
     if not single_image_story_element_issues(fallback, details):
         return fallback
+    if re.search(
+        r"(?i)\b(?:unconditional\s+acceptance|open\s+body\s+language)\b",
+        details,
+    ):
+        occupied_hands = bool(hand_use_contradiction_issues(
+            fallback + " open palms"
+        ))
+        visible_acceptance = (
+            "relaxed shoulders, an open posture, and a steady welcoming gaze"
+            if occupied_hands
+            else "relaxed shoulders, uncrossed arms, open palms, and a welcoming posture"
+        )
+        details = re.sub(
+            r"(?i)\bunconditional\s+acceptance\s+with\s+open\s+body\s+language\b",
+            (
+                "unconditional acceptance with open body language, visible through "
+                + visible_acceptance
+            ),
+            details,
+        )
+        if not re.search(
+            r"(?i)\b(?:relaxed\s+shoulders|open\s+palms|open\s+posture)\b",
+            details,
+        ):
+            details += (
+                ", visible through " + visible_acceptance
+            )
     return normalize_final_prompt_text(
         fallback.rstrip(" .") + ". The scene also shows " + details + "."
     )
@@ -7017,6 +7810,9 @@ def build_model_knowledge_probe_messages(
     concept_keywords: str = "",
     story_elements: str = "",
     weighted_terms: str = "",
+    goal_headline: str = "",
+    focus: str = "",
+    model_instructions: str = "",
 ) -> list[dict[str, object]]:
     return [
         {
@@ -7038,7 +7834,10 @@ def build_model_knowledge_probe_messages(
                 f"Draft prompt:\n{prompt.strip()}\n\n"
                 f"Explicit concepts:\n{concept_keywords.strip() or 'none'}\n\n"
                 f"Story and panel beats:\n{story_elements.strip() or 'none'}\n\n"
-                f"Weighted visual terms:\n{weighted_terms.strip() or 'none'}"
+                f"Weighted visual terms:\n{weighted_terms.strip() or 'none'}\n\n"
+                f"Goal headline:\n{goal_headline.strip() or 'none'}\n\n"
+                f"Primary focus:\n{focus.strip() or 'none'}\n\n"
+                f"User visual instructions:\n{model_instructions.strip() or 'none'}"
             ),
         },
     ]
@@ -7052,6 +7851,9 @@ def probe_model_visual_knowledge(
     concept_keywords: str = "",
     story_elements: str = "",
     weighted_terms: str = "",
+    goal_headline: str = "",
+    focus: str = "",
+    model_instructions: str = "",
     timeout: float = 60.0,
     api_key: str = "lm-studio",
     cancel_check: Callable[[], None] | None = None,
@@ -7064,6 +7866,9 @@ def probe_model_visual_knowledge(
             concept_keywords=concept_keywords,
             story_elements=story_elements,
             weighted_terms=weighted_terms,
+            goal_headline=goal_headline,
+            focus=focus,
+            model_instructions=model_instructions,
         ),
         temperature=0.1,
         max_tokens=1800,
@@ -8122,6 +8927,7 @@ def build_small_model_user_message(
     *,
     generator_target: str,
     content_format: str,
+    visual_direction: str = "",
     story_elements: str = "",
     goal_headline: str = "",
     focus: str = "",
@@ -8141,6 +8947,7 @@ def build_small_model_user_message(
         prompt.strip(),
     ]
     optional = (
+        ("Required visual direction", visual_direction),
         ("Goal", goal_headline),
         ("Primary focus", focus),
         ("Required concepts", concept_keywords),
@@ -8187,6 +8994,93 @@ def build_small_model_audit_system_prompt(generator_target: str, content_format:
 Compare the source contract with the candidate. Repair only concrete failures: dropped facts, wrong counts or positions, ambiguous subject-action binding, incoherent action-critical joints or contact, comic layout or continuity loss, and incompatible syntax.
 For individually tracked people, preserve every explicit female, male, and nonbinary identity. Establish a short stable identity-or-role plus position label, and repeat it only when needed to resolve ambiguous action, ownership, contact, or position. Natural pronouns are allowed when unambiguous. Keep purely collective couples, crowds, and groups collective.
 Return only the repaired {normalize_content_format(content_format)} prompt. Do not output a score, notes, or reasoning."""
+
+
+def build_small_model_audit_user_message(
+    *,
+    original_prompt: str,
+    current_prompt: str,
+    detected_issues: list[str],
+    goal_headline: str = "",
+    focus: str = "",
+    concept_keywords: str = "",
+    model_instructions: str = "",
+    weighted_terms: str = "",
+    story_elements: str = "",
+    visual_direction: str = "",
+    mode: str = "Auto",
+    detail_level: str = "Detailed",
+    output_length: str = "Balanced",
+    output_min_words: int | None = None,
+    output_max_words: int | None = None,
+    risk_level: str = "Balanced improvement",
+    prompt_preset: str = "Auto",
+    variation_count: int = 1,
+    preserve_strictly: bool = False,
+    optimize_quoted_text: bool = True,
+    fix_logic: bool = True,
+    enhance_actions: bool = False,
+    develop_story: bool = True,
+    artistic_detail_freedom: bool = False,
+    clean_constraints: bool = True,
+    altered_text_encoder: bool = True,
+    research_context: str = "",
+    image_context: str = "",
+    concept_context: str = "",
+) -> str:
+    """Return the complete correction contract in a compact audit shape."""
+
+    sections = [
+        "Source prompt:\n" + original_prompt.strip(),
+        "Current mechanically normalized candidate:\n" + current_prompt.strip(),
+    ]
+    optional = (
+        ("Required visual direction", visual_direction),
+        ("Goal", goal_headline),
+        ("Primary focus", focus),
+        ("Required concepts", ", ".join(parse_concepts(concept_keywords))),
+        ("Weighted visual priorities", weighted_terms),
+        ("Private correction instructions", model_instructions),
+        ("Required story or panel beats", story_elements),
+    )
+    for label, value in optional:
+        if value.strip():
+            sections.append(f"{label}:\n{value.strip()}")
+    if detected_issues:
+        sections.append(
+            "Validation failures to repair:\n- " + "\n- ".join(detected_issues)
+        )
+    sections.append(
+        "Controls: "
+        f"mode={mode}; detail={detail_level}; length={output_length}; "
+        f"risk={risk_level}; preset={prompt_preset}; variations={variation_count}; "
+        f"preserve strictly={preserve_strictly}; optimize quoted text={optimize_quoted_text}; "
+        f"fix logic={fix_logic}; enhance actions={enhance_actions}; develop story={develop_story}; "
+        f"artistic detail freedom={artistic_detail_freedom}; clean constraints={clean_constraints}; "
+        f"altered encoder safe={altered_text_encoder}. "
+        + length_guidance_text(
+            output_length,
+            output_min_words,
+            output_max_words,
+        )
+    )
+    for label, value in (
+        ("Grounded research", research_context),
+        ("Reference image findings", image_context),
+        ("Concept context", concept_context),
+    ):
+        if value.strip():
+            sections.append(f"{label} (support only):\n{value.strip()}")
+    if image_context.strip() or concept_context.strip():
+        sections.append(
+            "Reference boundary: use images only as glossary evidence for requested identity, material, "
+            "style, or concepts. Never copy their scene, subject, pose, action, camera, composition, "
+            "setting, palette, lighting, text, or story."
+        )
+    sections.append(
+        "Return only the complete repaired prompt. Preserve all satisfied facts while fixing every listed failure."
+    )
+    return "\n\n".join(sections)
 
 
 def build_system_prompt(
@@ -8461,6 +9355,7 @@ def build_user_message(
     thinking_mode: bool = False,
     generator_target: str = "Krea 2",
     content_format: str = "Auto",
+    visual_direction: str = "",
 ) -> str:
     target = normalize_generator_target(generator_target)
     normalized_format = normalize_content_format(content_format)
@@ -8475,6 +9370,7 @@ def build_user_message(
             prompt_contract_summary(prompt, story_elements),
         ]
         for label, value in (
+            ("Required visual direction", visual_direction),
             ("Goal", goal_headline),
             ("Required focus", focus),
             ("Required concepts", ", ".join(parse_concepts(concept_keywords))),
@@ -8536,6 +9432,16 @@ User-requested result focus:
 Prioritize this focus in the corrected prompt while preserving the original subject and scene. Use it as emphasis, not as a replacement for the draft prompt.
 """
         if focus.strip()
+        else ""
+    )
+    visual_direction_section = (
+        f"""
+Required visual direction:
+{visual_direction.strip()}
+
+Integrate this direction as visible style, medium, mood, palette, lighting, or composition. Do not emit a workflow label.
+"""
+        if visual_direction.strip()
         else ""
     )
     story_instruction = (
@@ -8759,6 +9665,7 @@ Draft prompt:
 {format_summary}
 {classification_section}
 {input_quality_section}
+{visual_direction_section}
 {goal_section}
 {focus_section}
 {story_section}
@@ -8901,6 +9808,22 @@ def build_audit_user_message(
     altered_text_encoder: bool = True,
     story_elements: str = "",
     develop_story: bool = True,
+    visual_direction: str = "",
+    mode: str = "Auto",
+    detail_level: str = "Detailed",
+    risk_level: str = "Balanced improvement",
+    prompt_preset: str = "Auto",
+    variation_count: int = 1,
+    preserve_strictly: bool = False,
+    optimize_quoted_text: bool = True,
+    fix_logic: bool = True,
+    enhance_actions: bool = False,
+    artistic_detail_freedom: bool = False,
+    clean_constraints: bool = True,
+    research_context: str = "",
+    image_context: str = "",
+    concept_context: str = "",
+    detected_issues: list[str] | None = None,
 ) -> str:
     focus_section = (
         f"""
@@ -8994,6 +9917,47 @@ Preserve the requested single-image or multi-panel format. For multi-panel work,
         if develop_story
         else "Story development permission: disabled; do not retain unsupported invented plot beats.\n"
     )
+    visual_direction_section = (
+        f"Required visual direction:\n{visual_direction.strip()}\n"
+        if visual_direction.strip()
+        else ""
+    )
+    generation_contract = f"""Correction controls that remain authoritative during audit:
+- Mode: {mode}
+- Detail level: {detail_level}
+- Rewrite risk: {risk_level}
+- Prompt preset: {prompt_preset}
+- Variations: {variation_count}
+- Preserve wording strictly: {preserve_strictly}
+- Optimize quoted rendered text: {optimize_quoted_text}
+- Fix logic conflicts: {fix_logic}
+- Enhance actions: {enhance_actions}
+- Develop story: {develop_story}
+- Artistic detail freedom: {artistic_detail_freedom}
+- Clean generator constraints: {clean_constraints}
+"""
+    support_sections: list[str] = []
+    for title, value in (
+        ("Grounded research context", research_context),
+        ("Reference image findings", image_context),
+        ("Concept integration context", concept_context),
+    ):
+        if value.strip():
+            support_sections.append(f"{title}:\n{value.strip()}")
+    if image_context.strip() or concept_context.strip():
+        support_sections.append(
+            "Reference boundary: every image is glossary-only evidence. Keep only requested identity, "
+            "material, style, or concept facts. Never copy a reference scene, subject, pose, action, "
+            "camera, composition, setting, palette, lighting arrangement, text, or story."
+        )
+    support_section = "\n\n".join(support_sections)
+    issue_section = (
+        "Deterministic validation failures already detected:\n- "
+        + "\n- ".join(detected_issues)
+        + "\nFix every listed failure as part of the audit.\n"
+        if detected_issues
+        else ""
+    )
     return f"""Original draft prompt:
 {original_prompt.strip()}
 {goal_section}
@@ -9001,10 +9965,14 @@ Preserve the requested single-image or multi-panel format. For multi-panel work,
 {story_section}
 {panel_contract_section}
 {development_section}
+{visual_direction_section}
+{generation_contract}
 {instruction_section}
 {required_concepts_section}
 {weighted_section}
 {encoder_section}
+{issue_section}
+{support_section}
 
 Corrected prompt to audit:
 {corrected_prompt.strip()}
@@ -9895,7 +10863,23 @@ def build_meme_generation_messages(
     compact_model: bool = False,
     artistic_detail_freedom: bool = False,
     explicit_nsfw: bool = False,
+    safe_for_work: bool = False,
     rule_strength: int = 100,
+    mode: str = "Auto",
+    visual_direction: str = "",
+    detail_level: str = "Detailed",
+    output_length: str = "Balanced",
+    output_min_words: int | None = None,
+    output_max_words: int | None = None,
+    risk_level: str = "Balanced improvement",
+    prompt_preset: str = "Auto",
+    preserve_strictly: bool = False,
+    fix_logic: bool = True,
+    enhance_actions: bool = False,
+    develop_story: bool = True,
+    clean_constraints: bool = True,
+    altered_text_encoder: bool = True,
+    thinking_mode: bool = False,
 ) -> list[dict[str, object]]:
     target = normalize_generator_target(generator_target)
     variation_rule = (
@@ -9910,6 +10894,41 @@ def build_meme_generation_messages(
         else "Keep secondary visual details coherent and restrained."
     )
     adult_mode_rule = EXPLICIT_ADULT_MODE_INSTRUCTION if explicit_nsfw else ""
+    safety_rule = (
+        "Safe-for-work output is mandatory: use complete opaque clothing, non-sexual staging, "
+        "and non-graphic imagery. Do not mention this safety conversion in the result."
+        if safe_for_work
+        else ""
+    )
+    mode_rule = (
+        f"Required visual mode: {mode}."
+        if str(mode).strip() and str(mode).strip() != "Auto"
+        else ""
+    )
+    visual_direction_rule = (
+        f"Required visual direction: {visual_direction.strip()}."
+        if visual_direction.strip()
+        else ""
+    )
+    preset_guidance = PROMPT_PRESET_GUIDANCE.get(
+        prompt_preset,
+        PROMPT_PRESET_GUIDANCE["Auto"],
+    )
+    workflow_contract = (
+        f"Meme correction controls: detail={detail_level}; output length={output_length}; "
+        f"rewrite risk={risk_level}; prompt preset={prompt_preset}. "
+        f"{length_guidance_text(output_length, output_min_words, output_max_words)} "
+        f"Preset guidance: {preset_guidance} "
+        f"Preserve source wording strictly={preserve_strictly}; fix logic={fix_logic}; "
+        f"enhance actions={enhance_actions}; develop supporting story context={develop_story}; "
+        f"clean generator constraints={clean_constraints}; altered encoder safe={altered_text_encoder}. "
+        "Apply these as behavior and visual decisions; never print their labels or values in the final prompt."
+    )
+    thinking_rule = (
+        "You may reason internally, but never output reasoning or think tags."
+        if thinking_mode
+        else "Do not output reasoning or think tags."
+    )
     if compact_model:
         system = f"""Write a finished one-image meme prompt for {target}.
 Invent a concrete visual analogy, reversal, or reaction instead of repeating the source incident.
@@ -9918,6 +10937,11 @@ If the brief does not supply quoted caption words, invent context-specific capti
 Keep each invented caption under 8 simple words. Preserve any caption already quoted by the user exactly. Treat captions as a separate flat graphic overlay and allow no other visible text. Never output reasoning, alternatives, labels, panels, or the source instructions.
 {artistic_rule}
 {adult_mode_rule}
+{safety_rule}
+{mode_rule}
+{visual_direction_rule}
+{workflow_contract}
+{thinking_rule}
 {variation_rule}"""
     else:
         system = f"""You are an inventive meme creative director writing a final {target} image prompt.
@@ -9931,6 +10955,11 @@ Write direct generator-ready visual description with a clear subject, expression
 Use one still image only, never panels or sequential frames.
 {artistic_rule}
 {adult_mode_rule}
+{safety_rule}
+{mode_rule}
+{visual_direction_rule}
+{workflow_contract}
+{thinking_rule}
 {variation_rule}
 Return prompt text only, with no notes, analysis, or markdown."""
     user_parts = ["Meme production brief:\n" + prompt.strip()]
@@ -11567,6 +12596,21 @@ def post_meme_completion(
     explicit_nsfw: bool = False,
     artistic_detail_freedom: bool = False,
     rule_strength: int = 100,
+    mode: str = "Auto",
+    visual_direction: str = "",
+    detail_level: str = "Detailed",
+    output_length: str = "Balanced",
+    output_min_words: int | None = None,
+    output_max_words: int | None = None,
+    risk_level: str = "Balanced improvement",
+    prompt_preset: str = "Auto",
+    preserve_strictly: bool = False,
+    fix_logic: bool = True,
+    enhance_actions: bool = False,
+    develop_story: bool = True,
+    clean_constraints: bool = True,
+    altered_text_encoder: bool = True,
+    thinking_mode: bool = False,
     cancel_check: Callable[[], None] | None = None,
     diagnostic_callback: Callable[[str], None] | None = None,
 ) -> str:
@@ -11598,7 +12642,23 @@ def post_meme_completion(
                 compact_model=compact_model,
                 artistic_detail_freedom=artistic_detail_freedom,
                 explicit_nsfw=explicit_nsfw,
+                safe_for_work=safe_for_work,
                 rule_strength=rule_strength,
+                mode=mode,
+                visual_direction=visual_direction,
+                detail_level=detail_level,
+                output_length=output_length,
+                output_min_words=output_min_words,
+                output_max_words=output_max_words,
+                risk_level=risk_level,
+                prompt_preset=prompt_preset,
+                preserve_strictly=preserve_strictly,
+                fix_logic=fix_logic,
+                enhance_actions=enhance_actions,
+                develop_story=develop_story,
+                clean_constraints=clean_constraints,
+                altered_text_encoder=altered_text_encoder,
+                thinking_mode=thinking_mode,
             ),
             temperature=effective_temperature,
             max_tokens=max_tokens,
@@ -11618,6 +12678,8 @@ def post_meme_completion(
         if safe_for_work:
             candidate = make_prompt_safe_for_work(candidate)
         candidate = enforce_meme_caption_contract(candidate, prompt)
+        candidate = enforce_style_mode_contract(candidate, mode, prompt)
+        candidate = enforce_visual_direction_contract(candidate, visual_direction)
         issues = meme_prompt_issues(
             candidate,
             original_prompt=prompt,
@@ -11696,6 +12758,15 @@ def post_meme_completion(
             repaired_candidate = enforce_meme_caption_contract(
                 repaired_candidate,
                 prompt,
+            )
+            repaired_candidate = enforce_style_mode_contract(
+                repaired_candidate,
+                mode,
+                prompt,
+            )
+            repaired_candidate = enforce_visual_direction_contract(
+                repaired_candidate,
+                visual_direction,
             )
             repaired_issues = meme_prompt_issues(
                 repaired_candidate,
@@ -11777,6 +12848,7 @@ def post_chat_completion(
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
     diagnostic_callback: Callable[[str], None] | None = None,
+    krea_official: bool = False,
 ) -> str:
     def report_diagnostic(message: str) -> None:
         if diagnostic_callback is None:
@@ -11818,6 +12890,13 @@ def post_chat_completion(
     if explicit_nsfw:
         validate_explicit_adult_mode(source_request)
     normalized_format = normalize_content_format(content_format)
+    official_contract_active = (
+        bool(krea_official)
+        and normalize_generator_target(generator_target) == "Krea 2"
+        and normalized_format == "Single Image"
+        and variation_count == 1
+        and not explicit_nsfw
+    )
     correction_model_instructions = "\n".join(
         value.strip()
         for value in (model_instructions, private_model_instructions)
@@ -11841,6 +12920,18 @@ def post_chat_completion(
             if correction_model_instructions.strip()
             else EXPLICIT_ADULT_MODE_INSTRUCTION
         )
+        participant_contract = explicit_support_participant_contract(
+            prompt,
+            "\n".join(
+                value
+                for value in (concept_keywords, weighted_terms)
+                if value.strip()
+            ),
+        )
+        if participant_contract:
+            correction_model_instructions = (
+                f"{correction_model_instructions.strip()}\n{participant_contract}"
+            )
         adult_scene_contract = format_nsfw_scene_contract(
             extract_nsfw_scene_contract(
                 source_request,
@@ -11852,6 +12943,13 @@ def post_chat_completion(
             correction_model_instructions = (
                 f"{correction_model_instructions.strip()}\n{adult_scene_contract}"
             )
+    if official_contract_active:
+        correction_model_instructions = (
+            f"{correction_model_instructions.strip()}\n"
+            f"{KREA_OFFICIAL_EXPANSION_INSTRUCTION}"
+            if correction_model_instructions.strip()
+            else KREA_OFFICIAL_EXPANSION_INSTRUCTION
+        )
     if artistic_detail_freedom:
         correction_model_instructions = (
             f"{correction_model_instructions.strip()}\n"
@@ -11931,6 +13029,21 @@ def post_chat_completion(
             explicit_nsfw=explicit_nsfw,
             artistic_detail_freedom=artistic_detail_freedom,
             rule_strength=rule_strength,
+            mode=mode,
+            visual_direction=visual_direction,
+            detail_level=detail_level,
+            output_length=output_length,
+            output_min_words=output_min_words,
+            output_max_words=output_max_words,
+            risk_level=risk_level,
+            prompt_preset=prompt_preset,
+            preserve_strictly=preserve_strictly,
+            fix_logic=fix_logic,
+            enhance_actions=enhance_actions,
+            develop_story=develop_story,
+            clean_constraints=clean_constraints,
+            altered_text_encoder=altered_text_encoder,
+            thinking_mode=thinking_mode,
             cancel_check=cancel_check,
             diagnostic_callback=diagnostic_callback,
         )
@@ -11974,6 +13087,7 @@ def post_chat_completion(
                     prompt=prompt,
                     generator_target=generator_target,
                     content_format=normalized_format,
+                    visual_direction=visual_direction,
                     research_context=research_context,
                     image_context=image_context,
                     concept_context=concept_context,
@@ -12013,6 +13127,7 @@ def post_chat_completion(
             prompt,
             generator_target=generator_target,
             content_format=normalized_format,
+            visual_direction=visual_direction,
             story_elements=story_elements,
             goal_headline=goal_headline,
             focus=focus,
@@ -12079,19 +13194,14 @@ def post_chat_completion(
     def enforce_mechanical_contracts(candidate: str) -> str:
         candidate = strip_private_prompt_guidance(candidate)
         candidate = strip_nsfw_catalog_labels(candidate)
+        candidate = normalize_concept_text(candidate)
         if explicit_nsfw:
             candidate = translate_explicit_adult_language(candidate)
-        source_script_context = "\n".join(
-            (
-                prompt,
-                story_elements,
-                concept_keywords,
-                goal_headline,
-                focus,
-                model_instructions,
-                weighted_terms,
-            )
-        )
+        # Every user-authored field that can legitimately influence visible
+        # wording must also authorize its writing system. Otherwise a non-Latin
+        # term introduced through private mix guidance or iteration feedback is
+        # sent to the model and then incorrectly stripped from its answer.
+        source_script_context = source_request
         panel_source = (
             comic_story_source_prompt(prompt, story_elements)
             if normalized_format == "Comic Story"
@@ -12104,6 +13214,14 @@ def post_chat_completion(
             prompt,
             model_instructions,
         )
+        if normalized_format == "Single Image":
+            candidate = extend_short_fidelity_fallback(
+                candidate,
+                story_elements,
+                output_length=output_length,
+                output_min_words=output_min_words,
+                output_max_words=output_max_words,
+            )
         if explicit_nsfw:
             candidate = enforce_adult_toy_object_contract(candidate, prompt)
             candidate = enforce_inserted_object_contract(candidate, prompt)
@@ -12149,6 +13267,15 @@ def post_chat_completion(
                 develop_story=develop_story,
                 safe_for_work=safe_for_work,
                 explicit_nsfw=explicit_nsfw,
+                additional_script_context="\n".join(
+                    value
+                    for value in (
+                        private_model_instructions,
+                        generation_feedback,
+                    )
+                    if value.strip()
+                ),
+                krea_official=official_contract_active,
             ),
             rule_strength,
         )
@@ -12157,9 +13284,10 @@ def post_chat_completion(
         normalize_final_prompt_text(corrected)
     )
     candidates = [initial_candidate]
+    initial_issues = compliance_issues(initial_candidate)
     report_issue_summary(
         "Initial model candidate",
-        compliance_issues(initial_candidate),
+        initial_issues,
     )
     if exact_fidelity:
         fidelity_fallback = enforce_mechanical_contracts(
@@ -12202,25 +13330,68 @@ def post_chat_completion(
                 )
             )
             audit_user = (
-                "Source prompt:\n" + prompt + "\n\nCandidate prompt:\n" + corrected
-                + ("\n\nRequired panel beats:\n" + story_elements if story_elements.strip() else "")
-                + ("\n\nRequired concepts:\n" + concept_keywords if concept_keywords.strip() else "")
-                + ("\n\nMandatory safety: return only safe-for-work, non-explicit, non-graphic content." if safe_for_work else "")
+                build_small_model_audit_user_message(
+                    original_prompt=prompt,
+                    current_prompt=initial_candidate,
+                    detected_issues=initial_issues,
+                    goal_headline=goal_headline,
+                    focus=focus,
+                    concept_keywords=concept_keywords,
+                    model_instructions=correction_model_instructions,
+                    weighted_terms=weighted_terms,
+                    story_elements=story_elements,
+                    visual_direction=visual_direction,
+                    mode=mode,
+                    detail_level=detail_level,
+                    output_length=output_length,
+                    output_min_words=output_min_words,
+                    output_max_words=output_max_words,
+                    risk_level=risk_level,
+                    prompt_preset=prompt_preset,
+                    variation_count=variation_count,
+                    preserve_strictly=preserve_strictly,
+                    optimize_quoted_text=optimize_quoted_text,
+                    fix_logic=fix_logic,
+                    enhance_actions=enhance_actions,
+                    develop_story=develop_story,
+                    artistic_detail_freedom=artistic_detail_freedom,
+                    clean_constraints=clean_constraints,
+                    altered_text_encoder=altered_text_encoder,
+                    research_context=research_context,
+                    image_context=image_context,
+                    concept_context=concept_context,
+                )
                 if small_model
                 else build_audit_user_message(
-                    prompt,
-                    corrected,
-                    goal_headline,
-                    focus,
-                    concept_keywords,
-                    correction_model_instructions,
-                    weighted_terms,
-                    output_length,
-                    output_min_words,
-                    output_max_words,
-                    altered_text_encoder,
-                    story_elements,
-                    develop_story,
+                    original_prompt=prompt,
+                    corrected_prompt=initial_candidate,
+                    goal_headline=goal_headline,
+                    focus=focus,
+                    concept_keywords=concept_keywords,
+                    model_instructions=correction_model_instructions,
+                    weighted_terms=weighted_terms,
+                    output_length=output_length,
+                    output_min_words=output_min_words,
+                    output_max_words=output_max_words,
+                    altered_text_encoder=altered_text_encoder,
+                    story_elements=story_elements,
+                    develop_story=develop_story,
+                    visual_direction=visual_direction,
+                    mode=mode,
+                    detail_level=detail_level,
+                    risk_level=risk_level,
+                    prompt_preset=prompt_preset,
+                    variation_count=variation_count,
+                    preserve_strictly=preserve_strictly,
+                    optimize_quoted_text=optimize_quoted_text,
+                    fix_logic=fix_logic,
+                    enhance_actions=enhance_actions,
+                    artistic_detail_freedom=artistic_detail_freedom,
+                    clean_constraints=clean_constraints,
+                    research_context=research_context,
+                    image_context=image_context,
+                    concept_context=concept_context,
+                    detected_issues=initial_issues,
                 )
             )
             audit_response = chat_completion(
@@ -12364,7 +13535,11 @@ def post_chat_completion(
         output_length == "Expanded"
         and risk_level == "Creative enhancement"
     )
-    repair_attempts = 2 if (not small_model or maximum_development) else 1
+    # A compact model gets one full-prompt repair at most. If maximum
+    # development still needs depth afterward, the immutable-base continuation
+    # path is safer and faster than asking the same small model to rewrite the
+    # complete prompt a second time.
+    repair_attempts = 2 if not small_model else 1
     for _attempt in range(repair_attempts):
         report_diagnostic(
             f"Final repair attempt {_attempt + 1}/{repair_attempts} is addressing: "
@@ -12502,6 +13677,18 @@ def post_chat_completion(
                 hard_issues, _soft_issues = split_compliance_issues(
                     compliance_issues(final_prompt)
                 )
+                if final_prompt == fallback and not hard_issues:
+                    if fallback_issues:
+                        report_diagnostic(
+                            "Deterministic fidelity fallback satisfied every hard "
+                            "contract and was selected with advisory issues: "
+                            + "; ".join(fallback_issues[:4])
+                        )
+                    else:
+                        report_diagnostic(
+                            "Deterministic fidelity fallback passed validation and "
+                            "was selected."
+                        )
             fallback_hard_issues, _fallback_soft_issues = split_compliance_issues(
                 fallback_issues
             )
@@ -12634,6 +13821,15 @@ def post_chat_completion(
                         hard_issues, _soft_issues = split_compliance_issues(
                             compliance_issues(final_prompt)
                         )
+                        if (
+                            final_prompt == expanded_fallback
+                            and not hard_issues
+                        ):
+                            report_diagnostic(
+                                "Immutable-base creative expansion satisfied every "
+                                "hard contract and was selected with advisory issues: "
+                                + "; ".join(expanded_fallback_issues[:4])
+                            )
         if hard_issues:
             summary = "; ".join(hard_issues[:4])
             report_diagnostic(
@@ -12688,6 +13884,15 @@ def parse_args() -> argparse.Namespace:
         choices=GENERATOR_TARGETS,
         default="Krea 2",
         help="Image generator whose prompt syntax should be optimized. Default: Krea 2.",
+    )
+    parser.add_argument(
+        "--krea-official",
+        action="store_true",
+        help=(
+            "Enforce Krea's published faithfulness-first expansion contract: "
+            "Krea 2, one Single Image paragraph, strict preservation, quoted "
+            "visible text, no unsupported main additions, and covered anatomy."
+        ),
     )
     parser.add_argument(
         "--format",
@@ -12946,16 +14151,50 @@ def main() -> int:
     if not draft_prompt:
         print("Prompt is empty.", file=sys.stderr)
         return 2
+    if args.krea_official and args.explicit_nsfw:
+        print(
+            "Error: --krea-official follows Krea's covered-anatomy contract and "
+            "cannot be combined with --explicit-nsfw.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.krea_official:
+        args.target = "Krea 2"
+        args.content_format = "Single Image"
+        args.risk_level = "Strict cleanup"
+        args.variations = 1
+        args.preserve_strictly = True
+        args.enhance_actions = False
+        args.no_story_development = True
+        args.safe_for_work = True
 
     try:
         image_context = ""
         research_context = ""
         if args.live_concept_research:
+            research_request = "\n\n".join(
+                section
+                for section in (
+                    draft_prompt,
+                    f"Goal: {args.goal_headline}" if args.goal_headline.strip() else "",
+                    f"Primary focus: {args.focus}" if args.focus.strip() else "",
+                    f"Required concepts: {args.concepts}" if args.concepts.strip() else "",
+                    (
+                        f"User visual instructions:\n{args.model_instructions}"
+                        if args.model_instructions.strip()
+                        else ""
+                    ),
+                )
+                if section
+            )
             model_knowledge = probe_model_visual_knowledge(
                 base_url=args.base_url,
                 model=args.model,
                 prompt=draft_prompt,
                 concept_keywords=args.concepts,
+                goal_headline=args.goal_headline,
+                focus=args.focus,
+                model_instructions=args.model_instructions,
                 timeout=args.timeout,
                 api_key=args.api_key,
             )
@@ -12980,7 +14219,7 @@ def main() -> int:
                 )
             if args.enhance_actions:
                 action_context = collect_action_pose_research(
-                    draft_prompt,
+                    research_request,
                     search_engine=args.search_engine,
                 )
                 if action_context:
@@ -12992,7 +14231,7 @@ def main() -> int:
             reconciled_knowledge = reconcile_model_knowledge_with_web(
                 base_url=args.base_url,
                 model=args.model,
-                prompt=draft_prompt,
+                prompt=research_request,
                 model_probe=model_knowledge,
                 web_research=research_context,
                 timeout=args.timeout,
@@ -13065,6 +14304,7 @@ def main() -> int:
             model_instructions=args.model_instructions,
             safe_for_work=args.safe_for_work,
             explicit_nsfw=args.explicit_nsfw,
+            krea_official=args.krea_official,
             context_token_budget=(
                 CONTEXT_TOKEN_AUTO
                 if args.context_tokens == CONTEXT_TOKEN_AUTO

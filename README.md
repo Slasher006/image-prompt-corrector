@@ -19,7 +19,7 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 - Entity-centered prompt organization that keeps an object beside its attributes, actions, position, and direct effects.
 - Stronger prompt-specific creative direction with internal concept exploration instead of generic adjective inflation.
 - Krea 2 style formatting with natural language instead of Stable Diffusion keyword soup.
-- Exact, Improve, and Explore workflows, with fidelity-first Exact mode as the default.
+- Exact, Krea Official, Improve, and Explore workflows, with fidelity-first Exact mode as the default.
 - Generator target selector for **Krea 2** and **FLUX.2 Klein 9B**.
 - Separate **Prompt Corrector**, **Comic Story**, **Meme Creator**, and **Model Chat** workspaces; comics and memes work with either generator.
 - A global **Settings** drawer keeps shared generation, processing, web-research, and LM Studio connection controls outside the individual mode panes.
@@ -149,7 +149,7 @@ Program options are in the top menu bar:
 
 1. Select **Krea 2** or **FLUX.2 Klein 9B** under **Generator**.
 2. Use **Prompt Corrector** for one still image, **Comic Story** for a multi-panel page, or **Meme Creator** for an image macro with exact top text, bottom text, or both.
-3. Leave **Workflow** on **Exact** when following the request closely matters most.
+3. Leave **Workflow** on **Exact** when following the request closely matters most. Choose **Krea Official** to enforce Krea's published faithfulness-first expansion contract.
 4. Enter the image brief, or choose a comic panel count and complete each visible panel editor.
 5. Generate and copy the result.
 6. To develop it further, click **Iterate result…** (`Ctrl+Shift+R`), describe the next change, and run another pass. The current result becomes the next draft while the active concepts, references, and settings remain in place; each successful iteration stays available in History.
@@ -171,7 +171,7 @@ While **Explicit adult (NSFW)** is enabled, the Actions, Emotions, Concepts, Vis
 
 Sexual content involving an underage or ambiguous-age subject is rejected before any model call in every mode, even when **Explicit adult (NSFW)** is disabled. Non-sexual scenes containing children remain supported.
 
-Use **Advanced setup** only when you need concepts, research, custom rewrite rules, or model controls. **Improve** permits restrained polish. **Explore** permits new supporting ideas and story development.
+Use **Advanced setup** only when you need concepts, research, custom rewrite rules, or model controls. **Krea Official** produces one natural-language Krea 2 image prompt, preserves the requested medium, quotes intended visible text, rejects high-confidence unsupported main subjects, and lightly polishes prompts that are already detailed. Decorative additions are reported as advice instead of being treated as definite failures. Comic, Meme, multi-variation, creative-development, and explicit-adult workflows are clearly reported as PromptCorrector extensions or exceptions rather than falsely labelled official compliance. **Improve** permits restrained polish. **Explore** permits new supporting ideas and story development.
 
 Under **Advanced setup > Processing > Rewrite rules**, use **Rewrite rule strength** to reduce optional rewrite, polish, and advisory audit pressure when a result feels over-constrained. `100` applies all enabled guidance firmly; lower values allow progressively more flexibility. Explicit user requirements, requested counts and positions, exact quoted text, selected safety mode, and removal of private control language always remain strict.
 
@@ -555,6 +555,8 @@ python3 krea_prompt_corrector.py \
 ```
 
 CLI defaults match the GUI's Exact workflow: strict cleanup, preserved wording, no story invention, temperature `0.1`, balanced detail, and automatic supporting-context sizing. Use `--context-tokens auto` (the default) or a numeric override such as `8192`.
+
+Use `--krea-official` for the published Krea expansion contract. It fixes the target to Krea 2, the format to one Single Image paragraph, strict preservation, one variation, and covered anatomy. It cannot be combined with `--explicit-nsfw`.
 
 Remote LM Studio example:
 

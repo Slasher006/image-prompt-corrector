@@ -13,15 +13,18 @@ from typing import Iterable
 
 SEXUAL_SIGNAL_PATTERN = re.compile(
     r"\b(?:nsfw|nude|naked|erotic|sexual|sex|intercourse|masturbat\w*|"
-    r"oral\s+sex|anal\s+sex|penetrat\w*|orgasm\w*|climax\w*|foreplay|"
+    r"oral\s+(?:sex|stimulation)|blowjobs?|handjobs?|anal\s+sex|"
+    r"penetrat\w*|orgasm\w*|climax\w*|foreplay|"
     r"seduc\w*|intimate|kiss(?:es|ed|ing)?|dildos?|vibrators?|strap[- ]ons?|"
     r"sex\s+toys?|adult\s+toys?|bondage)\b",
     re.IGNORECASE,
 )
 ROLE_PATTERN_TEXT = (
-    r"(?:(?:adult\s+)?(?:woman|women|man|men|female|females|male|males)"
+    r"(?:(?:adult\s+)?(?:woman(?:s|['’]s)?|women|man(?:s|['’]s)?|men|"
+    r"female|females|male|males)"
     r"\s+partners?|"
-    r"(?:adult\s+)?(?:woman|women|man|men|female|females|male|males|"
+    r"(?:adult\s+)?(?:woman(?:s|['’]s)?|women|man(?:s|['’]s)?|men|"
+    r"female|females|male|males|"
     r"nonbinary\s+(?:person|people)|non-binary\s+(?:person|people)|"
     r"partner|partners|lover|lovers|subject|subjects|performer|performers|"
     r"dominant|dominants|submissive|submissives))"
@@ -243,8 +246,11 @@ RELATION_ACTIONS: tuple[tuple[str, str], ...] = (
 def _canonical_role(value: str) -> str:
     role = re.sub(r"^adult\s+", "", value.strip().lower())
     role = re.sub(r"\s+partners?$", "", role)
+    role = re.sub(r"['’]s$", "", role)
     singular = {
+        "womans": "woman",
         "women": "woman",
+        "mans": "man",
         "men": "man",
         "female": "woman",
         "females": "woman",
@@ -300,7 +306,10 @@ def extract_nsfw_scene_contract(
     """Extract participant, act, contact, object, phase, and reaction facts."""
 
     normalized = _positive_contract_text(text)
-    roles = _unique(match.group(0).lower() for match in ROLE_PATTERN.finditer(normalized))
+    roles = _unique(
+        _canonical_role(match.group(0))
+        for match in ROLE_PATTERN.finditer(normalized)
+    )
     participant_count = _participant_count(normalized)
     acts = [label for label, pattern in ACT_PATTERNS if pattern.search(normalized)]
     # A solo adult actively using an intimate toy is still masturbating even
@@ -477,6 +486,29 @@ def nsfw_scene_contract_issues(
         return []
     candidate = extract_nsfw_scene_contract(final_prompt, content_format=content_format)
     issues: list[str] = []
+    identity_roles = {
+        "woman",
+        "man",
+        "nonbinary person",
+        "non-binary person",
+    }
+    source_roles = set(source.get("participant_roles", [])) & identity_roles
+    candidate_roles = set(candidate.get("participant_roles", [])) & identity_roles
+    for role in sorted(source_roles - candidate_roles):
+        issues.append(f"missing requested adult participant role: {role}")
+    source_count = source.get("participant_count")
+    candidate_count = candidate.get("participant_count")
+    if (
+        isinstance(source_count, int)
+        and source_count > 1
+        and (
+            not isinstance(candidate_count, int)
+            or candidate_count < source_count
+        )
+    ):
+        issues.append(
+            f"missing requested adult participant count: expected {source_count}"
+        )
     candidate_acts = set(candidate.get("acts", []))
     for act in source.get("acts", []):
         if act == "intercourse" and candidate_acts.intersection(

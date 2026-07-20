@@ -1897,90 +1897,21 @@ class PromptCorrectorTests(unittest.TestCase):
 
     def test_compact_maximum_development_repairs_fidelity_then_reexpands(self):
         source = "Exactly two red lanterns hang beside a sealed stone gate at dawn."
-        developed = (
-            "Exactly two red paper lanterns hang beside a sealed stone gate at dawn, their "
-            "warm light defining the threshold against rain-darkened masonry. A lone courier "
-            "in a weathered blue coat pauses in the foreground, one gloved hand hovering over "
-            "the bronze latch while fresh muddy footprints continue beneath the door. Her "
-            "guarded posture shifts into resolve as she notices a torn warning ribbon trapped "
-            "under the lower hinge. Wind presses the coat against her forward-leaning stance "
-            "and drives fine rain across the lantern glass, scattering copper reflections over "
-            "the carved stone. A low three-quarter camera angle makes the paired lanterns the "
-            "dominant frame around her decision, with the nearest footprint sharply focused "
-            "and the empty road dissolving into mist behind her. One lantern swings toward the "
-            "gate while the other remains still, creating a subtle imbalance that suggests "
-            "recent passage. Cold blue dawn fills the distant archway, contrasting with the "
-            "lantern glow on her face, wet leather satchel, and tense fingertips. Displaced "
-            "gravel, dripping ivy, and a thin line of light under the door imply movement "
-            "inside and turn the scene into the instant before she enters."
-        )
-        count_broken = developed.replace(
-            "Exactly two red paper lanterns",
-            "Exactly three red paper lanterns",
-            1,
-        )
-        shallow_fidelity_repair = source
-        responses = [count_broken, shallow_fidelity_repair, developed]
-        temperatures = []
-
-        def fake_completion(**kwargs):
-            temperatures.append(kwargs["temperature"])
-            return responses.pop(0)
-
-        with patch(
-            "krea_prompt_corrector.chat_completion",
-            side_effect=fake_completion,
-        ) as completion:
-            result = corrector.post_chat_completion(
-                base_url="http://127.0.0.1:1234/v1",
-                model="test-4b",
-                prompt=source,
-                temperature=0.25,
-                max_tokens=760,
-                timeout=30,
-                api_key="test",
-                content_format="Single Image",
-                detail_level="Rich caption",
-                output_length="Expanded",
-                risk_level="Creative enhancement",
-                enhance_actions=True,
-                develop_story=True,
-                artistic_detail_freedom=True,
-                altered_text_encoder=False,
-                audit_repair=False,
-            )
-
-        self.assertEqual(completion.call_count, 3)
-        self.assertEqual(temperatures, [0.25, 0.1, 0.25])
-        self.assertEqual(result, developed)
-        self.assertEqual(
-            corrector.creative_development_issues(
-                result,
-                source,
-                output_length="Expanded",
-                risk_level="Creative enhancement",
-                develop_story=True,
-            ),
-            [],
-        )
-
-    def test_compact_maximum_development_reexpands_fidelity_fallback(self):
-        source = "Exactly two red lanterns hang beside a sealed stone gate at dawn."
         continuation = (
-            "Their warm light defines the threshold against rain-darkened masonry. A lone courier "
-            "in a weathered blue coat pauses in the foreground, one gloved hand hovering over "
-            "the bronze latch while fresh muddy footprints continue beneath the door. Her "
-            "guarded posture shifts into resolve as she notices a torn warning ribbon trapped "
-            "under the lower hinge. Wind presses the coat against her forward-leaning stance "
-            "and drives fine rain across the lantern glass, scattering copper reflections over "
-            "the carved stone. A low three-quarter camera angle makes the paired lanterns the "
-            "dominant frame around her decision, with the nearest footprint sharply focused "
-            "and the empty road dissolving into mist behind her. One lantern swings toward the "
-            "gate while the other remains still, creating a subtle imbalance that suggests "
-            "recent passage. Cold blue dawn fills the distant archway, contrasting with the "
-            "lantern glow on her face, wet leather satchel, and tense fingertips. Displaced "
-            "gravel, dripping ivy, and a thin line of light under the door imply movement "
-            "inside and turn the scene into the instant before she enters."
+            "Their warm light defines the threshold against rain-darkened masonry. A lone "
+            "courier in a weathered blue coat pauses in the foreground, one gloved hand "
+            "hovering over the bronze latch while fresh muddy footprints continue beneath "
+            "the door. Her guarded posture shifts into resolve as she notices a torn warning "
+            "ribbon trapped under the lower hinge. Wind presses the coat against her "
+            "forward-leaning stance and drives fine rain across the lantern glass, scattering "
+            "copper reflections over the carved stone. A low three-quarter camera angle makes "
+            "the paired lanterns the dominant frame around her decision, with the nearest "
+            "footprint sharply focused and the empty road dissolving into mist behind her. "
+            "One lantern swings toward the gate while the other remains still, creating a "
+            "subtle imbalance that suggests recent passage. Cold blue dawn fills the distant "
+            "archway, contrasting with the lantern glow on her face, wet leather satchel, and "
+            "tense fingertips. Displaced gravel, dripping ivy, and a thin line of light under "
+            "the door imply movement inside and turn the scene into the instant before she enters."
         )
         developed = corrector.append_creative_continuation(
             source,
@@ -1992,7 +1923,8 @@ class PromptCorrectorTests(unittest.TestCase):
             "Exactly three red lanterns",
             1,
         )
-        responses = [count_broken, count_broken, count_broken, continuation]
+        shallow_fidelity_repair = source
+        responses = [count_broken, shallow_fidelity_repair, continuation]
         temperatures = []
         diagnostics = []
 
@@ -2024,10 +1956,186 @@ class PromptCorrectorTests(unittest.TestCase):
                 diagnostic_callback=diagnostics.append,
             )
 
-        self.assertEqual(completion.call_count, 4)
-        self.assertEqual(temperatures, [0.25, 0.1, 0.1, 0.3])
+        self.assertEqual(completion.call_count, 3)
+        self.assertEqual(temperatures, [0.25, 0.1, 0.3])
         self.assertEqual(result, developed)
-        expansion_messages = completion.call_args_list[3].kwargs["messages"]
+        self.assertFalse(
+            any("Final repair attempt 2/" in message for message in diagnostics)
+        )
+        self.assertTrue(
+            any(
+                "immutable-base creative expansion passed validation"
+                in message.casefold()
+                for message in diagnostics
+            )
+        )
+        self.assertEqual(
+            corrector.creative_development_issues(
+                result,
+                source,
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+            ),
+            [],
+        )
+
+    def test_compact_candidate_mechanically_restores_visible_story_before_audit(self):
+        source = (
+            "A mature adult woman and an adult man stand in a sunny public park "
+            "with a large green sculpture between them."
+        )
+        story = "unconditional acceptance with open body language"
+        candidate = (
+            "A mature adult woman on image-left and an adult man on image-right "
+            "stand in a sunny public park with a large green sculpture between them."
+        )
+        diagnostics: list[str] = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[candidate, candidate],
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                content_format="Single Image",
+                story_elements=story,
+                audit_repair=True,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 2)
+        self.assertIn(story, result)
+        self.assertIn("relaxed shoulders", result)
+        self.assertIn("open palms", result)
+        self.assertFalse(
+            any(
+                "Story element contract" in message
+                for message in diagnostics
+            )
+        )
+        self.assertFalse(
+            any("Final repair attempt" in message for message in diagnostics)
+        )
+
+    def test_compact_maximum_development_legacy_full_rewrite_is_not_retried(self):
+        source = "Exactly two red lanterns hang beside a sealed stone gate at dawn."
+        count_broken = (
+            "Exactly three red lanterns hang beside a sealed stone gate at dawn "
+            "under rain-darkened clouds."
+        )
+        shallow = source
+        continuation = (
+            "Warm reflections cross wet masonry while mist separates the gate from distant "
+            "hills. A low camera emphasizes the paired lanterns, rain beads along ironwork, "
+            "and wind moves torn banners above moss-filled joints. Copper light catches "
+            "puddles, carved stone, and drifting moisture, giving the threshold layered "
+            "depth and a clear visual path toward the sealed entrance."
+        )
+        diagnostics: list[str] = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[count_broken, shallow, continuation],
+        ) as completion:
+            corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.25,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                content_format="Single Image",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                enhance_actions=True,
+                develop_story=True,
+                artistic_detail_freedom=True,
+                altered_text_encoder=False,
+                audit_repair=False,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 3)
+        self.assertTrue(
+            any("Final repair attempt 1/1" in message for message in diagnostics)
+        )
+        self.assertFalse(
+            any("Final repair attempt 2/" in message for message in diagnostics)
+        )
+
+
+    def test_compact_maximum_development_reexpands_fidelity_fallback(self):
+        source = "Exactly two red lanterns hang beside a sealed stone gate at dawn."
+        continuation = (
+            "Their warm light defines the threshold against rain-darkened masonry. A lone courier "
+            "in a weathered blue coat pauses in the foreground, one gloved hand hovering over "
+            "the bronze latch while fresh muddy footprints continue beneath the door. Her "
+            "guarded posture shifts into resolve as she notices a torn warning ribbon trapped "
+            "under the lower hinge. Wind presses the coat against her forward-leaning stance "
+            "and drives fine rain across the lantern glass, scattering copper reflections over "
+            "the carved stone. A low three-quarter camera angle makes the paired lanterns the "
+            "dominant frame around her decision, with the nearest footprint sharply focused "
+            "and the empty road dissolving into mist behind her. One lantern swings toward the "
+            "gate while the other remains still, creating a subtle imbalance that suggests "
+            "recent passage. Cold blue dawn fills the distant archway, contrasting with the "
+            "lantern glow on her face, wet leather satchel, and tense fingertips. Displaced "
+            "gravel, dripping ivy, and a thin line of light under the door imply movement "
+            "inside and turn the scene into the instant before she enters."
+        )
+        developed = corrector.append_creative_continuation(
+            source,
+            continuation,
+            max_added_words=190,
+        )
+        count_broken = developed.replace(
+            "Exactly two red lanterns",
+            "Exactly three red lanterns",
+            1,
+        )
+        responses = [count_broken, count_broken, continuation]
+        temperatures = []
+        diagnostics = []
+
+        def fake_completion(**kwargs):
+            temperatures.append(kwargs["temperature"])
+            return responses.pop(0)
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=fake_completion,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.25,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                content_format="Single Image",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                enhance_actions=True,
+                develop_story=True,
+                artistic_detail_freedom=True,
+                altered_text_encoder=False,
+                audit_repair=False,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 3)
+        self.assertEqual(temperatures, [0.25, 0.1, 0.3])
+        self.assertEqual(result, developed)
+        expansion_messages = completion.call_args_list[2].kwargs["messages"]
         self.assertIn(
             "Return continuation prose only",
             expansion_messages[0]["content"],
@@ -2070,7 +2178,7 @@ class PromptCorrectorTests(unittest.TestCase):
 
         with patch(
             "krea_prompt_corrector.chat_completion",
-            side_effect=[source, source, source, continuation],
+            side_effect=[source, source, continuation],
         ) as completion:
             result = corrector.post_chat_completion(
                 base_url="http://127.0.0.1:1234/v1",
@@ -2091,7 +2199,7 @@ class PromptCorrectorTests(unittest.TestCase):
                 diagnostic_callback=diagnostics.append,
             )
 
-        self.assertEqual(completion.call_count, 4)
+        self.assertEqual(completion.call_count, 3)
         self.assertIn(story, result)
         self.assertEqual(
             corrector.final_compliance_issues(
@@ -2737,6 +2845,109 @@ class PromptCorrectorTests(unittest.TestCase):
             [],
         )
 
+    def test_support_fields_authorize_the_anatomy_they_explicitly_require(self):
+        candidate = (
+            "A mature adult woman on image-left performs oral stimulation on "
+            "an adult partner on image-right's penis."
+        )
+        authorized_source = (
+            "A mature adult woman masturbates with a dildo.\n"
+            "Required concept: blowjob\nWeighted priority: penis in mouth:1.2"
+        )
+        self.assertEqual(
+            corrector.unrequested_gender_trait_issues(
+                candidate,
+                authorized_source,
+            ),
+            [],
+        )
+
+    def test_support_implied_partner_gets_adult_role_and_position_binding(self):
+        source = (
+            "A mature adult woman masturbates with a large green dildo in a "
+            "sunny public park."
+        )
+        support = "blowjob:1.3, penis in mouth:1.2"
+        instruction = corrector.explicit_support_participant_contract(
+            source,
+            support,
+        )
+        self.assertIn("exactly one adult partner", instruction)
+        self.assertIn("image-left", instruction)
+        self.assertIn("image-right", instruction)
+
+        fallback = corrector.apply_explicit_support_participant_contract(
+            source,
+            source,
+            support,
+        )
+        self.assertEqual(corrector.minor_sexual_content_issues(fallback), [])
+        self.assertEqual(corrector.multi_person_role_issues(fallback), [])
+        self.assertIn("visible mouth-to-penis contact", fallback)
+
+    def test_support_implied_oral_act_rejects_actor_receiver_reversal(self):
+        source = "A mature adult woman masturbates with a green dildo."
+        support = "blowjob:1.3, penis in mouth:1.2"
+        reversed_roles = (
+            "A mature adult woman on image-left uses a green dildo while an "
+            "adult man on image-right leans forward, his tongue stimulating his "
+            "own penis inside her mouth."
+        )
+        issues = corrector.explicit_support_participant_issues(
+            reversed_roles,
+            source,
+            support,
+        )
+        self.assertEqual(len(issues), 1)
+        self.assertTrue(corrector.is_hard_compliance_issue(issues[0]))
+
+        correctly_bound = (
+            "A mature adult woman on image-left performs oral stimulation on "
+            "an adult partner on image-right's penis with visible mouth-to-penis contact."
+        )
+        self.assertEqual(
+            corrector.explicit_support_participant_issues(
+                correctly_bound,
+                source,
+                support,
+            ),
+            [],
+        )
+
+    def test_explicit_translation_repairs_singular_self_reference_and_genital_grammar(self):
+        translated = corrector.translate_explicit_adult_language(
+            "A mature adult woman masturbating while pushing it inside her hot and pussy."
+        )
+        self.assertIn("her own genitals", translated)
+        self.assertNotIn("their own genitals", translated)
+        self.assertIn("her hot vulva", translated)
+        self.assertEqual(corrector.explicit_adult_grammar_issues(translated), [])
+
+    def test_deterministic_fallback_preserves_blank_line_separated_source(self):
+        source = (
+            "A mature adult woman masturbates with a green dildo.\n\n"
+            "She pushes it inside her wet vulva with both hands.\n\n"
+            "She kneels in a sunny public park."
+        )
+        fallback = corrector.deterministic_fidelity_fallback(
+            source,
+            concept_keywords="blowjob",
+            weighted_terms="penis in mouth:1.2",
+        )
+        self.assertIn("wet vulva", fallback)
+        self.assertIn("both hands", fallback)
+        self.assertIn("sunny public park", fallback)
+        self.assertIn("adult partner", fallback)
+
+    def test_explicit_solo_source_does_not_gain_support_implied_partner(self):
+        self.assertEqual(
+            corrector.explicit_support_participant_contract(
+                "A solo mature adult woman masturbates with a dildo.",
+                "blowjob:1.3, penis in mouth:1.2",
+            ),
+            "",
+        )
+
     def test_transgender_source_does_not_apply_binary_anatomy_assumption(self):
         self.assertEqual(
             corrector.unrequested_gender_trait_issues(
@@ -2978,6 +3189,70 @@ class PromptCorrectorTests(unittest.TestCase):
                 "Final repair attempt 1/1 is addressing" in message
                 for message in diagnostics
             )
+        )
+
+    def test_reported_explicit_failure_uses_clean_validated_fallback_and_logs_selection(self):
+        source = (
+            "a mature adult woman genital stimulation, kneeing, with a big, thick, "
+            "knotty, green dildo sex toy. she forces the dildo inside her hot and wet "
+            "vulva, with painful force, with both hands holding the base riding it. "
+            "she have trouble pushing it in because its so big. she looks at the camera, "
+            "smiling with lust. set in public park, mid day sunny. while she is riding "
+            "the dildo she blowjob's a mans. penis in mouth."
+        )
+        story = "unconditional acceptance with open body language"
+        rejected = (
+            "A mature adult woman kneels in a sunny public park while posing beside "
+            "a green object."
+        )
+        diagnostics: list[str] = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[rejected, rejected, rejected],
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                concept_keywords="blowjob, dildo fucking",
+                weighted_terms="blowjob:1.3, dildo fucking:1.75",
+                story_elements=story,
+                explicit_nsfw=True,
+                audit_repair=True,
+                content_format="Single Image",
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 3)
+        self.assertIn("kneeling", result)
+        self.assertIn("she has trouble", result)
+        self.assertIn("because it is so big", result)
+        self.assertIn("the penis of an adult man", result)
+        self.assertIn("visible mouth-to-penis contact", result)
+        self.assertIn("relaxed shoulders", result)
+        self.assertIn("open posture", result)
+        self.assertNotIn("open palms", result)
+        self.assertEqual(corrector.explicit_adult_grammar_issues(result), [])
+        self.assertEqual(
+            corrector.final_compliance_issues(
+                result,
+                original_prompt=source,
+                concept_keywords="blowjob, dildo fucking",
+                weighted_terms="blowjob:1.3, dildo fucking:1.75",
+                story_elements=story,
+                explicit_nsfw=True,
+                content_format="Single Image",
+            ),
+            [],
+        )
+        self.assertIn(
+            "Deterministic fidelity fallback passed validation and was selected.",
+            diagnostics,
         )
 
     def test_post_completion_reports_optional_audit_failure_and_continues(self):
@@ -3470,6 +3745,127 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("pre-ejaculate fluid", translated)
         self.assertNotIn("woman woman", translated)
         self.assertEqual(corrector.explicit_adult_language_terms(translated), [])
+
+    def test_explicit_adult_pipeline_repairs_malformed_possessive_action_grammar(self):
+        source = (
+            "A mature adult woman, kneeing beside a large dildo. "
+            "She have trouble because its so large while she blowjob's a mans. "
+            "penis in mouth."
+        )
+
+        translated = corrector.translate_explicit_adult_language(
+            corrector.normalize_concept_text(source)
+        )
+
+        self.assertIn("kneeling", translated)
+        self.assertIn("She has trouble because it is so large", translated)
+        self.assertIn(
+            "she performs oral stimulation on the penis of an adult man "
+            "with visible mouth-to-penis contact",
+            translated,
+        )
+        self.assertNotIn("penis's", translated)
+        self.assertNotIn("a mans", translated)
+        self.assertEqual(corrector.explicit_adult_grammar_issues(translated), [])
+        self.assertEqual(
+            corrector.translate_explicit_adult_language(translated),
+            translated,
+        )
+
+    def test_explicit_adult_pipeline_repairs_similar_manual_action_grammar(self):
+        source = "She handjob's a mans penis while they has a steady pose."
+
+        translated = corrector.translate_explicit_adult_language(source)
+
+        self.assertEqual(
+            translated,
+            (
+                "She manually stimulates the penis of an adult man with visible "
+                "hand-to-penis contact while they have a steady pose."
+            ),
+        )
+        self.assertEqual(corrector.explicit_adult_grammar_issues(translated), [])
+
+    def test_explicit_adult_pipeline_repairs_actor_to_recipient_variants(self):
+        cases = {
+            "She blowjobs a man.": (
+                "She performs oral stimulation on the penis of an adult man "
+                "with visible mouth-to-penis contact."
+            ),
+            "She gives a blowjob to an adult man.": (
+                "She performs oral stimulation on the penis of an adult man "
+                "with visible mouth-to-penis contact."
+            ),
+            "An adult woman blowjob's an adult man.": (
+                "An adult woman performs oral stimulation on the penis of an adult man "
+                "with visible mouth-to-penis contact."
+            ),
+            "He gives a handjob to an adult man.": (
+                "He manually stimulates the penis of an adult man with visible "
+                "hand-to-penis contact."
+            ),
+        }
+
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                translated = corrector.translate_explicit_adult_language(source)
+                self.assertEqual(translated, expected)
+                self.assertEqual(
+                    corrector.explicit_adult_grammar_issues(translated),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.translate_explicit_adult_language(translated),
+                    translated,
+                )
+
+    def test_explicit_adult_pipeline_keeps_possessive_quality_on_the_action(self):
+        cases = {
+            "The blowjob's rhythm is steady.": (
+                "the rhythm of the oral stimulation of the penis is steady."
+            ),
+            "Her handjob's pace is slow.": (
+                "the pace of her manual stimulation of the penis is slow."
+            ),
+            "The fellatio's framing is clear.": (
+                "the framing of the oral stimulation of the penis is clear."
+            ),
+            "The masturbation's intensity rises.": (
+                "the intensity of the self-stimulation of the genitals rises."
+            ),
+        }
+
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                translated = corrector.translate_explicit_adult_language(source)
+                self.assertEqual(translated.casefold(), expected.casefold())
+                self.assertNotRegex(
+                    translated,
+                    r"(?i)\b(?:penis|vulva|anus|genitals)['’]s\b",
+                )
+                self.assertEqual(
+                    corrector.explicit_adult_grammar_issues(translated),
+                    [],
+                )
+                self.assertEqual(
+                    corrector.translate_explicit_adult_language(translated),
+                    translated,
+                )
+
+    def test_explicit_adult_malformed_grammar_is_a_hard_contract(self):
+        issues = corrector.final_compliance_issues(
+            "An adult woman she oral stimulation of the penis's a man.",
+            original_prompt="An adult woman performs oral sex on an adult man.",
+            explicit_nsfw=True,
+            output_length="Concise",
+        )
+
+        grammar_issue = next(
+            issue
+            for issue in issues
+            if issue.startswith("Explicit adult grammar contract")
+        )
+        self.assertTrue(corrector.is_hard_compliance_issue(grammar_issue))
 
     def test_explicit_adult_language_preserves_quoted_rendered_text(self):
         prompt = 'A mature adult woman beside a sign reading "MILF pussy hammer".'
@@ -6164,6 +6560,246 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("medieval armor, brutalist architecture", user_message)
         self.assertIn("If any are missing, add them", user_message)
 
+    def test_compact_audit_receives_normalized_candidate_and_complete_contract(self):
+        source = "A courier reaches a flooded city gate."
+        initial = "A courier reaches a flooded city gate\u2014holding a brass satchel."
+        calls = []
+
+        def complete(**kwargs):
+            calls.append(kwargs["messages"])
+            return initial
+
+        with patch("krea_prompt_corrector.chat_completion", side_effect=complete):
+            corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                visual_direction="Muted watercolor and cool moonlight",
+                goal_headline="Deliver medicine through the flood",
+                focus="the brass satchel",
+                concept_keywords="Art Nouveau ironwork",
+                weighted_terms="brass satchel:1.5",
+                story_elements="The courier keeps the medicine dry.",
+                private_model_instructions="Blend watercolor at 70 percent.",
+                generation_feedback="Make the flood visibly more dangerous.",
+                research_context="Verified ironwork uses flowing organic curves.",
+                image_context="Allowed concept facts: oxidized brass fittings.",
+                concept_context="Concept glossary: botanical linework.",
+                mode="Surrealist",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                prompt_preset="Cinematic action",
+                audit_repair=True,
+                final_gate_repair=False,
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn(
+            "Muted watercolor and cool moonlight",
+            calls[0][1]["content"],
+        )
+        audit_user = calls[1][1]["content"]
+        self.assertIn("Current mechanically normalized candidate", audit_user)
+        self.assertIn("city gate, holding", audit_user)
+        self.assertNotIn("city gate\u2014holding", audit_user)
+        for expected in (
+            "Muted watercolor and cool moonlight",
+            "Deliver medicine through the flood",
+            "the brass satchel",
+            "Art Nouveau ironwork",
+            "brass satchel:1.5",
+            "The courier keeps the medicine dry.",
+            "Blend watercolor at 70 percent.",
+            "Make the flood visibly more dangerous.",
+            "flowing organic curves",
+            "oxidized brass fittings",
+            "botanical linework",
+            "mode=Surrealist",
+            "detail=Rich caption",
+            "risk=Creative enhancement",
+            "preset=Cinematic action",
+        ):
+            self.assertIn(expected, audit_user)
+
+    def test_full_audit_receives_support_context_and_correction_controls(self):
+        source = "A red car beneath rainy streetlights."
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[source, source],
+        ) as completion:
+            corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-8b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                visual_direction="Deadpan flash photography",
+                goal_headline="A lonely late-night arrival",
+                focus="wet red paint",
+                model_instructions="Keep the camera low.",
+                research_context="Verified wet asphalt creates broad reflections.",
+                image_context="Allowed concept facts: hard frontal flash.",
+                concept_context="Concept glossary: sodium-vapor amber.",
+                mode="Cinematic",
+                risk_level="Strict cleanup",
+                audit_repair=True,
+                final_gate_repair=False,
+            )
+
+        audit_user = completion.call_args_list[1].kwargs["messages"][1]["content"]
+        for expected in (
+            "Deadpan flash photography",
+            "A lonely late-night arrival",
+            "wet red paint",
+            "Keep the camera low.",
+            "broad reflections",
+            "hard frontal flash",
+            "sodium-vapor amber",
+            "Mode: Cinematic",
+            "Rewrite risk: Strict cleanup",
+        ):
+            self.assertIn(expected, audit_user)
+
+    def test_meme_model_contract_receives_shared_controls_and_safety(self):
+        messages = corrector.build_meme_generation_messages(
+            prompt="A cat stares at a broken printer.",
+            generator_target="Krea 2",
+            variation_count=2,
+            safe_for_work=True,
+            mode="Surrealist",
+            visual_direction="Deadpan flash photography",
+            detail_level="Rich caption",
+            output_length="Expanded",
+            output_min_words=40,
+            output_max_words=90,
+            risk_level="Creative enhancement",
+            prompt_preset="Cinematic action",
+            preserve_strictly=True,
+            fix_logic=False,
+            enhance_actions=True,
+            develop_story=False,
+            clean_constraints=False,
+            altered_text_encoder=False,
+            thinking_mode=True,
+        )
+
+        system = messages[0]["content"]
+        for expected in (
+            "Safe-for-work output is mandatory",
+            "Required visual mode: Surrealist",
+            "Required visual direction: Deadpan flash photography",
+            "detail=Rich caption",
+            "output length=Expanded",
+            "between 40 and 90 words",
+            "rewrite risk=Creative enhancement",
+            "prompt preset=Cinematic action",
+            "Preserve source wording strictly=True",
+            "fix logic=False",
+            "enhance actions=True",
+            "develop supporting story context=False",
+            "clean generator constraints=False",
+            "altered encoder safe=False",
+            "reason internally",
+            "Variation 1: through Variation 2:",
+        ):
+            self.assertIn(expected, system)
+
+    def test_main_completion_forwards_shared_controls_to_meme_pipeline(self):
+        with patch(
+            "krea_prompt_corrector.post_meme_completion",
+            return_value="finished meme",
+        ) as meme_completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt='A cat meme with top caption "MONDAY".',
+                generator_target="Krea 2",
+                content_format="Meme",
+                temperature=0.35,
+                max_tokens=500,
+                timeout=30,
+                api_key="test",
+                mode="Surrealist",
+                visual_direction="Deadpan flash photography",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                output_min_words=40,
+                output_max_words=90,
+                risk_level="Creative enhancement",
+                prompt_preset="Cinematic action",
+                preserve_strictly=True,
+                fix_logic=False,
+                enhance_actions=True,
+                develop_story=False,
+                clean_constraints=False,
+                altered_text_encoder=False,
+                thinking_mode=True,
+                safe_for_work=True,
+            )
+
+        self.assertEqual(result, "finished meme")
+        forwarded = meme_completion.call_args.kwargs
+        for key, expected in (
+            ("mode", "Surrealist"),
+            ("visual_direction", "Deadpan flash photography"),
+            ("detail_level", "Rich caption"),
+            ("output_length", "Expanded"),
+            ("output_min_words", 40),
+            ("output_max_words", 90),
+            ("risk_level", "Creative enhancement"),
+            ("prompt_preset", "Cinematic action"),
+            ("preserve_strictly", True),
+            ("fix_logic", False),
+            ("enhance_actions", True),
+            ("develop_story", False),
+            ("clean_constraints", False),
+            ("altered_text_encoder", False),
+            ("thinking_mode", True),
+            ("safe_for_work", True),
+        ):
+            self.assertEqual(forwarded[key], expected)
+
+    def test_knowledge_probe_receives_all_visual_support_fields(self):
+        messages = corrector.build_model_knowledge_probe_messages(
+            "A courier reaches a flooded gate.",
+            concept_keywords="Art Nouveau ironwork",
+            story_elements="The courier keeps medicine dry.",
+            weighted_terms="brass satchel:1.5",
+            goal_headline="A hopeful delivery",
+            focus="the medicine satchel",
+            model_instructions="Use historically accurate gate hardware.",
+        )
+
+        user = messages[1]["content"]
+        for expected in (
+            "Art Nouveau ironwork",
+            "The courier keeps medicine dry.",
+            "brass satchel:1.5",
+            "A hopeful delivery",
+            "the medicine satchel",
+            "historically accurate gate hardware",
+        ):
+            self.assertIn(expected, user)
+
+    def test_support_fields_authorize_their_writing_system_during_validation(self):
+        issues = corrector.final_compliance_issues(
+            "A storefront sign displays the exact Japanese word \u5e0c\u671b.",
+            original_prompt="A storefront sign.",
+            concept_keywords="\u5e0c\u671b",
+            output_length="Concise",
+        )
+
+        self.assertFalse(
+            any("Unexpected writing system" in issue for issue in issues)
+        )
+
     def test_extract_repaired_prompt_returns_only_final_prompt(self):
         audit_response = (
             "Audit score: 88/100\n"
@@ -7238,6 +7874,205 @@ class PromptCorrectorTests(unittest.TestCase):
             "exactly 6 clearly separated panel regions",
             corrector.resolve_comic_layout("Asymmetric cinematic panels", 6),
         )
+
+    def test_requested_medium_is_a_hard_contract_in_every_profile(self):
+        source = "A photograph of a red ceramic cup on a white table."
+        issues = corrector.requested_medium_issues(
+            "A digital painting of a red ceramic cup on a white table.",
+            source,
+        )
+        self.assertTrue(
+            any(issue.startswith("Requested medium missing or changed") for issue in issues)
+        )
+        self.assertTrue(all(corrector.is_hard_compliance_issue(issue) for issue in issues))
+        self.assertEqual(
+            corrector.requested_medium_issues(
+                "A close-up photograph of a red ceramic cup on a white table.",
+                source,
+            ),
+            [],
+        )
+
+    def test_open_palms_conflict_with_two_occupied_hands(self):
+        conflict = (
+            "A woman grips the base with both hands while keeping open palms "
+            "and relaxed shoulders."
+        )
+        issues = corrector.hand_use_contradiction_issues(conflict)
+        self.assertEqual(len(issues), 1)
+        self.assertTrue(corrector.is_hard_compliance_issue(issues[0]))
+        self.assertEqual(
+            corrector.hand_use_contradiction_issues(
+                "A woman grips the base with both hands, with relaxed shoulders "
+                "and an open posture."
+            ),
+            [],
+        )
+
+    def test_medium_detection_does_not_treat_an_action_as_an_art_medium(self):
+        self.assertEqual(
+            corrector.requested_medium_families(
+                "A samurai drawing a sword beneath a cedar tree."
+            ),
+            set(),
+        )
+
+    def test_krea_official_rejects_only_high_confidence_main_additions(self):
+        source = "A rainy alley at night with wet pavement and blue reflections."
+        hard_additions = corrector.krea_official_addition_issues(
+            "A rainy alley at night where a dog stands beside a motorcycle.",
+            source,
+        )
+        self.assertTrue(any("animal subject" in issue for issue in hard_additions))
+        self.assertTrue(any("vehicle" in issue for issue in hard_additions))
+        self.assertTrue(
+            all(
+                corrector.is_hard_compliance_issue(issue)
+                for issue in hard_additions
+            )
+        )
+
+        decorative = corrector.krea_official_addition_issues(
+            "A rainy alley at night with wet pavement, blue reflections, and lanterns.",
+            source,
+        )
+        self.assertEqual(len(decorative), 1)
+        self.assertIn("advisory", decorative[0])
+        self.assertFalse(corrector.is_hard_compliance_issue(decorative[0]))
+
+    def test_krea_official_allows_implied_or_explicitly_authorized_objects(self):
+        self.assertEqual(
+            corrector.krea_official_addition_issues(
+                "A samurai grips a sword beneath a cedar tree.",
+                "A samurai beneath a cedar tree.",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.krea_official_addition_issues(
+                "A rainy alley with a dog under blue reflections.",
+                "A rainy alley. Required concept: dog.",
+            ),
+            [],
+        )
+
+    def test_krea_official_lightly_polishes_already_detailed_prompts(self):
+        source = (
+            "A cinematic photograph of a matte black designer toy standing at the "
+            "center of a brushed steel table, seen in a low-angle medium shot. Soft "
+            "window light enters from the left, forming a narrow rim light around its "
+            "rounded silhouette. The background remains charcoal gray with shallow "
+            "depth of field, subtle reflections, restrained contrast, and a precise "
+            "monochrome palette. Fine vinyl texture is visible across the face and arms."
+        )
+        self.assertTrue(corrector.prompt_is_already_detailed(source))
+        expanded = source + " " + " ".join(
+            [
+                "Additional",
+                "atmospheric",
+                "cinematic",
+                "luxurious",
+                "dramatic",
+                "polished",
+                "editorial",
+                "gallery",
+                "studio",
+                "premium",
+                "expressive",
+                "layered",
+                "intricate",
+                "ornamental",
+                "glowing",
+                "volumetric",
+                "ethereal",
+                "majestic",
+                "surreal",
+                "dynamic",
+                "immersive",
+                "spectacular",
+                "elaborate",
+                "vivid",
+                "textured",
+            ]
+        ) + "."
+        issues = corrector.krea_official_compliance_issues(
+            expanded,
+            original_prompt=source,
+            source_context=source,
+        )
+        self.assertTrue(
+            any(issue.startswith("Krea Official detailed-input contract") for issue in issues)
+        )
+
+    def test_krea_guideline_status_labels_compliance_extensions_and_exception(self):
+        common = {
+            "generator_target": "Krea 2",
+            "content_format": "Single Image",
+            "variation_count": 1,
+            "risk_level": "Strict cleanup",
+            "preserve_strictly": True,
+            "enhance_actions": False,
+            "develop_story": False,
+            "artistic_detail_freedom": False,
+            "safe_for_work": True,
+            "explicit_nsfw": False,
+        }
+        self.assertIn(
+            "Krea Official compliant",
+            corrector.krea_guideline_status(
+                workflow_profile="Krea Official", **common
+            ),
+        )
+        self.assertIn(
+            "creative extension",
+            corrector.krea_guideline_status(
+                workflow_profile="Explore", **common
+            ),
+        )
+        explicit = dict(common)
+        explicit["safe_for_work"] = False
+        explicit["explicit_nsfw"] = True
+        self.assertIn(
+            "Explicit-mode exception",
+            corrector.krea_guideline_status(
+                workflow_profile="Krea Official", **explicit
+            ),
+        )
+
+    def test_krea_official_contract_reaches_the_model(self):
+        source = (
+            "A watercolor painting of a red lighthouse above a gray sea, with "
+            "soft morning light and a centered composition."
+        )
+        with patch.object(
+            corrector,
+            "chat_completion",
+            return_value=source,
+        ) as mocked_completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="large-test-model",
+                prompt=source,
+                generator_target="Krea 2",
+                content_format="Single Image",
+                temperature=0.1,
+                max_tokens=512,
+                timeout=10,
+                api_key="lm-studio",
+                risk_level="Strict cleanup",
+                preserve_strictly=True,
+                develop_story=False,
+                safe_for_work=True,
+                audit_repair=False,
+                final_gate_repair=False,
+                krea_official=True,
+            )
+
+        sent_messages = mocked_completion.call_args.kwargs["messages"]
+        sent_text = "\n".join(message["content"] for message in sent_messages)
+        self.assertIn("Krea Official expansion contract", sent_text)
+        self.assertIn("Do not add a new subject, object, prop", sent_text)
+        self.assertIn("watercolor painting", result)
 
 
 if __name__ == "__main__":

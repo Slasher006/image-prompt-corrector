@@ -52,6 +52,31 @@ class NsfwSceneContractTests(unittest.TestCase):
             [],
         )
 
+    def test_malformed_possessive_role_still_preserves_second_adult(self):
+        source = "A mature adult woman performs a blowjob on a mans penis."
+        candidate = (
+            "A mature adult woman performs oral stimulation on the penis of an "
+            "adult man with visible mouth-to-penis contact."
+        )
+        missing_man = (
+            "A mature adult woman performs oral stimulation with visible "
+            "mouth-to-penis contact."
+        )
+
+        source_contract = extract_nsfw_scene_contract(source)
+        self.assertEqual(source_contract["participant_count"], 2)
+        self.assertEqual(
+            set(source_contract["participant_roles"]),
+            {"woman", "man"},
+        )
+        self.assertEqual(nsfw_scene_contract_issues(candidate, source), [])
+        self.assertTrue(
+            any(
+                "missing requested adult participant role: man" in issue
+                for issue in nsfw_scene_contract_issues(missing_man, source)
+            )
+        )
+
     def test_extracts_participants_act_target_object_phase_and_direction(self):
         contract = extract_nsfw_scene_contract(
             "Two adult partners: the adult woman kisses the adult man while using "

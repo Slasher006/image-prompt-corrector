@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -97,6 +98,7 @@ from krea_prompt_corrector import (
     format_generator_recommendation,
     list_lm_studio_models,
     is_small_model,
+    krea_guideline_status,
     normalize_all_comic_panel_suggestions,
     normalize_invent_candidate,
     preserve_invent_seed_value,
@@ -167,7 +169,7 @@ from visual_direction_presets import (
 from nsfw_scene_contract import nsfw_preset_compatibility_issues
 from workbench_gui import PromptWorkbench
 
-WORKFLOW_PROFILES = ("Exact", "Improve", "Explore")
+WORKFLOW_PROFILES = ("Exact", "Krea Official", "Improve", "Explore")
 DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188"
 COMFYUI_BRIDGE_WORKSPACES = (
     "Prompt Corrector",
@@ -1121,6 +1123,46 @@ class QtTextEdit(QTextEdit):
     increase_weight_callback = None
     decrease_weight_callback = None
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._input_clear_button: QToolButton | None = None
+
+    def enable_clear_button(self) -> QToolButton:
+        if self._input_clear_button is None:
+            button = QToolButton(self)
+            button.setObjectName("inputClearButton")
+            button.setAccessibleName("Clear input")
+            button.setText("×")
+            button.setFixedSize(22, 22)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(
+                ui_tooltip(
+                    "Clear this input and any Library selections linked to it.",
+                    "Use before entering a different value.",
+                )
+            )
+            button.clicked.connect(self.clear)
+            self.textChanged.connect(self._sync_clear_button)
+            self._input_clear_button = button
+            self.setViewportMargins(0, 0, 26, 0)
+            button.raise_()
+        self._sync_clear_button()
+        return self._input_clear_button
+
+    def _sync_clear_button(self) -> None:
+        if self._input_clear_button is not None:
+            self._input_clear_button.setVisible(
+                not self.isReadOnly() and bool(self.toPlainText())
+            )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._input_clear_button is not None:
+            self._input_clear_button.move(
+                max(0, self.width() - self._input_clear_button.width() - 4),
+                4,
+            )
+
     def get(self, _start: str, _end: str) -> str:
         return self.toPlainText()
 
@@ -1175,7 +1217,7 @@ class QtWeightedLineEdit(QLineEdit):
         super().keyPressEvent(event)
 
 
-class ChatInputEdit(QTextEdit):
+class ChatInputEdit(QtTextEdit):
     send_requested = Signal()
 
     def keyPressEvent(self, event) -> None:
@@ -1420,6 +1462,7 @@ class PromptCorrectorApp:
         self.visual_preset_buttons: dict[str, QtButton] = {}
         self.concept_preset_buttons: dict[str, QtButton] = {}
         self.narrative_preset_buttons: dict[str, QtButton] = {}
+        self.input_widgets: dict[Value, QWidget] = {}
         self.invent_recall_buttons: dict[str, QtButton] = {}
         self.invent_recall_values: dict[str, str] = {}
         self.invent_recall_groups: dict[str, dict[str, str]] = {}
@@ -2054,7 +2097,33 @@ class PromptCorrectorApp:
 
     def _apply_workflow_profile(self, profile: object) -> None:
         profile = str(profile)
-        if profile == "Exact":
+        if profile == "Krea Official":
+            values = {
+                self.generator_target_var: "Krea 2",
+                self.content_format_var: "Single Image",
+                self.risk_level_var: "Strict cleanup",
+                self.preserve_var: True,
+                self.quote_text_var: True,
+                self.fix_logic_var: True,
+                self.enhance_actions_var: False,
+                self.develop_story_var: False,
+                self.artistic_detail_freedom_var: False,
+                self.clean_constraints_var: True,
+                self.thinking_mode_var: False,
+                self.live_research_var: False,
+                self.reference_images_var: False,
+                self.audit_repair_var: True,
+                self.safe_for_work_var: True,
+                self.explicit_nsfw_var: False,
+                self.variation_var: 1,
+                self.creativity_var: "raw",
+                self.temperature_var: 0.1,
+                self.detail_var: "Balanced",
+                self.output_length_var: "Balanced",
+                self.context_token_budget_var: CONTEXT_TOKEN_AUTO_LABEL,
+                self.include_settings_var: True,
+            }
+        elif profile == "Exact":
             values = {
                 self.risk_level_var: "Strict cleanup",
                 self.preserve_var: True,
@@ -2744,19 +2813,75 @@ class PromptCorrectorApp:
     def _bind_line(self, variable: Value, *, read_only: bool = False) -> QLineEdit:
         widget = QLineEdit(str(variable.get()))
         widget.setReadOnly(read_only)
+        widget.setClearButtonEnabled(not read_only)
         if not read_only:
             widget.textChanged.connect(variable.set)
+            variable.subscribe(
+                lambda value, target=variable:
+                self._clear_linked_library_selections(target)
+                if not str(value).strip()
+                else None
+            )
         variable.subscribe(lambda value, w=widget: self._set_line_value(w, value))
+        self.input_widgets[variable] = widget
         return widget
 
     def _bind_text(self, variable: Value, *, maximum_height: int | None = None) -> QtTextEdit:
         widget = QtTextEdit()
         widget.setPlainText(str(variable.get()))
+        widget.enable_clear_button()
         if maximum_height is not None:
             widget.setMaximumHeight(maximum_height)
         widget.textChanged.connect(lambda w=widget, v=variable: v.set(w.toPlainText()))
+        variable.subscribe(
+            lambda value, target=variable:
+            self._clear_linked_library_selections(target)
+            if not str(value).strip()
+            else None
+        )
         variable.subscribe(lambda value, w=widget: self._set_text_value(w, value))
+        self.input_widgets[variable] = widget
         return widget
+
+    def _clear_linked_library_selections(self, variable: Value) -> None:
+        """Clear picker state when its visible destination field is cleared."""
+
+        changed = False
+        if variable is self.concepts_var:
+            changed = bool(self.concept_preset_selections["prompt"])
+            self.concept_preset_selections["prompt"] = []
+        elif variable is self.comic_concepts_var:
+            changed = bool(self.concept_preset_selections["comic"])
+            self.concept_preset_selections["comic"] = []
+        elif variable is self.visual_direction_var:
+            changed = bool(self.visual_preset_selections["prompt"])
+            self.visual_preset_selections["prompt"] = []
+        elif variable is self.comic_visual_direction_var:
+            changed = bool(self.visual_preset_selections["comic"])
+            self.visual_preset_selections["comic"] = []
+        elif variable is self.meme_visual_direction_var:
+            changed = bool(self.visual_preset_selections["meme"])
+            self.visual_preset_selections["meme"] = []
+        elif variable is self.story_elements_var:
+            changed = any(self.narrative_preset_selections["prompt"].values())
+            self.narrative_preset_selections["prompt"] = {
+                "action": [],
+                "emotion": [],
+            }
+        elif variable is self.comic_premise_var:
+            changed = any(self.narrative_preset_selections["comic"].values())
+            self.narrative_preset_selections["comic"] = {
+                "action": [],
+                "emotion": [],
+            }
+        elif variable is self.meme_scene_var:
+            changed = any(self.narrative_preset_selections["meme"].values())
+            self.narrative_preset_selections["meme"] = {
+                "action": [],
+                "emotion": [],
+            }
+        if changed:
+            QTimer.singleShot(0, self._save_settings)
 
     @staticmethod
     def _set_help(widget: QWidget, description: str, example: str):
@@ -2862,8 +2987,10 @@ class PromptCorrectorApp:
             self._increase_weighted_term,
             self._decrease_weighted_term,
         )
+        widget.setClearButtonEnabled(True)
         widget.textChanged.connect(self.weighted_terms_var.set)
         self.weighted_terms_var.subscribe(lambda value, w=widget: self._set_line_value(w, value))
+        self.input_widgets[self.weighted_terms_var] = widget
         return widget
 
     @staticmethod
@@ -2881,6 +3008,8 @@ class PromptCorrectorApp:
             widget.blockSignals(True)
             widget.setPlainText(text)
             widget.blockSignals(False)
+        if isinstance(widget, QtTextEdit):
+            widget._sync_clear_button()
 
     def _bind_combo(self, variable: Value, choices, *, editable: bool = False) -> QtComboBox:
         widget = QtComboBox()
@@ -2892,6 +3021,8 @@ class PromptCorrectorApp:
         )
         widget.addItems(list(choices))
         widget.setCurrentText(str(variable.get()))
+        if editable and widget.lineEdit() is not None:
+            widget.lineEdit().setClearButtonEnabled(True)
         widget.currentTextChanged.connect(variable.set)
         variable.subscribe(lambda value, w=widget: self._set_combo_value(w, value))
         return widget
@@ -2981,6 +3112,7 @@ class PromptCorrectorApp:
         filters.addWidget(category_combo)
         filters.addWidget(QLabel("Search"))
         search_entry = QLineEdit()
+        search_entry.setClearButtonEnabled(True)
         search_entry.setPlaceholderText(
             "Search watercolor, courier, moonlight, Art Nouveau, texture…"
         )
@@ -3183,6 +3315,7 @@ class PromptCorrectorApp:
             name = parsed[row][0] if row < len(parsed) else ""
             share = parsed[row][1] if row < len(parsed) else (50 if not parsed and row < 2 else 0)
             edit = QLineEdit(name)
+            edit.setClearButtonEnabled(True)
             edit.setObjectName(f"mixIngredient{row + 1}")
             edit.setPlaceholderText("e.g. Art Nouveau")
             spin = QSpinBox()
@@ -3406,6 +3539,7 @@ class PromptCorrectorApp:
         filters.addWidget(category_combo)
         filters.addWidget(QLabel("Search"))
         search_entry = QLineEdit()
+        search_entry.setClearButtonEnabled(True)
         search_entry.setPlaceholderText(
             "Search rescue, opening, running, repair, discovery…"
             if kind == "action"
@@ -3672,6 +3806,7 @@ class PromptCorrectorApp:
         filters.addWidget(category_combo)
         filters.addWidget(QLabel("Search"))
         search_entry = QLineEdit()
+        search_entry.setClearButtonEnabled(True)
         search_entry.setPlaceholderText(
             "Search courier, dragon, observatory, reunion, symbolism…"
         )
@@ -3923,6 +4058,7 @@ class PromptCorrectorApp:
         filters.addWidget(category_combo)
         filters.addWidget(QLabel("Search"))
         search_entry = QLineEdit()
+        search_entry.setClearButtonEnabled(True)
         search_entry.setPlaceholderText("Search lighting, fog, nostalgic, texture, noir…")
         self._set_help(
             search_entry,
@@ -4484,8 +4620,9 @@ class PromptCorrectorApp:
         profile_combo = self._bind_combo(self.workflow_profile_var, WORKFLOW_PROFILES)
         self._set_help(
             profile_combo,
-            "Exact preserves every stated fact; Improve adds restrained polish; Explore permits invention.",
-            "Choose Exact when the selected generator should follow the request as closely as possible.",
+            "Krea Official follows Krea's published expansion contract; Exact preserves every stated fact; "
+            "Improve adds restrained polish; Explore permits invention.",
+            "Choose Krea Official for one faithful, natural-language Krea 2 paragraph with no unsupported additions.",
         )
         quick.addWidget(profile_combo)
         self.camera_label = QLabel("Camera")
@@ -4933,6 +5070,7 @@ class PromptCorrectorApp:
         )
         draft_layout.addLayout(draft_invent_row)
         self.draft_text = QtTextEdit()
+        self.draft_text.enable_clear_button()
         self.draft_text.setPlaceholderText("Paste or type a rough image prompt…")
         self._help(self.draft_text, "Your prompt")
         self.draft_text.textChanged.connect(self._on_draft_modified)
@@ -6068,6 +6206,7 @@ class PromptCorrectorApp:
         composer_group = QGroupBox("Message")
         composer_layout = QVBoxLayout(composer_group)
         self.chat_input = ChatInputEdit()
+        self.chat_input.enable_clear_button()
         self.chat_input.setPlaceholderText("Talk directly to the model…  Ctrl+Shift+Enter sends")
         self._help(self.chat_input, "Message")
         self.chat_input.setMaximumHeight(140)
@@ -6775,11 +6914,45 @@ class PromptCorrectorApp:
         ).strip()
         story_elements = str(context.get("story_elements", "")).strip()
         weighted_terms = str(context.get("weighted_terms", "")).strip()
+        goal_headline = str(context.get("goal_headline", "")).strip()
+        focus = str(context.get("focus", "")).strip()
+        model_instructions = str(context.get("model_instructions", "")).strip()
+        generation_feedback = str(
+            context.get("generation_feedback", "")
+        ).strip()
+        visual_direction = str(context.get("visual_direction", "")).strip()
+        camera_direction = str(context.get("camera_direction", "")).strip()
+        mode = str(context.get("mode", "")).strip()
         local_candidates = list(options.get("local_reference_candidates") or [])
-        research_prompt = draft or (
+        research_subject = draft or (
             "Invent a still-image prompt using these requested concepts: " + concepts
             if concepts
             else ""
+        )
+        research_prompt = "\n\n".join(
+            section
+            for section in (
+                research_subject,
+                f"Goal: {goal_headline}" if goal_headline else "",
+                f"Primary focus: {focus}" if focus else "",
+                f"Required concepts: {concepts}" if concepts else "",
+                f"Weighted visual priorities: {weighted_terms}" if weighted_terms else "",
+                f"Story beat:\n{story_elements}" if story_elements else "",
+                f"Visual direction: {visual_direction}" if visual_direction else "",
+                f"Camera direction: {camera_direction}" if camera_direction else "",
+                f"Visual mode: {mode}" if mode and mode != "Auto" else "",
+                (
+                    f"User visual instructions:\n{model_instructions}"
+                    if model_instructions
+                    else ""
+                ),
+                (
+                    f"Iteration feedback:\n{generation_feedback}"
+                    if generation_feedback
+                    else ""
+                ),
+            )
+            if section
         )
         image_prompt = research_prompt or (
             "Use only identity, material, technique, and concept facts from the "
@@ -6797,6 +6970,18 @@ class PromptCorrectorApp:
             "image_completed": bool(
                 options.get("reference_image_analysis") and image_prompt
             ),
+            "support_signature": {
+                "concepts": concepts,
+                "goal_headline": goal_headline,
+                "focus": focus,
+                "story_elements": story_elements,
+                "weighted_terms": weighted_terms,
+                "model_instructions": model_instructions,
+                "generation_feedback": generation_feedback,
+                "visual_direction": visual_direction,
+                "camera_direction": camera_direction,
+                "mode": mode,
+            },
         }
         if options.get("live_research") and research_prompt:
             self._set_status_threadsafe("Researching before Invent...")
@@ -6810,6 +6995,9 @@ class PromptCorrectorApp:
                 concept_keywords=concepts,
                 story_elements=story_elements,
                 weighted_terms=weighted_terms,
+                goal_headline=goal_headline,
+                focus=focus,
+                model_instructions=model_instructions,
                 timeout=float(self._lm_timeout_seconds()),
                 api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -8162,10 +8350,23 @@ class PromptCorrectorApp:
         precomputed_research: dict[str, object] = {}
         if destination == "prompt" and self.single_invent_research_cache:
             cache = self.single_invent_research_cache
+            current_support_signature = {
+                "concepts": effective_concepts.strip(),
+                "goal_headline": effective_goal_headline,
+                "focus": effective_focus,
+                "story_elements": story_elements.strip(),
+                "weighted_terms": effective_weighted_terms.strip(),
+                "model_instructions": self.model_instructions_var.get().strip(),
+                "generation_feedback": effective_generation_feedback,
+                "visual_direction": self.visual_direction_var.get().strip(),
+                "camera_direction": self._camera_direction(),
+                "mode": self.mode_var.get().strip(),
+            }
             if (
                 str(cache.get("draft", "")).strip() == requested_prompt.strip()
                 and str(cache.get("concepts", "")).strip()
                 == effective_concepts.strip()
+                and cache.get("support_signature") == current_support_signature
             ):
                 if self.live_research_var.get() and cache.get("web_completed"):
                     precomputed_research["research_context"] = str(
@@ -8210,11 +8411,34 @@ class PromptCorrectorApp:
             f"Context tokens: {self._context_token_display()}"
         )
         if is_small_model(self.model_var.get()):
-            self._log_activity(
-                "Small-model optimization: skipping the free-form audit and allowing at most one targeted repair."
-            )
+            if self.audit_repair_var.get():
+                self._log_activity(
+                    "Small-model optimization: using the compact audit instead of "
+                    "the full free-form audit, with at most one additional targeted repair."
+                )
+            else:
+                self._log_activity(
+                    "Small-model optimization: audit disabled, with at most one "
+                    "targeted repair if a hard contract fails."
+                )
         self._log_activity(
             f"Target: {self.generator_target_var.get()} | Format: {self.content_format_var.get()} | Risk: {self.risk_level_var.get()} | Preset: {self.prompt_preset_var.get()}"
+        )
+        self._log_activity(
+            "Krea guideline status: "
+            + krea_guideline_status(
+                workflow_profile=self.workflow_profile_var.get(),
+                generator_target=self.generator_target_var.get(),
+                content_format=self.content_format_var.get(),
+                variation_count=self._variation_count(),
+                risk_level=self.risk_level_var.get(),
+                preserve_strictly=self.preserve_var.get(),
+                enhance_actions=self.enhance_actions_var.get(),
+                develop_story=self.develop_story_var.get(),
+                artistic_detail_freedom=self.artistic_detail_freedom_var.get(),
+                safe_for_work=self.safe_for_work_var.get(),
+                explicit_nsfw=self.explicit_nsfw_var.get(),
+            )
         )
         self._log_activity(
             "Rewrite rule strength: "
@@ -8365,6 +8589,7 @@ class PromptCorrectorApp:
                 slider_value(self.intensity_var.get()),
                 slider_value(self.complexity_var.get()),
                 slider_value(self.movement_var.get()),
+                self.workflow_profile_var.get() == "Krea Official",
                 requested_prompt,
                 destination,
                 precomputed_research,
@@ -9328,6 +9553,7 @@ class PromptCorrectorApp:
         intensity: int,
         complexity: int,
         movement: int,
+        krea_official: bool,
         requested_prompt: str,
         destination: str,
         precomputed_research: dict[str, object] | None = None,
@@ -9346,6 +9572,19 @@ class PromptCorrectorApp:
                 precomputed_research.get("image_completed")
             )
             if live_research and not web_already_completed:
+                research_request = "\n\n".join(
+                    section
+                    for section in (
+                        draft,
+                        f"Goal: {goal_headline}" if goal_headline.strip() else "",
+                        f"Primary focus: {focus}" if focus.strip() else "",
+                        f"Required concepts: {concepts}" if concepts.strip() else "",
+                        f"Weighted visual priorities: {weighted_terms}" if weighted_terms.strip() else "",
+                        f"Story or panel beats:\n{story_elements}" if story_elements.strip() else "",
+                        f"User visual instructions:\n{model_instructions}" if model_instructions.strip() else "",
+                    )
+                    if section
+                )
                 self._set_status_threadsafe("Checking model knowledge...")
                 self._set_progress_threadsafe(10.0, "Checking model knowledge")
                 self._log_activity_threadsafe(
@@ -9358,6 +9597,9 @@ class PromptCorrectorApp:
                     concept_keywords=concepts,
                     story_elements=story_elements,
                     weighted_terms=weighted_terms,
+                    goal_headline=goal_headline,
+                    focus=focus,
+                    model_instructions=model_instructions,
                     timeout=float(lm_timeout),
                     api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -9415,7 +9657,7 @@ class PromptCorrectorApp:
                         f"Running action and pose mechanics research using {search_engine}..."
                     )
                     action_context = collect_action_pose_research(
-                        draft,
+                        research_request,
                         timeout=10.0,
                         search_engine=search_engine,
                     )
@@ -9435,7 +9677,7 @@ class PromptCorrectorApp:
                 reconciled_knowledge = reconcile_model_knowledge_with_web(
                     base_url=base_url or DEFAULT_BASE_URL,
                     model=model or DEFAULT_MODEL,
-                    prompt=draft,
+                    prompt=research_request,
                     model_probe=model_knowledge,
                     web_research=research_context,
                     timeout=float(lm_timeout),
@@ -9460,6 +9702,24 @@ class PromptCorrectorApp:
                 and local_reference_candidates
                 and not image_already_completed
             ):
+                reference_request = "\n\n".join(
+                    section
+                    for section in (
+                        draft,
+                        f"Goal: {goal_headline}" if goal_headline.strip() else "",
+                        f"Primary focus: {focus}" if focus.strip() else "",
+                        f"Required concepts: {concepts}" if concepts.strip() else "",
+                        f"Weighted visual priorities: {weighted_terms}" if weighted_terms.strip() else "",
+                        f"Story or panel beats:\n{story_elements}" if story_elements.strip() else "",
+                        f"User visual instructions:\n{model_instructions}" if model_instructions.strip() else "",
+                        (
+                            f"Private visual mix guidance:\n{private_model_instructions}"
+                            if private_model_instructions.strip()
+                            else ""
+                        ),
+                    )
+                    if section
+                )
                 self._raise_if_cancelled(request_id)
                 self._set_status_threadsafe("Analyzing reference images...")
                 self._set_progress_threadsafe(45.0, "Analyzing main reference images")
@@ -9467,7 +9727,7 @@ class PromptCorrectorApp:
                     "Analyzing the user-provided local reference images for the main prompt..."
                 )
                 image_candidates, image_diagnostics = self._collect_reference_images_for_prompt(
-                    draft,
+                    reference_request,
                     reference_image_source,
                     local_reference_candidates,
                 )
@@ -9491,7 +9751,7 @@ class PromptCorrectorApp:
                 image_context = analyze_reference_images(
                     base_url=base_url or DEFAULT_BASE_URL,
                     model=model or DEFAULT_MODEL,
-                    concept=draft,
+                    concept=reference_request,
                     image_candidates=image_candidates,
                     timeout=float(lm_timeout),
                     api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
@@ -9628,6 +9888,7 @@ class PromptCorrectorApp:
                     message,
                     destination,
                 ),
+                krea_official=krea_official,
             )
             self._raise_if_cancelled(request_id)
             if unload_after_generation:
@@ -9982,6 +10243,10 @@ class PromptCorrectorApp:
         )
         summaries = {
             "Exact": f"Fidelity first: no invented content; {format_note}; {setup}",
+            "Krea Official": (
+                f"Published Krea expansion contract; {format_note}; "
+                "one faithful paragraph, quoted text, covered intimate anatomy."
+            ),
             "Improve": f"Faithful polish; {format_note}; target is {target}.",
             "Explore": f"Creative exploration; {format_note}; target is {target}.",
         }

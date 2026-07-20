@@ -810,6 +810,24 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             self.controller.reference_image_source_var.get(), "Auto (safe sources)"
         )
 
+        self.controller.workflow_profile_var.set("Krea Official")
+        self.assertEqual(self.controller.generator_target_var.get(), "Krea 2")
+        self.assertEqual(self.controller.content_format_var.get(), "Single Image")
+        self.assertEqual(self.controller.risk_level_var.get(), "Strict cleanup")
+        self.assertTrue(self.controller.preserve_var.get())
+        self.assertTrue(self.controller.quote_text_var.get())
+        self.assertTrue(self.controller.fix_logic_var.get())
+        self.assertFalse(self.controller.enhance_actions_var.get())
+        self.assertFalse(self.controller.develop_story_var.get())
+        self.assertFalse(self.controller.artistic_detail_freedom_var.get())
+        self.assertFalse(self.controller.live_research_var.get())
+        self.assertFalse(self.controller.reference_images_var.get())
+        self.assertTrue(self.controller.audit_repair_var.get())
+        self.assertTrue(self.controller.safe_for_work_var.get())
+        self.assertFalse(self.controller.explicit_nsfw_var.get())
+        self.assertEqual(self.controller.variation_var.get(), 1)
+        self.assertEqual(self.controller.temperature_var.get(), 0.1)
+
         self.controller.workflow_profile_var.set("Improve")
         self.assertEqual(self.controller.risk_level_var.get(), "Balanced improvement")
         self.assertFalse(self.controller.preserve_var.get())
@@ -822,6 +840,123 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertTrue(self.controller.develop_story_var.get())
         self.assertTrue(self.controller.artistic_detail_freedom_var.get())
         self.assertEqual(self.controller.creativity_var.get(), "medium")
+
+    def test_every_bound_text_input_has_an_inline_clear_control(self):
+        self.assertGreaterEqual(len(self.controller.input_widgets), 25)
+        for variable, widget in self.controller.input_widgets.items():
+            with self.subTest(value=variable.get(), widget=type(widget).__name__):
+                if isinstance(widget, gui.QLineEdit):
+                    if not widget.isReadOnly():
+                        self.assertTrue(widget.isClearButtonEnabled())
+                elif isinstance(widget, gui.QtTextEdit):
+                    self.assertIsNotNone(
+                        widget.findChild(gui.QToolButton, "inputClearButton")
+                    )
+
+        self.assertIsNotNone(
+            self.controller.draft_text.findChild(
+                gui.QToolButton,
+                "inputClearButton",
+            )
+        )
+        self.assertIsNotNone(
+            self.controller.chat_input.findChild(
+                gui.QToolButton,
+                "inputClearButton",
+            )
+        )
+
+    def test_clearing_library_backed_fields_clears_their_saved_selections(self):
+        cases = (
+            (
+                self.controller.concepts_var,
+                lambda: self.controller.concept_preset_selections["prompt"],
+                lambda: self.controller.concept_preset_selections.__setitem__(
+                    "prompt", ["concept key"]
+                ),
+            ),
+            (
+                self.controller.comic_concepts_var,
+                lambda: self.controller.concept_preset_selections["comic"],
+                lambda: self.controller.concept_preset_selections.__setitem__(
+                    "comic", ["concept key"]
+                ),
+            ),
+            (
+                self.controller.visual_direction_var,
+                lambda: self.controller.visual_preset_selections["prompt"],
+                lambda: self.controller.visual_preset_selections.__setitem__(
+                    "prompt", ["visual key"]
+                ),
+            ),
+            (
+                self.controller.comic_visual_direction_var,
+                lambda: self.controller.visual_preset_selections["comic"],
+                lambda: self.controller.visual_preset_selections.__setitem__(
+                    "comic", ["visual key"]
+                ),
+            ),
+            (
+                self.controller.meme_visual_direction_var,
+                lambda: self.controller.visual_preset_selections["meme"],
+                lambda: self.controller.visual_preset_selections.__setitem__(
+                    "meme", ["visual key"]
+                ),
+            ),
+        )
+        for variable, selected, seed_selection in cases:
+            with self.subTest(variable=variable):
+                variable.set("library-applied text")
+                seed_selection()
+                widget = self.controller.input_widgets[variable]
+                widget.clear()
+                self.application.processEvents()
+                self.assertEqual(variable.get(), "")
+                self.assertEqual(selected(), [])
+        snapshot = self.controller._settings_snapshot()
+        self.assertEqual(
+            snapshot["concept_preset_selections"],
+            {"prompt": [], "comic": []},
+        )
+        self.assertEqual(
+            snapshot["visual_preset_selections"],
+            {"prompt": [], "comic": [], "meme": []},
+        )
+
+    def test_multiline_clear_button_clears_action_and_emotion_library_state(self):
+        cases = (
+            ("prompt", self.controller.story_elements_var),
+            ("comic", self.controller.comic_premise_var),
+            ("meme", self.controller.meme_scene_var),
+        )
+        for destination, variable in cases:
+            with self.subTest(destination=destination):
+                variable.set("library-applied narrative")
+                self.controller.narrative_preset_selections[destination] = {
+                    "action": ["action key"],
+                    "emotion": ["emotion key"],
+                }
+                editor = self.controller.input_widgets[variable]
+                clear_button = editor.findChild(
+                    gui.QToolButton,
+                    "inputClearButton",
+                )
+                self.assertIsNotNone(clear_button)
+                clear_button.click()
+                self.application.processEvents()
+                self.assertEqual(variable.get(), "")
+                self.assertEqual(
+                    self.controller.narrative_preset_selections[destination],
+                    {"action": [], "emotion": []},
+                )
+        self.assertEqual(
+            self.controller._settings_snapshot()["narrative_preset_selections"],
+            {
+                "prompt": {"action": [], "emotion": []},
+                "comic": {"action": [], "emotion": []},
+                "meme": {"action": [], "emotion": []},
+            },
+        )
 
     def test_fixed_seed_is_optional_persisted_and_bound_to_meme_worker(self):
         self.assertFalse(self.controller.fixed_seed_var.get())
@@ -1992,6 +2127,24 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             all(event["workspace"] == "prompt" for event in diagnostic_events)
         )
 
+    def test_small_model_activity_describes_compact_audit_accurately(self):
+        self.controller.draft_text.setPlainText(
+            "A red sports car beneath rainy streetlights."
+        )
+        self.controller.model_var.set("test-4b")
+        self.controller.audit_repair_var.set(True)
+
+        with mock.patch("krea_prompt_gui.threading.Thread"):
+            self.controller.correct_prompt()
+
+        activity = self.controller.activity_text.toPlainText()
+        self.assertIn(
+            "using the compact audit instead of the full free-form audit",
+            activity,
+        )
+        self.assertIn("at most one additional targeted repair", activity)
+        self.assertNotIn("skipping the free-form audit", activity)
+
     def test_comic_workspace_starts_comic_worker_with_numbered_panels(self):
         self.controller.mode_tabs.setCurrentIndex(1)
         self.controller.comic_panel_count_var.set(2)
@@ -2348,6 +2501,18 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "concept_context": "Allowed concept facts: flowing botanical linework.",
             "web_completed": True,
             "image_completed": True,
+            "support_signature": {
+                "concepts": "Art Nouveau",
+                "goal_headline": "",
+                "focus": "",
+                "story_elements": "",
+                "weighted_terms": "",
+                "model_instructions": "",
+                "generation_feedback": "",
+                "visual_direction": "",
+                "camera_direction": "",
+                "mode": "Auto",
+            },
         }
         with mock.patch.object(
             self.controller,
@@ -2400,6 +2565,15 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "flowing botanical linework",
             completion.call_args.kwargs["concept_context"],
         )
+
+        self.controller.focus_var.set("the courier's medicine satchel")
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+        changed_args = thread_class.call_args.kwargs["args"]
+        changed_bound = inspect.signature(
+            self.controller._correct_prompt_worker
+        ).bind(*changed_args)
+        self.assertEqual(changed_bound.arguments["precomputed_research"], {})
 
     def test_every_inventable_input_has_a_disabled_recall_button_initially(self):
         expected = {
@@ -3463,6 +3637,15 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "A samurai draws a katana beside a torii gate, low-angle camera, warm sunset lighting."
         )
         self.controller.concepts_var.set("Edo armor")
+        self.controller.goal_headline_var.set("Historically grounded sword draw")
+        self.controller.focus_var.set("the katana grip and scabbard")
+        self.controller.weighted_terms_var.set("katana grip:1.5")
+        self.controller.story_elements_var.set(
+            "The samurai draws before stepping through the gate."
+        )
+        self.controller.model_instructions_var.set(
+            "Verify the torii construction and sword mechanics."
+        )
         self.controller.live_research_var.set(True)
         self.controller.audit_repair_var.set(False)
         with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
@@ -3471,8 +3654,22 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
         order = []
 
-        def probe(**_kwargs):
+        def probe(**kwargs):
             order.append("probe")
+            self.assertEqual(
+                kwargs["goal_headline"],
+                "Historically grounded sword draw",
+            )
+            self.assertEqual(kwargs["focus"], "the katana grip and scabbard")
+            self.assertEqual(kwargs["weighted_terms"], "katana grip:1.5")
+            self.assertIn(
+                "draws before stepping",
+                kwargs["story_elements"],
+            )
+            self.assertIn(
+                "Verify the torii construction",
+                kwargs["model_instructions"],
+            )
             return "TARGET | object | katana | known | curved sword"
 
         def targets(*_args, **_kwargs):
@@ -3483,8 +3680,16 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             order.append("web")
             return "Targeted web verification results: katana evidence"
 
-        def reconcile(**_kwargs):
+        def reconcile(**kwargs):
             order.append("reconcile")
+            for expected in (
+                "Historically grounded sword draw",
+                "the katana grip and scabbard",
+                "katana grip:1.5",
+                "draws before stepping",
+                "Verify the torii construction",
+            ):
+                self.assertIn(expected, kwargs["prompt"])
             return "Verified visual facts: katana construction and drawing action"
 
         def correct(**kwargs):
