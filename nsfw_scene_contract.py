@@ -19,10 +19,12 @@ SEXUAL_SIGNAL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ROLE_PATTERN_TEXT = (
+    r"(?:(?:adult\s+)?(?:woman|women|man|men|female|females|male|males)"
+    r"\s+partners?|"
     r"(?:adult\s+)?(?:woman|women|man|men|female|females|male|males|"
     r"nonbinary\s+(?:person|people)|non-binary\s+(?:person|people)|"
     r"partner|partners|lover|lovers|subject|subjects|performer|performers|"
-    r"dominant|dominants|submissive|submissives)"
+    r"dominant|dominants|submissive|submissives))"
 )
 ROLE_PATTERN = re.compile(rf"\b{ROLE_PATTERN_TEXT}\b", re.IGNORECASE)
 
@@ -231,11 +233,14 @@ RELATION_ACTIONS: tuple[tuple[str, str], ...] = (
 
 def _canonical_role(value: str) -> str:
     role = re.sub(r"^adult\s+", "", value.strip().lower())
+    role = re.sub(r"\s+partners?$", "", role)
     singular = {
         "women": "woman",
         "men": "man",
-        "females": "female",
-        "males": "male",
+        "female": "woman",
+        "females": "woman",
+        "male": "man",
+        "males": "man",
         "partners": "partner",
         "lovers": "lover",
         "subjects": "subject",
@@ -480,7 +485,14 @@ def nsfw_scene_contract_issues(
     if "anal" in source_targets and "vaginal" in candidate_targets - source_targets:
         issues.append("unrequested vaginal contact added to an anal source")
     for requested_object in source.get("objects", []):
-        if requested_object not in candidate.get("objects", []):
+        candidate_objects = set(candidate.get("objects", []))
+        generic_toy_satisfied = (
+            requested_object == "adult toy"
+            and bool(candidate_objects.intersection(
+                {"adult toy", "dildo", "vibrator", "strap-on", "anal toy"}
+            ))
+        )
+        if requested_object not in candidate_objects and not generic_toy_satisfied:
             issues.append(f"missing requested adult object: {requested_object}")
 
     candidate_relations = {

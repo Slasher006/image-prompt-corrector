@@ -34,6 +34,24 @@ from visual_direction_presets import (
 
 
 class NsfwSceneContractTests(unittest.TestCase):
+    def test_generic_adult_toy_is_satisfied_by_specific_toy(self):
+        self.assertEqual(
+            nsfw_scene_contract_issues(
+                "A solo adult woman uses a dildo vaginally.",
+                "A solo adult woman uses an adult toy vaginally.",
+            ),
+            [],
+        )
+
+    def test_gender_role_aliases_preserve_relation_direction(self):
+        self.assertEqual(
+            nsfw_scene_contract_issues(
+                "An adult female partner kisses an adult male partner.",
+                "An adult woman kisses an adult man.",
+            ),
+            [],
+        )
+
     def test_extracts_participants_act_target_object_phase_and_direction(self):
         contract = extract_nsfw_scene_contract(
             "Two adult partners: the adult woman kisses the adult man while using "

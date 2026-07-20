@@ -1897,6 +1897,13 @@ class PromptCorrectorTests(unittest.TestCase):
                 self.assertFalse(corrector.appears_multi_person_scene(prompt))
                 self.assertEqual(corrector.multi_person_role_issues(prompt), [])
 
+    def test_adult_is_a_descriptor_not_a_second_person_role(self):
+        prompt = "An adult woman uses a dildo vaginally."
+
+        self.assertEqual(corrector.person_role_mentions(prompt), ["woman"])
+        self.assertFalse(corrector.appears_multi_person_scene(prompt))
+        self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
     def test_same_gender_aliases_still_detect_explicitly_distinct_people(self):
         for prompt in (
             "A woman kisses another female beside a window.",
@@ -2424,6 +2431,15 @@ class PromptCorrectorTests(unittest.TestCase):
             [],
         )
 
+    def test_transgender_source_does_not_apply_binary_anatomy_assumption(self):
+        self.assertEqual(
+            corrector.unrequested_gender_trait_issues(
+                "A solo adult transgender woman with a penis poses on a bed.",
+                "A solo adult transgender woman poses on a bed.",
+            ),
+            [],
+        )
+
     def test_post_completion_preserves_simple_adult_toy_wording(self):
         source = "A solo adult woman thrusts rhythmically with a large dildo on a bed."
         candidate = "A solo adult woman thrusts rhythmically with a large dildo on a bed."
@@ -2782,6 +2798,22 @@ class PromptCorrectorTests(unittest.TestCase):
             )
         )
 
+    def test_count_contract_accepts_pair_and_dozen_equivalents(self):
+        self.assertEqual(
+            corrector.count_contract_issues(
+                "A pair of red roses rests in a vase.",
+                "Exactly two red roses rest in a vase.",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.count_contract_issues(
+                "A dozen candles stand on the cake.",
+                "Exactly twelve candles stand on the cake.",
+            ),
+            [],
+        )
+
     def test_spatial_contract_detects_changed_side(self):
         original = "A red cup on the left and a blue vase on the right."
 
@@ -2790,6 +2822,50 @@ class PromptCorrectorTests(unittest.TestCase):
             "A red cup on the right and a blue vase on the left.", original
         )
         self.assertTrue(issues)
+
+    def test_spatial_contract_accepts_equivalent_relation_wording(self):
+        cases = (
+            ("A cup on the left of a vase.", "A cup on image-left of a vase."),
+            ("A cup sits inside a cabinet.", "A cup sits within a cabinet."),
+            ("A chair stands behind a desk.", "A chair stands at the rear of a desk."),
+        )
+        for source, candidate in cases:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    corrector.spatial_contract_issues(candidate, source),
+                    [],
+                )
+
+    def test_sexual_inside_contact_is_not_a_generic_spatial_contract(self):
+        for source in (
+            "she forces the dildo inside her hot",
+            "A solo adult woman thrusts a dildo inside her wet vagina.",
+            "An adult man finishes inside her.",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(corrector.extract_spatial_contracts(source), [])
+                self.assertFalse(
+                    any(
+                        issue.startswith("Spatial contract")
+                        for issue in corrector.final_compliance_issues(
+                            "A solo adult woman uses a dildo vaginally.",
+                            original_prompt=source,
+                            output_length="Concise",
+                            explicit_nsfw=True,
+                        )
+                    )
+                )
+
+    def test_ordinary_inside_relation_remains_a_spatial_contract(self):
+        source = "A red cup sits inside a wooden cabinet."
+
+        self.assertTrue(corrector.extract_spatial_contracts(source))
+        self.assertTrue(
+            corrector.spatial_contract_issues(
+                "A red cup sits on a wooden cabinet.",
+                source,
+            )
+        )
 
     def test_exclusions_and_unexpected_scripts_are_hard_contracts(self):
         original = "A clean product photo without flowers or people."
@@ -2811,6 +2887,22 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertTrue(
             corrector.exclusion_contract_issues(
                 "A centered black bottle beside one smiling woman.", comma_prompt
+            )
+        )
+
+    def test_exclusion_contract_understands_absence_forms_and_people_proxies(self):
+        source = "A clean product photo without flowers or people."
+        self.assertEqual(
+            corrector.exclusion_contract_issues(
+                "A flower-free vase in an empty studio.",
+                source,
+            ),
+            [],
+        )
+        self.assertTrue(
+            corrector.exclusion_contract_issues(
+                "A vase displayed in a crowded plaza.",
+                source,
             )
         )
 
@@ -4017,6 +4109,23 @@ class PromptCorrectorTests(unittest.TestCase):
             full,
         )
 
+    def test_compact_system_prompt_receives_selected_visual_mode(self):
+        compact = corrector.build_small_model_system_prompt(
+            generator_target="Krea 2",
+            content_format="Single Image",
+            output_length="Balanced",
+            output_min_words=None,
+            output_max_words=None,
+            risk_level="Balanced improvement",
+            prompt_preset="Auto",
+            variation_count=1,
+            enhance_actions=False,
+            develop_story=False,
+            mode="Watercolor",
+        )
+
+        self.assertIn("Required visual mode: Watercolor.", compact)
+
     def test_krea_workflow_labels_are_naturalized_outside_quoted_text(self):
         prompt = (
             "A courier reaches the gate. Camera framing and viewpoint: low-angle "
@@ -4363,6 +4472,166 @@ class PromptCorrectorTests(unittest.TestCase):
                 "The lighting is both daytime sunlight and nighttime moonlight."
             )
         )
+
+    def test_contradiction_check_preserves_intentional_source_hybrids(self):
+        for prompt in (
+            "A sunny rainy afternoon with a rainbow.",
+            "A doorway connects the indoors and outdoors.",
+            "A photoreal vector illustration.",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    corrector.contradiction_issues(prompt, prompt),
+                    [],
+                )
+
+    def test_intent_lock_ignores_prepended_style_and_camera_controls(self):
+        source = (
+            "Magical realism. Wide establishing shot, 24mm lens. "
+            "A red sports car crosses a bridge."
+        )
+        self.assertTrue(
+            corrector.intent_lock_issues(
+                source,
+                "Magical realism, wide establishing shot with a 24mm lens, "
+                "showing a river crossing a valley.",
+            )
+        )
+        self.assertEqual(
+            corrector.intent_lock_issues(
+                source,
+                "A scarlet sports automobile traverses a bridge, rendered with "
+                "dreamlike realism from a broad distant viewpoint.",
+            ),
+            [],
+        )
+
+    def test_boundary_safe_semantic_matching_avoids_substring_false_passes(self):
+        self.assertEqual(
+            corrector.missing_required_concepts("A red carpet fills the hall.", "car"),
+            ["car"],
+        )
+        self.assertEqual(
+            corrector.focus_issue("A cathedral at sunset.", "cat"),
+            "Requested focus not represented: cat",
+        )
+        self.assertIsNotNone(
+            corrector.focus_issue("A red carpet fills the hall.", "red sports car")
+        )
+
+    def test_semantic_matching_accepts_faithful_concept_and_weight_paraphrases(self):
+        self.assertEqual(
+            corrector.missing_required_concepts(
+                "A monumental raw-concrete library.",
+                "brutalist architecture",
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.missing_weighted_terms(
+                "A scarlet automobile crosses the bridge.",
+                "red car:2.0",
+            ),
+            [],
+        )
+
+    def test_explicit_style_directive_accepts_visual_paraphrase(self):
+        self.assertEqual(
+            corrector.explicit_instruction_issues(
+                "A lighthouse painted with translucent washes and visible paper grain.",
+                "Please make it look like watercolor. A lighthouse on a cliff.",
+            ),
+            [],
+        )
+
+    def test_style_mode_is_a_hard_contract_for_distinctive_modes(self):
+        issues = corrector.final_compliance_issues(
+            "A hyperrealistic photograph of a lighthouse.",
+            original_prompt="A lighthouse.",
+            mode="Watercolor",
+            output_length="Concise",
+        )
+        self.assertIn(
+            "Selected visual mode missing or changed: Watercolor",
+            issues,
+        )
+        hard, _soft = corrector.split_compliance_issues(issues)
+        self.assertIn(
+            "Selected visual mode missing or changed: Watercolor",
+            hard,
+        )
+        self.assertEqual(
+            corrector.style_mode_issues(
+                "A lighthouse painted with translucent washes on visible paper grain.",
+                "Watercolor",
+            ),
+            [],
+        )
+
+    def test_selected_style_mode_is_enforced_without_preserving_model_added_conflict(self):
+        result = corrector.enforce_style_mode_contract(
+            "A hyperrealistic photograph of a lighthouse in hard studio light.",
+            "Watercolor",
+            "A lighthouse in hard studio light.",
+        )
+
+        self.assertEqual(corrector.style_mode_issues(result, "Watercolor"), [])
+        self.assertIn("Watercolor", result)
+        self.assertNotIn("hyperrealistic photograph", result.lower())
+
+    def test_selected_style_mode_preserves_user_requested_hybrid(self):
+        result = corrector.enforce_style_mode_contract(
+            "A photoreal vector illustration of a lighthouse.",
+            "Photoreal",
+            "A photoreal vector illustration of a lighthouse.",
+        )
+
+        self.assertIn("photoreal", result.lower())
+        self.assertIn("vector illustration", result.lower())
+
+    def test_all_selected_modes_and_visual_directions_are_kept_compactly(self):
+        self.assertEqual(
+            corrector.enforce_style_mode_contract(
+                "A lighthouse in hard studio light.",
+                "Cinematic",
+            ),
+            "Cinematic. A lighthouse in hard studio light.",
+        )
+        self.assertEqual(
+            corrector.enforce_visual_direction_contract(
+                "A lighthouse in hard studio light.",
+                "Dark maritime atmosphere",
+            ),
+            "Dark maritime atmosphere. A lighthouse in hard studio light.",
+        )
+        self.assertEqual(
+            corrector.enforce_visual_direction_contract(
+                "A lighthouse in a dark maritime atmosphere.",
+                "Dark maritime atmosphere",
+            ),
+            "A lighthouse in a dark maritime atmosphere.",
+        )
+
+    @patch(
+        "krea_prompt_corrector.chat_completion",
+        return_value="A hyperrealistic photograph of a lighthouse in hard studio light.",
+    )
+    def test_post_completion_enforces_selected_mode_on_compact_model(self, _chat):
+        result = corrector.post_chat_completion(
+            base_url="http://127.0.0.1:1234/v1",
+            model="qwen3-vl-4b-instruct",
+            prompt="A lighthouse in hard studio light.",
+            temperature=0.2,
+            max_tokens=300,
+            timeout=30,
+            api_key="test",
+            mode="Watercolor",
+            output_length="Concise",
+            audit_repair=False,
+        )
+
+        self.assertEqual(corrector.style_mode_issues(result, "Watercolor"), [])
+        self.assertNotIn("hyperrealistic photograph", result.lower())
 
     def test_concept_verifier_accepts_aliases(self):
         self.assertFalse(

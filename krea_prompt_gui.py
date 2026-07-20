@@ -7884,6 +7884,10 @@ class PromptCorrectorApp:
         requested_prompt = draft
         draft = self._apply_camera_direction(draft, destination)
         draft = self._apply_visual_direction(draft, destination)
+        effective_visual_direction = {
+            "comic": self.comic_visual_direction_var.get(),
+            "meme": self.meme_visual_direction_var.get(),
+        }.get(destination, self.visual_direction_var.get()).strip()
         base_url = self._current_base_url()
         if destination == "prompt":
             (
@@ -8142,6 +8146,7 @@ class PromptCorrectorApp:
                 self.model_var.get().strip(),
                 base_url,
                 self.mode_var.get(),
+                effective_visual_direction,
                 self.detail_var.get(),
                 self.output_length_var.get(),
                 None,
@@ -9107,6 +9112,7 @@ class PromptCorrectorApp:
         model: str,
         base_url: str,
         mode: str,
+        visual_direction: str,
         detail_level: str,
         output_length: str,
         output_min_words: int | None,
@@ -9398,6 +9404,7 @@ class PromptCorrectorApp:
                 timeout=float(lm_timeout),
                 api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
                 mode=mode,
+                visual_direction=visual_direction,
                 detail_level=detail_level,
                 output_length=output_length,
                 output_min_words=output_min_words,

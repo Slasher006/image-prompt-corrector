@@ -11,7 +11,7 @@ import argparse
 import math
 import base64
 import concurrent.futures
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 import html as html_lib
 from html.parser import HTMLParser
 import json
@@ -2545,6 +2545,15 @@ def person_role_mentions(prompt: str) -> list[str]:
     for word in PERSON_ROLE_WORDS + PLURAL_PERSON_ROLE_WORDS:
         if re.search(rf"\b{re.escape(word)}\b", searchable) and word not in mentions:
             mentions.append(word)
+    if "adult" in mentions:
+        role_without_compound_adults = re.sub(
+            r"\badult\s+(?:woman|man|female|male|lady|partner|person|subject|"
+            r"performer|bride|groom|wife|husband)\b",
+            " ",
+            searchable,
+        )
+        if not re.search(r"\badult\b", role_without_compound_adults):
+            mentions.remove("adult")
     return mentions
 
 
@@ -3263,13 +3272,20 @@ def unrequested_gender_trait_issues(
         re.search(rf"\b{re.escape(term)}\b", source)
         for term in MALE_PERSON_IDENTITY_WORDS
     )
-    if source_has_female and not source_has_male:
+    source_has_gender_expansive_identity = bool(
+        re.search(
+            r"\b(?:transgender|transsexual|nonbinary|non-binary|genderqueer|"
+            r"agender|futanari|futa)\b",
+            source,
+        )
+    )
+    if source_has_female and not source_has_male and not source_has_gender_expansive_identity:
         added = MALE_GENITAL_ANATOMY_PATTERN.search(candidate)
         if added and not MALE_GENITAL_ANATOMY_PATTERN.search(source):
             issues.append(
                 f"male genital anatomy added to a female-only source: {added.group(0).lower()}"
             )
-    if source_has_male and not source_has_female:
+    if source_has_male and not source_has_female and not source_has_gender_expansive_identity:
         added = FEMALE_GENITAL_ANATOMY_PATTERN.search(candidate)
         if added and not FEMALE_GENITAL_ANATOMY_PATTERN.search(source):
             issues.append(
@@ -3516,8 +3532,10 @@ def panel_description_issues(final_prompt: str, source_text: str) -> list[str]:
             )
         anchors = anchor_sets[number]
         distinctive = {anchor for anchor in anchors if anchor_frequency.get(anchor, 0) == 1} or anchors
-        final_anchors = _panel_anchor_terms(final_description)
-        matched = distinctive.intersection(final_anchors)
+        matched = {
+            anchor for anchor in distinctive
+            if semantic_term_present(anchor, final_description)
+        }
         required_matches = max(1, math.ceil(len(distinctive) * 0.5))
         if distinctive and len(matched) < required_matches:
             examples = ", ".join(sorted(distinctive)[:5])
@@ -3624,8 +3642,8 @@ def comic_metadata_issues(final_prompt: str, source: str) -> list[str]:
             "Shared continuity anchors",
         )
         continuity_haystack = final_continuity or final_prompt
-        final_terms = set(top_significant_terms(continuity_haystack, limit=160))
-        if requested_terms and len(requested_terms & final_terms) < math.ceil(len(requested_terms) * 0.6):
+        matched_terms = semantic_match_count(requested_terms, continuity_haystack)
+        if requested_terms and matched_terms < math.ceil(len(requested_terms) * 0.6):
             issues.append("shared continuity anchors were weakened or dropped")
     return issues
 
@@ -3862,6 +3880,8 @@ DIRECTIVE_ANCHOR_STOP_WORDS = PANEL_BEAT_STOP_WORDS | {
     "focus",
     "image",
     "keep",
+    "like",
+    "look",
     "make",
     "must",
     "please",
@@ -3874,6 +3894,78 @@ DIRECTIVE_ANCHOR_STOP_WORDS = PANEL_BEAT_STOP_WORDS | {
     "sure",
     "use",
 }
+
+SEMANTIC_EQUIVALENCE_GROUPS = (
+    ("red", "scarlet", "crimson"),
+    ("car", "automobile", "motorcar"),
+    ("vehicle", "automobile", "car"),
+    ("race", "speed", "hurtle"),
+    ("cross", "traverse"),
+    ("across", "over"),
+    ("bridge", "viaduct"),
+    ("woman", "female", "lady"),
+    ("man", "male", "gentleman"),
+    ("adult toy", "sex toy", "intimate toy"),
+    ("watercolor", "watercolour", "translucent washes", "transparent washes",
+     "pigment washes", "wet-on-wet"),
+    ("inside", "within"),
+    ("behind", "at the rear of", "to the rear of"),
+    ("left", "image-left", "frame-left", "screen-left"),
+    ("right", "image-right", "frame-right", "screen-right"),
+)
+
+INTENT_NONCONTENT_WORDS = {
+    "adult", "after", "angle", "camera", "cinematic", "close", "closeup", "composition",
+    "documentary", "editorial", "establish", "fine", "framing", "lens",
+    "magical", "macro", "medium", "mode", "photograph", "photographic",
+    "photography", "photoreal", "photorealistic", "realism", "render",
+    "shot", "style", "view", "viewpoint", "visual", "watercolor", "wide",
+}
+
+
+def _semantic_form_key(value: str) -> tuple[str, ...]:
+    return tuple(
+        _panel_term_key(word)
+        for word in significant_words(normalize_concept_text(value))
+    )
+
+
+def _semantic_forms(term: str) -> set[str]:
+    normalized = normalize_concept_text(term).strip().lower()
+    forms = {normalized}
+    term_key = _semantic_form_key(normalized)
+    for group in SEMANTIC_EQUIVALENCE_GROUPS:
+        if any(_semantic_form_key(item) == term_key for item in group):
+            forms.update(group)
+    for concept, aliases in CONCEPT_ALIASES.items():
+        if _semantic_form_key(concept) == term_key:
+            forms.add(concept)
+            forms.update(aliases)
+    return {normalize_concept_text(form).strip().lower() for form in forms if form.strip()}
+
+
+def _semantic_phrase_present(phrase: str, text: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", normalize_concept_text(phrase).lower())
+    if not words:
+        return False
+    if len(words) == 1:
+        wanted = _panel_term_key(words[0])
+        return wanted in {
+            _panel_term_key(word)
+            for word in re.findall(r"[a-z0-9]+", normalize_concept_text(text).lower())
+        }
+    pattern = r"(?<!\w)" + r"[\s-]+".join(re.escape(word) for word in words) + r"(?!\w)"
+    return bool(re.search(pattern, normalize_concept_text(text).lower()))
+
+
+def semantic_term_present(term: str, text: str) -> bool:
+    """Match one visual term using boundaries, morphology, and conservative aliases."""
+
+    return any(_semantic_phrase_present(form, text) for form in _semantic_forms(term))
+
+
+def semantic_match_count(terms: Iterable[str], text: str) -> int:
+    return sum(semantic_term_present(term, text) for term in terms)
 
 
 def explicit_instruction_clauses(
@@ -3924,13 +4016,12 @@ def missing_explicit_instructions(
 ) -> list[str]:
     """Find explicit user directives whose meaningful terms were dropped."""
 
-    final_anchors = _directive_anchor_terms(final_prompt)
     missing: list[str] = []
     for clause in explicit_instruction_clauses(original_prompt, model_instructions):
         anchors = _directive_anchor_terms(clause)
         if not anchors:
             continue
-        matched = sum(_directive_anchor_present(anchor, final_anchors) for anchor in anchors)
+        matched = semantic_match_count(anchors, final_prompt)
         required = max(1, math.ceil(len(anchors) * 0.6))
         if matched < required:
             missing.append(clause)
@@ -4006,8 +4097,8 @@ SPATIAL_MARKER_PATTERNS = (
     ("far right", r"\b(?:on\s+the\s+)?far\s+right\b"),
     ("left side", r"\b(?:on\s+the\s+)?left\s+side\b"),
     ("right side", r"\b(?:on\s+the\s+)?right\s+side\b"),
-    ("left", r"\b(?:on|at|to)\s+(?:the\s+)?left\b"),
-    ("right", r"\b(?:on|at|to)\s+(?:the\s+)?right\b"),
+    ("left", r"\b(?:on|at|to)\s+(?:the\s+)?(?:(?:image|frame|screen)-)?left\b"),
+    ("right", r"\b(?:on|at|to)\s+(?:the\s+)?(?:(?:image|frame|screen)-)?right\b"),
     ("facing left", r"\bfacing\s+left\b"),
     ("facing right", r"\bfacing\s+right\b"),
     ("from the left", r"\bfrom\s+(?:the\s+)?left\b"),
@@ -4015,13 +4106,26 @@ SPATIAL_MARKER_PATTERNS = (
     ("center", r"\b(?:in|at|through)\s+(?:the\s+)?cent(?:er|re)\b"),
     ("foreground", r"\bforeground\b"),
     ("background", r"\bbackground\b"),
-    ("behind", r"\bbehind\b"),
+    ("behind", r"\b(?:behind|(?:at|to)\s+the\s+rear\s+of)\b"),
     ("in front of", r"\bin\s+front\s+of\b"),
     ("above", r"\babove\b"),
     ("below", r"\bbelow\b"),
     ("through", r"\bthrough\b"),
-    ("inside", r"\binside\b"),
+    ("inside", r"\b(?:inside|within)\b"),
     ("outside", r"\boutside\b"),
+)
+SEXUAL_INSIDE_CONTACT_PATTERN = re.compile(
+    r"(?i)\b(?:dildos?|vibrators?|strap[- ]ons?|sex\s+toys?|adult\s+toys?|"
+    r"penis|cock|fingers?|thumbs?|tongue)\b[^,.!?;]{0,100}\b(?:inside|within)\b\s+"
+    r"(?:(?:her|his|their)\b(?:\s+(?:hot|wet|tight|open|exposed|bare|naked|"
+    r"aroused|swollen|dripping))*\s*(?:vagina|vulva|pussy|anus|rectum|"
+    r"vaginal\s+opening|anal\s+opening)?\b|"
+    r"(?:the\s+)?(?:vagina|vulva|pussy|anus|rectum|vaginal\s+opening|"
+    r"anal\s+opening)\b)"
+)
+SEXUAL_FINISH_INSIDE_PATTERN = re.compile(
+    r"(?i)\b(?:finish(?:es|ed|ing)?|ejaculat(?:e|es|ed|ing))\s+(?:inside|within)\s+"
+    r"(?:her|him|them|the\s+(?:vagina|anus|rectum))\b"
 )
 CONSTRAINT_GENERIC_WORDS = DIRECTIVE_ANCHOR_STOP_WORDS | {
     "add", "additional", "completely", "depict", "empty", "exactly",
@@ -4077,6 +4181,22 @@ def count_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
             )
             for token in count_tokens
         )
+        if not represented and count == 2:
+            represented = bool(
+                re.search(
+                    rf"\b(?:a\s+)?(?:pair|couple)\s+of\s+(?:[A-Za-z-]+\s+){{0,4}}"
+                    rf"{re.escape(head)}s?\b",
+                    final,
+                )
+            )
+        if not represented and count == 12:
+            represented = bool(
+                re.search(
+                    rf"\b(?:a\s+)?dozen\s+(?:[A-Za-z-]+\s+){{0,4}}"
+                    rf"{re.escape(head)}s?\b",
+                    final,
+                )
+            )
         if not represented:
             issues.append(f"Count contract missing or changed: {source}")
             continue
@@ -4112,6 +4232,11 @@ def extract_spatial_contracts(text: str) -> list[tuple[str, set[str], set[str], 
             for label, pattern in SPATIAL_MARKER_PATTERNS:
                 match = re.search(pattern, segment, flags=re.IGNORECASE)
                 if match:
+                    if label == "inside" and (
+                        SEXUAL_INSIDE_CONTACT_PATTERN.search(segment)
+                        or SEXUAL_FINISH_INSIDE_PATTERN.search(segment)
+                    ):
+                        continue
                     contracts.append(
                         (
                             label,
@@ -4197,8 +4322,25 @@ def _term_has_positive_occurrence(term: str, text: str) -> bool:
     forms = [f"{prefix} {candidate}".strip() for candidate in heads]
     pattern = r"\b(?:" + "|".join(re.escape(form) for form in forms) + r")\b"
     for match in re.finditer(pattern, searchable):
-        if not any(start <= match.start() < end for start, end in negative_ranges):
+        suffix = searchable[match.end():match.end() + 10]
+        prefix = searchable[max(0, match.start() - 12):match.start()]
+        negated_form = bool(
+            re.match(r"-(?:free|less)\b", suffix)
+            or re.search(r"\bfree\s+of\s+$", prefix)
+        )
+        if (
+            not negated_form
+            and not any(start <= match.start() < end for start, end in negative_ranges)
+        ):
             return True
+    if head in {"people", "person"}:
+        proxy = re.compile(
+            r"\b(?:pedestrians?|bystanders?|onlookers?|"
+            r"crowded\s+(?:plaza|street|room|market|station|venue))\b"
+        )
+        for match in proxy.finditer(searchable):
+            if not any(start <= match.start() < end for start, end in negative_ranges):
+                return True
     return False
 
 
@@ -4292,14 +4434,100 @@ def rendered_text_issues(prompt: str, original_prompt: str = "") -> list[str]:
     return issues
 
 
-def style_conflict_issues(prompt: str) -> list[str]:
+def style_conflict_issues(prompt: str, original_prompt: str = "") -> list[str]:
     lowered = prompt.lower()
+    source = original_prompt.lower()
     issues: list[str] = []
     for group in STYLE_CONFLICT_GROUPS:
         found = [term for term in group if term in lowered]
-        if len(found) > 1:
+        source_found = [term for term in group if term in source]
+        if len(found) > 1 and not set(found).issubset(source_found):
             issues.append("Potential style/framing conflict: " + " / ".join(found))
     return issues
+
+
+MODE_FIDELITY_ALIASES = {
+    "Photoreal": (
+        "photoreal", "photorealistic", "hyperrealistic photograph",
+        "lifelike photograph", "realistic photograph", "realistic photography",
+        "photographic realism",
+    ),
+    "Watercolor": ("watercolor", "watercolour", "translucent washes", "pigment washes", "wet-on-wet"),
+    "Anime": ("anime",),
+    "Manga": ("manga",),
+    "Vector illustration": ("vector illustration", "vector art", "clean vector shapes"),
+    "Pixel art": ("pixel art", "pixelated sprite"),
+    "Oil painting": ("oil painting", "oil-painted", "impasto"),
+    "Gouache": ("gouache",),
+    "Ink drawing": ("ink drawing", "pen-and-ink", "inked linework"),
+    "Pencil drawing": ("pencil drawing", "graphite drawing", "graphite shading"),
+    "Charcoal drawing": ("charcoal drawing", "charcoal shading"),
+    "Linocut": ("linocut", "linoleum print"),
+    "Woodcut": ("woodcut", "woodblock print"),
+    "Cyanotype": ("cyanotype", "Prussian-blue photogram"),
+}
+
+
+def style_mode_issues(prompt: str, mode: str) -> list[str]:
+    """Validate only modes with distinctive, safely recognizable signatures."""
+
+    aliases = MODE_FIDELITY_ALIASES.get(str(mode or "").strip())
+    if not aliases:
+        return []
+    if any(_semantic_phrase_present(alias, prompt) for alias in aliases):
+        return []
+    return [f"Selected visual mode missing or changed: {mode}"]
+
+
+def enforce_style_mode_contract(
+    prompt: str,
+    mode: str,
+    original_prompt: str = "",
+) -> str:
+    """State a selected distinctive mode and replace only model-added conflicts."""
+
+    selected = str(mode or "").strip()
+    if selected == "Auto" or selected not in PROMPT_MODES:
+        return normalize_final_prompt_text(prompt)
+    candidate = normalize_final_prompt_text(prompt)
+    if selected in MODE_FIDELITY_ALIASES:
+        for other_mode, aliases in MODE_FIDELITY_ALIASES.items():
+            if other_mode == selected:
+                continue
+            if any(_semantic_phrase_present(alias, original_prompt) for alias in aliases):
+                continue
+            for alias in sorted(aliases, key=len, reverse=True):
+                words = re.findall(r"[a-z0-9]+", normalize_concept_text(alias).lower())
+                if not words:
+                    continue
+                pattern = (
+                    r"(?<!\w)"
+                    + r"[\s-]+".join(re.escape(word) for word in words)
+                    + r"(?!\w)"
+                )
+                candidate = re.sub(pattern, selected, candidate, flags=re.IGNORECASE)
+    if semantic_term_present(selected, candidate):
+        return normalize_final_prompt_text(candidate)
+    return normalize_final_prompt_text(f"{selected}. {candidate}")
+
+
+def enforce_visual_direction_contract(prompt: str, visual_direction: str) -> str:
+    """Keep a selected GUI direction visible without adding private labels."""
+
+    direction = normalize_final_prompt_text(visual_direction)
+    candidate = normalize_final_prompt_text(prompt)
+    if not direction or direction.casefold().startswith("auto"):
+        return candidate
+    terms = [
+        _panel_term_key(word)
+        for word in significant_words(direction)
+        if len(_panel_term_key(word)) >= 4
+    ]
+    if terms and semantic_match_count(terms, candidate) >= math.ceil(len(terms) * 0.6):
+        return candidate
+    if direction.casefold() in candidate.casefold():
+        return candidate
+    return normalize_final_prompt_text(f"{direction}. {candidate}")
 
 
 def entity_consistency_issues(prompt: str) -> list[str]:
@@ -4324,14 +4552,21 @@ def intent_lock_issues(original_prompt: str, final_prompt: str, goal_headline: s
         "wrong", "bad", "watermark", "minimal", "chaotic", "clutter",
         "everywhere", "ultra", "detailed", "detail",
     }
-    required_terms = [
-        _panel_term_key(term)
-        for term in top_significant_terms(source, limit=6 if goal_headline.strip() else 4)
-        if len(term) > 3 and term not in excluded
+    if not goal_headline.strip():
+        excluded |= INTENT_NONCONTENT_WORDS
+    required_terms: list[str] = []
+    for term in significant_words(source):
+        key = _panel_term_key(term)
+        if len(key) <= 3 or key in excluded or key in required_terms:
+            continue
+        required_terms.append(key)
+        if len(required_terms) >= (8 if goal_headline.strip() else 6):
+            break
+    missing = [
+        term for term in required_terms
+        if not semantic_term_present(term, final_prompt)
     ]
-    final_terms = {_panel_term_key(term) for term in significant_words(final_prompt)}
-    missing = [term for term in required_terms if term not in final_terms]
-    if len(missing) >= max(2, min(4, len(required_terms))):
+    if len(missing) >= max(2, math.ceil(len(required_terms) * 0.5)):
         return ["Intent drift risk, missing anchor terms: " + ", ".join(missing[:6])]
     return []
 
@@ -4390,22 +4625,18 @@ def final_score_report(
 
 def concept_is_represented(concept: str, prompt: str) -> bool:
     concept_key = normalize_concept_text(concept).lower().strip()
-    prompt_key = prompt.lower()
     if not concept_key:
         return True
-    if concept_key in prompt_key:
-        return True
-
-    aliases = CONCEPT_ALIASES.get(concept_key, ())
-    if any(alias.lower() in prompt_key for alias in aliases):
+    if semantic_term_present(concept_key, prompt):
         return True
 
     words = significant_words(concept_key)
     if not words:
         return True
     if len(words) == 1:
-        return words[0] in prompt_key
-    return all(word in prompt_key for word in words)
+        return semantic_term_present(words[0], prompt)
+    matched = semantic_match_count(words, prompt)
+    return matched >= math.ceil(len(words) * 0.6)
 
 
 def missing_required_concepts(prompt: str, concept_keywords: str) -> list[str]:
@@ -4417,19 +4648,18 @@ def missing_required_concepts(prompt: str, concept_keywords: str) -> list[str]:
 
 
 def missing_weighted_terms(prompt: str, weighted_terms: str) -> list[str]:
-    lowered = normalize_concept_text(prompt).lower()
     missing: list[str] = []
     for term, weight in parse_weighted_terms(weighted_terms):
         if weight < 1.3:
             continue
         significant = significant_words(term)
         if significant:
-            represented = all(
-                re.search(rf"\b{re.escape(word)}\b", lowered)
-                for word in significant[:4]
+            represented = (
+                semantic_match_count(significant[:4], prompt)
+                >= math.ceil(len(significant[:4]) * 0.6)
             )
         else:
-            represented = term.lower() in lowered
+            represented = semantic_term_present(term, prompt)
         if not represented:
             missing.append(f"{term} ({weighted_term_priority_label(weight)}, {weight:g})")
     return missing
@@ -4458,15 +4688,25 @@ def forbidden_syntax_issues(prompt: str) -> list[str]:
     return issues
 
 
-def contradiction_issues(prompt: str) -> list[str]:
+def contradiction_issues(prompt: str, original_prompt: str = "") -> list[str]:
     lowered = prompt.lower()
+    source = original_prompt.lower()
     issues: list[str] = []
     for left, right in CONTRADICTION_GROUPS:
         left_escaped = re.escape(left).replace(r"\ ", r"\s+")
         right_escaped = re.escape(right).replace(r"\ ", r"\s+")
         left_pattern = rf"(?<!\w){left_escaped}(?!\w)"
         right_pattern = rf"(?<!\w){right_escaped}(?!\w)"
-        if re.search(left_pattern, lowered) and re.search(right_pattern, lowered):
+        candidate_has_both = (
+            re.search(left_pattern, lowered)
+            and re.search(right_pattern, lowered)
+        )
+        source_has_both = (
+            source
+            and re.search(left_pattern, source)
+            and re.search(right_pattern, source)
+        )
+        if candidate_has_both and not source_has_both:
             issues.append(f"Contradictory terms: {left} / {right}")
     return issues
 
@@ -4475,8 +4715,8 @@ def focus_issue(prompt: str, focus: str) -> str | None:
     words = significant_words(focus)
     if not words:
         return None
-    lowered = prompt.lower()
-    if not any(word in lowered for word in words):
+    required = max(1, math.ceil(len(words) * 0.6))
+    if semantic_match_count(words, prompt) < required:
         return f"Requested focus not represented: {focus.strip()}"
     return None
 
@@ -4632,6 +4872,7 @@ def final_compliance_issues(
     complexity: int = 0,
     movement: int = 0,
     content_format: str = "Auto",
+    mode: str = "Auto",
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
 ) -> list[str]:
@@ -4647,7 +4888,7 @@ def final_compliance_issues(
         issues.append("Final prompt contains multiple lines")
     issues.extend(internal_prompt_guidance_issues(cleaned))
     issues.extend(forbidden_syntax_issues(cleaned))
-    issues.extend(contradiction_issues(cleaned))
+    issues.extend(contradiction_issues(cleaned, original_prompt))
     issues.extend(intent_lock_issues(original_prompt, cleaned, goal_headline))
     issues.extend(explicit_instruction_issues(cleaned, original_prompt, model_instructions))
     issues.extend(count_contract_issues(cleaned, original_prompt))
@@ -4684,9 +4925,10 @@ def final_compliance_issues(
             ]
         if encoder_risks:
             issues.append("Risky phrasing for altered text encoder: " + ", ".join(encoder_risks))
-    style_issues = style_conflict_issues(cleaned)
+    style_issues = style_conflict_issues(cleaned, original_prompt)
     if style_issues:
         issues.extend(style_issues)
+    issues.extend(style_mode_issues(cleaned, mode))
     rendered_issues = rendered_text_issues(cleaned, original_prompt)
     if rendered_issues:
         issues.extend(rendered_issues)
@@ -5072,6 +5314,7 @@ HARD_COMPLIANCE_PREFIXES = (
     "Internal prompt guidance leaked",
     "Forbidden syntax matched",
     "Contradictory terms",
+    "Selected visual mode missing or changed",
     "Intent drift risk",
     "Explicit user directives missing",
     "Count contract",
@@ -7441,6 +7684,7 @@ def build_small_model_system_prompt(
     variation_count: int,
     enhance_actions: bool,
     develop_story: bool,
+    mode: str = "Auto",
 ) -> str:
     """Return a compact, low-fragility contract for roughly 4B local models."""
 
@@ -7476,14 +7720,20 @@ def build_small_model_system_prompt(
         "Balanced improvement": "Add one compact coherent visual cluster when useful.",
         "Creative enhancement": "Develop one coherent setting, staging, light, or material direction.",
     }.get(risk_level, "Improve coherently without changing the core.")
+    mode_rule = (
+        ""
+        if mode == "Auto"
+        else f"Required visual mode: {mode}."
+    )
     return f"""Precisely edit prompts for {target}. Return only the final prompt.
 {format_rule}
 {target_rule}
-Preserve all requested subjects, actions, objects, counts, positions, relationships, exclusions, quoted text, and concepts.
+Preserve requested subjects, actions, objects, counts, positions, relationships, exclusions, quoted text, and concepts.
 Open with one compact visual thesis: supplied medium/critical shot, subject, core action or state, and setting. Then interactions, environment, other camera/composition, light/color, and rendering. Keep modifiers with owners.
 Anatomical left and right mean the subject's body; image-left and image-right mean frame placement. {action_rule}
 For multiple people, use stable role-position labels only where ambiguity requires.
 Integrate camera and style naturally. Never emit control labels: "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:".
+{mode_rule}
 {story_rule}
 Requested output length: {output_length}. {length_rule}
 Rewrite risk level: {risk_level}. {risk_rule} Prompt preset: {prompt_preset}.
@@ -10971,6 +11221,7 @@ def post_chat_completion(
     api_key: str,
     seed: int | None = None,
     mode: str = "Auto",
+    visual_direction: str = "",
     detail_level: str = "Detailed",
     output_length: str = "Balanced",
     output_min_words: int | None = None,
@@ -11237,6 +11488,7 @@ def post_chat_completion(
                 variation_count=variation_count,
                 enhance_actions=enhance_actions,
                 develop_story=develop_story,
+                mode=mode,
             )
         correction_user = build_small_model_user_message(
             prompt,
@@ -11338,6 +11590,8 @@ def post_chat_completion(
             candidate = translate_explicit_adult_language(candidate)
         if normalize_generator_target(generator_target) == "Krea 2":
             candidate = naturalize_krea_workflow_labels(candidate)
+        candidate = enforce_style_mode_contract(candidate, mode, prompt)
+        candidate = enforce_visual_direction_contract(candidate, visual_direction)
         return strip_unexpected_scripts(candidate, source_script_context)
 
     def compliance_issues(candidate: str) -> list[str]:
@@ -11361,6 +11615,7 @@ def post_chat_completion(
             complexity=complexity,
             movement=movement,
             content_format=normalized_format,
+            mode=mode,
             safe_for_work=safe_for_work,
             explicit_nsfw=explicit_nsfw,
         )
@@ -11524,6 +11779,7 @@ def post_chat_completion(
         variation_count=variation_count,
         enhance_actions=enhance_actions,
         develop_story=develop_story,
+        mode=mode,
     ) if small_model else build_system_prompt(
         generator_target=generator_target,
         content_format=normalized_format,
