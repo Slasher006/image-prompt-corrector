@@ -1,8 +1,8 @@
 # Image Prompt Corrector
 
-Image Prompt Corrector is a Python/Qt desktop app with a native dark interface. It uses an LM Studio chat model to turn rough input into a faithful prompt for either Krea 2 or FLUX.2 Klein 9B. The default workflow prioritizes instruction adherence over decorative expansion.
+Image Prompt Corrector is a Python/Qt desktop app with a native dark interface. It uses an LM Studio or Ollama chat model to turn rough input into a faithful prompt for either Krea 2 or FLUX.2 Klein 9B. The default workflow prioritizes instruction adherence over decorative expansion.
 
-It is built for a workflow where LM Studio runs locally or on another machine, and Krea or ComfyUI runs separately.
+It is built for a workflow where LM Studio or Ollama runs locally or on another machine, and Krea or ComfyUI runs separately.
 
 The app is under active development. Its offline test suite covers the correction
 contracts, mode isolation, preset libraries, GUI behavior, and Workbench helpers.
@@ -13,8 +13,8 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 
 - Dark Qt GUI with separate Prompt Corrector, Comic Story, Meme Creator, Model Chat, and Workbench modes.
 - Task-focused control groups for the creative brief, model guidance, rewrite rules, quality, and research.
-- LM Studio connection over localhost or network.
-- Model dropdown populated from LM Studio's `/models` endpoint.
+- LM Studio and Ollama connections over localhost or a network.
+- Provider-aware model discovery from LM Studio or Ollama.
 - Input-wide spelling and language cleanup for the draft, concepts, goal, focus, weighted terms, story beats, model instructions, and generation feedback.
 - Entity-centered prompt organization that keeps an object beside its attributes, actions, position, and direct effects.
 - Stronger prompt-specific creative direction with internal concept exploration instead of generic adjective inflation.
@@ -22,7 +22,7 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 - Exact, Krea Official, Improve, and Explore workflows, with fidelity-first Exact mode as the default.
 - Generator target selector for **Krea 2** and **FLUX.2 Klein 9B**.
 - Separate **Prompt Corrector**, **Comic Story**, **Meme Creator**, and **Model Chat** workspaces; comics and memes work with either generator.
-- A global **Settings** drawer keeps shared generation, processing, web-research, and LM Studio connection controls outside the individual mode panes.
+- A global **Settings** drawer keeps shared generation, processing, web-research, and model-server connection controls outside the individual mode panes.
 - Dedicated image-macro builder with coordinated style presets, humor tones, a scene brief, optional exact top and bottom caption positions, caption style, aspect ratio, and its own saved result.
 - Creative-response brief that turns a pasted situation, message, or event into a tailored meme concept with model-invented scene and captions.
 - Hard checks for explicit counts, object-side assignments, exclusions, quoted text, scripts/languages, required concepts, and panel mappings.
@@ -42,7 +42,7 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 - Searchable, renameable, pinnable prompt history.
 - Reusable custom setup presets with JSON import/export.
 - Local reference-image drag-and-drop plus web-reference thumbnails.
-- Direct multi-turn chat with the selected LM Studio model, including a system instruction and cancellable responses.
+- Direct multi-turn chat with the selected local model, including a system instruction and cancellable responses.
 - A project-based Workbench that closes the prompt-to-image feedback loop.
 - Generated-image visual audits with explicit pass/fail lists, timing diagnostics, and minimal repair prompts.
 - Portable `.ipcp` project bundles containing prompts, versions, references, results, reviews, and media assets.
@@ -60,8 +60,8 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 
 - Python 3.10 or newer.
 - PySide6.
-- LM Studio with the local server enabled.
-- A loaded LM Studio model. The default model is:
+- LM Studio with its local server enabled, or a running Ollama installation.
+- A model available to the selected provider. The default LM Studio model is:
 
 ```text
 qwen3-vl-4b-instruct
@@ -108,6 +108,21 @@ On the LM Studio machine, allow network access and make sure the firewall allows
 
 If the remote machine is running the model on CPU, increase **Timeout** in the host/port row. The GUI defaults to `600` seconds.
 
+## Ollama Setup
+
+1. Install and start Ollama.
+2. Download a suitable instruct model, for example `ollama pull qwen3:4b`.
+3. In **Settings → Connection**, choose **Ollama**. The port changes to `11434`.
+4. Click **Test connection** to populate the model dropdown, then select the model.
+
+Default local URL:
+
+```text
+http://127.0.0.1:11434/v1
+```
+
+For remote Ollama, set the host to that machine and configure Ollama to listen on the network. Protect any network-exposed endpoint; Ollama's local API does not require an API key by default.
+
 ## Run The GUI
 
 From this folder:
@@ -140,7 +155,7 @@ Program options are in the top menu bar:
 - **File**: save, import or export setup presets, and exit safely (`Ctrl+S`, `Ctrl+Q`).
 - **Edit**: undo, redo, or clear one specific creative workspace.
 - **Create**: grouped Prompt Corrector, Comic Story, Meme Creator, and Model Chat actions.
-- **Model**: LM Studio connection, rewrite and safety rules, and generation passes.
+- **Model**: local model connection, rewrite and safety rules, and generation passes.
 - **Research**: grounded web verification plus separate reference-analysis toggles for Prompt, Comic, and Meme.
 - **Library**: History, persisted Activity diagnostics, and workspace-isolated References.
 - **View**: show or hide shared settings and the Activity/History/References dock, and control window-size restore.
@@ -177,14 +192,14 @@ Under **Advanced setup > Processing > Rewrite rules**, use **Rewrite rule streng
 
 ## Model Chat
 
-Open the **Model Chat** work-mode tab to talk directly to the selected LM Studio model without the prompt-correction instructions or repair passes.
+Open the **Model Chat** work-mode tab to talk directly to the selected local model without the prompt-correction instructions or repair passes.
 
 1. Optionally change the system instruction, temperature, and maximum response tokens.
 2. Type a message and click **Send**, or press `Ctrl+Shift+Enter` while the message editor is focused.
 3. The answer appears as it streams. Continue sending messages for a multi-turn conversation; the complete visible conversation is sent with each follow-up.
 4. Use **Stop** to cancel the active stream, **Copy last response** to copy the latest answer, or **New chat** to clear the conversation.
 
-Chat preferences and up to 100 recent user/assistant messages are stored in `promptcorrector_settings.json`. Prompt correction and chat share the selected model, LM Studio connection, timeout, and one-request-at-a-time cancellation flow.
+Chat preferences and up to 100 recent user/assistant messages are stored in `promptcorrector_settings.json`. Prompt correction and chat share the selected provider, model connection, timeout, and one-request-at-a-time cancellation flow.
 
 ## Meme Creator
 
@@ -193,7 +208,7 @@ Open **Meme Creator** to build a meme without mixing its fields into the normal 
 - For a creative response, paste or summarize the cause under **Situation to respond to** and optionally explain the **Desired response**. Leave Scene, Top text, and Bottom text blank; the model invents the visual analogy and the strongest one- or two-caption structure.
 - For a manual meme, leave the response situation blank, describe the Scene, and enter exact **Top text**, **Bottom text**, or both.
 - In either workflow, choose a preset and humor tone, adjust the visual controls if needed, then click **Generate meme prompt**.
-- Use **Invent top** or **Invent bottom** to ask the selected LM Studio model for one caption without generating the full meme prompt. An entered target caption is treated as a seed to improve; a blank target caption is invented from the current situation, desired response, scene, humor tone, caption style, and opposite caption.
+- Use **Invent top** or **Invent bottom** to ask the selected local model for one caption without generating the full meme prompt. An entered target caption is treated as a seed to improve; a blank target caption is invented from the current situation, desired response, scene, humor tone, caption style, and opposite caption.
 
 Built-in presets include **Classic Sarcasm**, **Deadpan Irony**, **Relatable Reaction**, **Absurdist Chaos**, **Self-own**, **Wholesome Punchline**, and **Demotivational Irony**. Humor tones can also be selected independently: Auto, Sarcastic, Ironic, Deadpan, Dry observational, Absurdist, Self-deprecating, Wholesome, and Dark comedy. Choose **Custom** to keep a manually configured combination.
 
@@ -216,7 +231,7 @@ The **Workbench** is the fifth main workspace. It keeps experimental and project
 5. Review the score, successful requirements, failures, warnings, and timing diagnostics.
 6. Click **Use repair as feedback** to place the minimal revision in the existing Generation feedback field.
 
-The visual audit uses the selected LM Studio model's vision support. It checks the generated image instead of merely re-reading the prompt. Counts, identity, viewpoint-aware pose, spatial side, props, exact text, exclusions, composition, style, and panel mapping are evaluated independently.
+The visual audit uses the selected local model's vision support. It checks the generated image instead of merely re-reading the prompt. Counts, identity, viewpoint-aware pose, spatial side, props, exact text, exclusions, composition, style, and panel mapping are evaluated independently.
 
 Projects can be saved as `.ipcp` bundles. A bundle includes its JSON project record and copies of currently available reference and result images. Opening a bundle extracts those media assets beside the bundle so it remains usable on another machine.
 
@@ -327,7 +342,7 @@ Action poses are audited as compact physical chains instead of generic “correc
 
 Explicitly labelled descriptions are mandatory panel contracts. For example, `Panel 1: she finds the key` must remain in Panel 1; it cannot be omitted, replaced by an invented beat, merged into another panel, or moved to Panel 2. The correction pass, model audit, and deterministic final gate all check this mapping. Exact quoted dialogue is also validated inside its assigned panel rather than only somewhere on the page.
 
-You do not need to type panel labels in the GUI. The Comic Story workspace numbers every visible editor automatically and assembles them into mandatory `Panel 1:`, `Panel 2:`, and later contracts before calling LM Studio.
+You do not need to type panel labels in the GUI. The Comic Story workspace numbers every visible editor automatically and assembles them into mandatory `Panel 1:`, `Panel 2:`, and later contracts before calling the model server.
 
 Multi-panel example:
 
@@ -341,7 +356,7 @@ For a single image, story development chooses the strongest decisive moment and 
 
 **Weighted words**
 
-Comma-separated words or short phrases that should receive stronger visual priority. Use Krea-friendly natural emphasis, not Stable Diffusion syntax. The app accepts `term:weight`, `term=weight`, or `term*weight`, including two-decimal values such as `1.15`, clamps weights to `0.1` through `3.0`, and tells LM Studio to express the priority through composition, lighting, framing, detail, or action binding.
+Comma-separated words or short phrases that should receive stronger visual priority. Use Krea-friendly natural emphasis, not Stable Diffusion syntax. The app accepts `term:weight`, `term=weight`, or `term*weight`, including two-decimal values such as `1.15`, clamps weights to `0.1` through `3.0`, and tells the selected model to express the priority through composition, lighting, framing, detail, or action binding.
 
 With the cursor inside a weighted term, press `Ctrl+Up` to increase its weight by `0.05` or `Ctrl+Down` to decrease it by `0.05`. If the term has no weight yet, the shortcut adds one.
 
@@ -385,17 +400,17 @@ For quick iteration, keep the draft prompt focused on the subject and action, th
 
 **Temperature**
 
-Controls LM Studio rewrite randomness. Lower values are steadier and more literal; higher values allow more variation. Exact defaults to `0.10`.
+Controls local-model rewrite randomness. Lower values are steadier and more literal; higher values allow more variation. Exact defaults to `0.10`.
 
 **Sampling seed**
 
-Sampling is random by default. Enable **Use fixed seed** in **Settings → Generation** and enter an integer seed to make the complete LM Studio prompt-generation path reproducible. Audit, repair, and meme-retry passes use deterministic offsets from that seed, so they remain different from one another while repeating consistently on the next run. Change the seed to explore a different reproducible result. The CLI equivalent is `--seed 42`.
+Sampling is random by default. Enable **Use fixed seed** in **Settings → Generation** and enter an integer seed to make the complete local-model prompt-generation path reproducible. Audit, repair, and meme-retry passes use deterministic offsets from that seed, so they remain different from one another while repeating consistently on the next run. Change the seed to explore a different reproducible result. The CLI equivalent is `--seed 42`.
 
 **Context tokens**
 
-Controls the approximate token budget for supporting research, concept research, and image-analysis context sent into LM Studio. **Auto (recommended)** reads the selected model's actually loaded `context_length`, reserves room for core instructions, the draft, and generated output, and assigns at most one quarter of the window (capped at `8192`) to supporting context. The dropdown also provides fixed `4K`, `8K`, `16K`, `32K`, and `64K` overrides. When supporting context exceeds the resolved budget, each non-empty section is reduced proportionally.
+Controls the approximate token budget for supporting research, concept research, and image-analysis context sent into the local model. **Auto (recommended)** reads the selected model's advertised `context_length`, reserves room for core instructions, the draft, and generated output, and assigns at most one quarter of the window (capped at `8192`) to supporting context. The dropdown also provides fixed `4K`, `8K`, `16K`, `32K`, and `64K` overrides. When supporting context exceeds the resolved budget, each non-empty section is reduced proportionally.
 
-This setting does not change the context window of a model already loaded by LM Studio. If automatic detection is unavailable, PromptCorrector safely falls back to a `4096` supporting-context budget.
+This setting does not change the context window configured by LM Studio or Ollama. If automatic detection is unavailable, PromptCorrector safely falls back to a `4096` supporting-context budget.
 
 **Krea settings**
 
@@ -477,7 +492,7 @@ Example: use **Cinematic action** when body mechanics, motion, contact points, a
 
 The app uses a model-first verification sequence before correction:
 
-1. It asks the selected LM Studio model what it knows and where it is uncertain.
+1. It asks the selected local model what it knows and where it is uncertain.
 2. It identifies up to twelve knowledge-sensitive targets across explicit concepts, actions, pose mechanics, objects, materials, places, characters, styles, weighted terms, and other important visual words.
 3. It runs targeted web searches for those terms.
 4. It asks the model to compare its prior knowledge with the web evidence, correct disagreements, and preserve unresolved uncertainty.
@@ -495,11 +510,11 @@ Grounded verification may use web sources such as Wikipedia, Bing, and DuckDuckG
 
 Use **Image source** to limit concept-image lookup to one provider. This is faster than **Auto (safe sources)** and avoids waiting on providers you do not want to use.
 
-Reference image analysis requires a vision-capable model in LM Studio.
+Reference image analysis requires a vision-capable model in the selected provider.
 
 The shared **References** dock accepts PNG, JPEG, WebP, and GIF files by drag-and-drop or with **Add images**. Select Prompt Corrector, Comic Story, or Meme Creator at the top of the dock; each workspace keeps its own analysis toggle and up to eight local paths. Local images are intentional references, but may clarify only requested identity, material, or style traits; they are not scene templates. When local images are present, the app skips automatic web image lookup. Without local images, automatic image research runs only for explicit concepts available in that workspace. For every source, the vision model must separate allowed facts from rejected scene details, and only the allowed glossary section reaches correction. The source image's unrelated pose, action, camera, crop, composition, layout, object placement, background, setting, palette, lighting arrangement, text, and story are excluded.
 
-The **Stop** button immediately releases the GUI for a new request, closes the active LM Studio streaming connection, and discards any partial result. Old workers and research requests remain invalidated, so a late result cannot overwrite the restarted request.
+The **Stop** button immediately releases the GUI for a new request, closes the active model streaming connection, and discards any partial result. Old workers and research requests remain invalidated, so a late result cannot overwrite the restarted request.
 
 ## History and Activity
 
@@ -573,8 +588,19 @@ python3 krea_prompt_corrector.py \
   --focus "torchlit armor and readable sword pose" \
   --concepts "medieval armor, ruined castle" \
   --risk-level "Balanced improvement" \
-  --preset "Historical accuracy"
+    --preset "Historical accuracy"
 ```
+
+Ollama CLI example:
+
+```bash
+python3 krea_prompt_corrector.py \
+  --base-url http://127.0.0.1:11434/v1 \
+  --model qwen3:4b \
+  --prompt "a wounded knight at a castle gate"
+```
+
+`MODEL_BASE_URL`, `MODEL_NAME`, and optional `MODEL_API_KEY` provide provider-neutral environment overrides. The existing `LM_STUDIO_BASE_URL`, `LM_STUDIO_MODEL`, and `LM_STUDIO_API_KEY` variables remain supported.
 
 Read a prompt from a file:
 
@@ -622,7 +648,7 @@ printf "a cinematic knight at a castle gate" | python3 krea_prompt_corrector.py
 
 ## Testing
 
-The test suite is offline: it mocks LM Studio and research-provider traffic, so a
+The test suite is offline: it mocks model-server and research-provider traffic, so a
 running model server is not required.
 
 Run syntax checks for all application modules:
@@ -649,7 +675,7 @@ GitHub Actions runs the same checks on Python 3.10 and 3.12.
 
 ## Repository Layout
 
-- `krea_prompt_corrector.py`: correction engine, LM Studio client, research,
+- `krea_prompt_corrector.py`: correction engine, local-model client, research,
   validation, repair, and CLI.
 - `krea_prompt_gui.py`: main PySide6 desktop interface and saved-state handling.
 - `prompt_workbench.py`: project bundles, generated-image review, contracts,
@@ -665,14 +691,14 @@ GitHub Actions runs the same checks on Python 3.10 and 3.12.
 PromptCorrector does not require a hosted PromptCorrector service, but it is not
 strictly offline when network-backed features are enabled:
 
-- The configured LM Studio server receives prompt or chat inputs and any
+- The configured LM Studio or Ollama server receives prompt or chat inputs and any
   reference images selected for model analysis.
 - Grounded research sends search terms to the selected search and image
   providers.
 - ComfyUI handoff sends the corrected prompt and workflow to the configured
   ComfyUI endpoint.
 
-Keep LM Studio and ComfyUI on localhost unless remote access is intentional and
+Keep the model server and ComfyUI on localhost unless remote access is intentional and
 properly protected. Read [SECURITY.md](SECURITY.md) before using a remote or
 network-exposed model server.
 
@@ -680,11 +706,15 @@ network-exposed model server.
 
 **LM Studio timeout**
 
-Use **Test LM Studio** in the GUI. If it fails, check that the LM Studio server is running and that the selected model is loaded. For CPU-only remote inference, raise the GUI **Timeout** value or pass `--timeout 900` or higher in CLI mode.
+Use **Test model server** in the GUI. If it fails, check that LM Studio is serving the selected model. For CPU-only remote inference, raise the GUI **Timeout** value or pass `--timeout 900` or higher in CLI mode.
 
 **Network LM Studio does not connect**
 
 Use the remote machine IP or hostname, keep port `1234`, and allow the port through the firewall.
+
+**Ollama does not connect**
+
+Confirm Ollama is running, choose **Ollama** in **Settings → Connection**, use port `11434`, and run `ollama list` to verify the selected model is installed.
 
 **Research fails with SSL errors**
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qt GUI for correcting Krea 2 prompts with LM Studio."""
+"""Qt GUI for correcting Krea 2 prompts with LM Studio or Ollama."""
 
 from __future__ import annotations
 
@@ -58,9 +58,11 @@ from krea_prompt_corrector import (
     CONTEXT_TOKEN_MAX,
     CONTEXT_TOKEN_MIN,
     DEFAULT_BASE_URL,
+    DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_MODEL,
     CREATIVE_SESSION_TTL_SECONDS,
     GENERATOR_TARGETS,
+    MODEL_PROVIDERS,
     CONTENT_FORMATS,
     CREATIVITY_LEVELS,
     DETAIL_LEVELS,
@@ -96,7 +98,7 @@ from krea_prompt_corrector import (
     extract_panel_descriptions,
     fetch_image_data_url,
     format_generator_recommendation,
-    list_lm_studio_models,
+    list_local_models,
     is_small_model,
     krea_guideline_status,
     normalize_all_comic_panel_suggestions,
@@ -104,7 +106,7 @@ from krea_prompt_corrector import (
     preserve_invent_seed_value,
     recover_invent_length_overflow,
     canonicalize_saved_invent_value,
-    normalize_lm_studio_base_url,
+    normalize_model_base_url,
     natural_visual_direction,
     parse_concepts,
     parse_concept_mix,
@@ -119,6 +121,7 @@ from krea_prompt_corrector import (
     slider_value,
     strip_unexpected_scripts,
     strip_private_prompt_guidance,
+    unload_local_model,
     unload_lm_studio_model,
     vague_prompt_issues,
     vague_prompt_needs_clarification_research,
@@ -718,13 +721,13 @@ PROMPT_HISTORY_OPTION_KEYS = (
 
 
 UI_HELP: dict[str, tuple[str, str]] = {
-    "LM Studio": ("Connection settings shared by prompt correction and chat.", "Use a model loaded on localhost:1234."),
-    "Model": ("Choose or enter the LM Studio model identifier.", "Select qwen2.5-vl-7b-instruct."),
-    "Host": ("Computer running the LM Studio API server.", "Use localhost for this computer."),
-    "Port": ("Network port used by the LM Studio API.", "LM Studio normally uses 1234."),
+    "LM Studio": ("Connection settings shared by prompt correction and chat.", "Use LM Studio on port 1234 or Ollama on port 11434."),
+    "Model": ("Choose or enter the local model identifier.", "Select qwen2.5-vl-7b-instruct or qwen3:4b."),
+    "Host": ("Computer running the local model API server.", "Use localhost for this computer."),
+    "Port": ("Network port used by the model API.", "LM Studio normally uses 1234; Ollama uses 11434."),
     "Timeout": ("Maximum seconds to wait for one model request.", "Use 300 for a slower vision model."),
     "API URL": ("Resolved OpenAI-compatible API address.", "http://localhost:1234/v1"),
-    "Test connection": ("Check the server and refresh the model list.", "Click after loading a model in LM Studio."),
+    "Test connection": ("Check the server and refresh the model list.", "Click after making a model available in LM Studio or Ollama."),
     "Creative direction": ("Optional details that guide the rewritten prompt.", "Set Focus to dramatic rim lighting."),
     "Camera": (
         "Choose or type the camera framing applied to Single Image, Comic Story, and Meme Creator output.",
@@ -792,7 +795,7 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Meme preset": ("Apply a coordinated humor tone, caption style, aspect ratio, and visual direction.", "Choose Classic Sarcasm or Deadpan Irony, then adjust individual controls if needed."),
     "Humor tone": ("Choose the comedic voice that should shape the relationship between image and caption.", "Use Sarcastic for mock praise or Ironic when the image contradicts the words."),
     "Meme temperature": (
-        "Control LM Studio randomness for every Meme Creator request, including Invent buttons and final prompt generation.",
+        "Control local-model randomness for every Meme Creator request, including Invent buttons and final prompt generation.",
         "Use 0.3 for consistent wording, 0.7 for balanced invention, or 1.0 for wilder ideas.",
     ),
     "Creative response": ("Describe what prompted the meme and the reaction you want it to deliver.", "A coworker called a third emergency meeting about reducing meetings; respond with dry disbelief."),
@@ -844,8 +847,8 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Preset": ("Apply a built-in prompt style profile.", "Choose Cinematic for film-like framing."),
     "Variations": ("Number of corrected prompt alternatives to request.", "Set 3 to compare three approaches."),
     "Temperature": ("Control response randomness; lower is more consistent.", "Use 0.3 for precise rewrites."),
-    "Use fixed seed": ("Repeat LM Studio sampling with a reproducible seed instead of a random one.", "Enable it with seed 42 to reproduce the same prompt-generation path."),
-    "Sampling seed": ("Integer seed sent to LM Studio when fixed-seed mode is enabled.", "Use 42, then change it to explore a different reproducible result."),
+    "Use fixed seed": ("Repeat local-model sampling with a reproducible seed instead of a random one.", "Enable it with seed 42 to reproduce the same prompt-generation path."),
+    "Sampling seed": ("Integer seed sent to the local model when fixed-seed mode is enabled.", "Use 42, then change it to explore a different reproducible result."),
     "Context tokens": (
         "Auto reads the loaded model context and reserves room for instructions and output; fixed values override it.",
         "Keep Auto unless you need a known manual supporting-context limit.",
@@ -876,7 +879,7 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Include Krea settings": ("Show recommended Krea controls separately from the image prompt.", "Use creativity raw without adding it to the prompt text."),
     "Show Krea setup recommendation": ("Show recommended Krea controls separately from the image prompt.", "Use creativity raw without adding it to the prompt text."),
     "Show generator setup recommendation": ("Show controls for the selected generator separately from its prompt.", "Show four steps and guidance 1.0 for FLUX.2 Klein 9B."),
-    "Unload model after correction": ("Ask LM Studio to unload the model when work finishes.", "Enable to free GPU memory after one correction."),
+    "Unload model after correction": ("Ask the selected provider to unload the model when work finishes.", "Enable to free GPU memory after one correction."),
     "Grounded web verification": ("Compare model knowledge with web evidence before rewriting.", "Verify a historical object or martial-arts action."),
     "Search engine": ("Choose the source used for grounded text research.", "Use Auto to try available providers."),
     "Analyze reference images": ("Analyze local references, or use web images only as concept glossaries for explicit Concepts.", "Add a costume photo, or enter Art Nouveau in Concepts for concept-only image research."),
@@ -922,7 +925,7 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Generation": ("Control shared rewrite length, detail, variation, and sampling.", "Choose detailed output with two variations."),
     "Krea controls": ("Set Krea-specific values that may accompany the prompt.", "Raise Movement for an action scene."),
     "Processing": ("Choose shared rewrite safeguards, quality passes, and web research.", "Enable audit and repair for every image-prompt mode."),
-    "Connection": ("Configure the LM Studio server shared by every mode.", "Use a model loaded on localhost port 1234."),
+    "Connection": ("Configure the local model server shared by every mode.", "Use LM Studio on port 1234 or Ollama on port 11434."),
     "Rewrite rules": ("Choose what the model may change or improve.", "Enable Fix logic conflicts for impossible staging."),
     "Quality and session": ("Control extra model passes and session cleanup.", "Enable Audit and repair for complex prompts."),
     "Web research": ("Configure grounded text research shared by image-prompt modes.", "Verify a historical artifact before rewriting."),
@@ -966,6 +969,7 @@ def classify_workflow_error(
     title = "Prompt generation failed"
     category = "generation"
     next_step = "Review Activity for the failed stage, adjust the current inputs, and retry."
+    server_name = "Ollama" if "ollama" in lowered else "LM Studio"
 
     if any(marker in lowered for marker in (
         "failed to connect",
@@ -973,14 +977,15 @@ def classify_workflow_error(
         "could not connect",
         "no connection could be made",
         "lm studio is unreachable",
+        "could not reach ollama",
     )):
-        title = "LM Studio is unavailable"
+        title = f"{server_name} is unavailable"
         category = "connection"
-        next_step = "Start the LM Studio local server, load the selected model, then retry."
+        next_step = f"Start {server_name}, make the selected model available, then retry."
     elif "timed out" in lowered or "timeout" in lowered:
-        title = "LM Studio timed out"
+        title = f"{server_name} timed out"
         category = "timeout"
-        next_step = "Keep the current inputs, raise the LM Studio timeout or use a faster loaded model, then retry."
+        next_step = "Keep the current inputs, raise the model timeout or use a faster model, then retry."
     elif any(marker in lowered for marker in (
         "reasoning_content",
         "reasoning-only",
@@ -1039,7 +1044,7 @@ def classify_workflow_error(
     )):
         title = "The selected model is not loaded"
         category = "model"
-        next_step = "Load the selected language or vision model in LM Studio, refresh the model list, then retry."
+        next_step = f"Make the selected language or vision model available in {server_name}, refresh the model list, then retry."
     elif "invent field contract" in lowered:
         title = "The Invent field contract could not be repaired"
         category = "contract"
@@ -1311,7 +1316,18 @@ class PromptCorrectorApp:
         self.root.setWindowTitle("Image Prompt Corrector")
         self.root.setMinimumSize(980, 720)
 
-        self.model_var = Value(os.getenv("LM_STUDIO_MODEL", DEFAULT_MODEL))
+        initial_provider = os.getenv("MODEL_PROVIDER", "LM Studio")
+        if initial_provider not in MODEL_PROVIDERS:
+            initial_provider = "LM Studio"
+        self.model_provider_var = Value(initial_provider)
+        self.model_var = Value(
+            os.getenv(
+                "MODEL_NAME",
+                os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
+                if initial_provider == "Ollama"
+                else os.getenv("LM_STUDIO_MODEL", DEFAULT_MODEL),
+            )
+        )
         self.generator_target_var = Value("Krea 2")
         self.content_format_var = Value("Single Image")
         self.camera_control_var = Value(CAMERA_CONTROL_AUTO)
@@ -1340,11 +1356,21 @@ class PromptCorrectorApp:
         self.meme_aspect_ratio_var = Value("1:1 square")
         self.meme_visual_direction_var = Value("")
         self.workflow_profile_var = Value("Exact")
+        default_model_url = (
+            DEFAULT_OLLAMA_BASE_URL if initial_provider == "Ollama" else DEFAULT_BASE_URL
+        )
         self.base_url_var = Value(
-            value=normalize_lm_studio_base_url(os.getenv("LM_STUDIO_BASE_URL", DEFAULT_BASE_URL))
+            value=normalize_model_base_url(
+                os.getenv(
+                    "MODEL_BASE_URL",
+                    os.getenv("OLLAMA_HOST", default_model_url)
+                    if initial_provider == "Ollama"
+                    else os.getenv("LM_STUDIO_BASE_URL", default_model_url),
+                )
+            )
         )
         self.lm_host_var = Value("127.0.0.1")
-        self.lm_port_var = Value("1234")
+        self.lm_port_var = Value("11434" if initial_provider == "Ollama" else "1234")
         self.lm_timeout_var = Value(600)
         self.concepts_var = Value("")
         self.concept_mix_var = Value("")
@@ -1585,6 +1611,7 @@ class PromptCorrectorApp:
                 else self.recovered_meme_result
             ),
             "workflow_profile": self.workflow_profile_var.get(),
+            "model_provider": self.model_provider_var.get(),
             "model": self.model_var.get(),
             "available_models": self.available_models,
             "prompt_history": self.prompt_history,
@@ -1921,8 +1948,15 @@ class PromptCorrectorApp:
                         if isinstance(path, str) and Path(path).is_file()
                     ][:8],
                 )
+        self.model_provider_var.set(
+            self._choice_setting(
+                settings.get("model_provider"),
+                MODEL_PROVIDERS,
+                self.model_provider_var.get(),
+            )
+        )
         self.base_url_var.set(
-            normalize_lm_studio_base_url(str(settings.get("base_url", self.base_url_var.get())))
+            normalize_model_base_url(str(settings.get("base_url", self.base_url_var.get())))
         )
         self._set_host_port_from_base_url(self.base_url_var.get())
         self.lm_host_var.set(str(settings.get("lm_host", self.lm_host_var.get())))
@@ -2821,7 +2855,7 @@ class PromptCorrectorApp:
         self.movement_var.set(self._int_setting(entry.get("movement"), -100, 100, self.movement_var.get()))
 
     def _set_host_port_from_base_url(self, base_url: str) -> None:
-        parsed = urllib.parse.urlsplit(normalize_lm_studio_base_url(base_url))
+        parsed = urllib.parse.urlsplit(normalize_model_base_url(base_url))
         if parsed.hostname:
             self.lm_host_var.set(parsed.hostname)
         if parsed.port:
@@ -2833,12 +2867,30 @@ class PromptCorrectorApp:
         if host:
             if ":" in host and not host.startswith("[") and not host.count(".") == 3:
                 host = f"[{host}]"
-            target = f"http://{host}:{port or '1234'}/v1"
+            default_port = "11434" if self.model_provider_var.get() == "Ollama" else "1234"
+            target = f"http://{host}:{port or default_port}/v1"
         else:
             target = self.base_url_var.get()
-        normalized = normalize_lm_studio_base_url(target)
+        normalized = normalize_model_base_url(target)
         self.base_url_var.set(normalized)
         return normalized
+
+    def _model_api_key(self) -> str:
+        configured = os.getenv("MODEL_API_KEY")
+        if configured is not None:
+            return configured
+        if self.model_provider_var.get() == "Ollama":
+            return os.getenv("OLLAMA_API_KEY", "")
+        return os.getenv("LM_STUDIO_API_KEY", "lm-studio")
+
+    def _on_model_provider_changed(self, provider: str) -> None:
+        current_port = self.lm_port_var.get().strip()
+        if current_port in {"", "1234", "11434"}:
+            self.lm_port_var.set("11434" if provider == "Ollama" else "1234")
+        self.available_models = []
+        if self.model_combo is not None:
+            self.model_combo.configure(values=[])
+        self._current_base_url()
 
     def _bind_line(self, variable: Value, *, read_only: bool = False) -> QLineEdit:
         widget = QLineEdit(str(variable.get()))
@@ -4784,7 +4836,7 @@ class PromptCorrectorApp:
 
         model_menu = bar.addMenu("Model")
         connection = model_menu.addMenu("Connection")
-        connection.addAction("Test LM Studio", self.test_lm_studio_connection)
+        connection.addAction("Test model server", self.test_model_connection)
         connection.addAction("Save settings", self._save_settings)
         connection.addSeparator()
         self._menu_check(
@@ -4952,7 +5004,7 @@ class PromptCorrectorApp:
         advanced_button = QtButton("Settings")
         self._set_help(
             advanced_button,
-            "Shows settings shared by the image-prompt workspaces and the LM Studio connection.",
+            "Shows settings shared by the image-prompt workspaces and local model connection.",
             "Open this to adjust generation, processing, research, or connection settings.",
         )
         advanced_button.setCheckable(True)
@@ -5329,27 +5381,36 @@ class PromptCorrectorApp:
         connection_hint.setStyleSheet("color: #8993a5;")
         self._help(connection_hint, "Connection")
         connection_grid.addWidget(connection_hint, 0, 0, 1, 6)
-        connection_grid.addWidget(QLabel("Host"), 1, 0)
-        connection_grid.addWidget(self._help(self._bind_line(self.lm_host_var), "Host"), 1, 1)
-        connection_grid.addWidget(QLabel("Port"), 1, 2)
-        connection_grid.addWidget(self._help(self._bind_line(self.lm_port_var), "Port"), 1, 3)
-        connection_grid.addWidget(QLabel("Timeout"), 1, 4)
+        connection_grid.addWidget(QLabel("Provider"), 1, 0)
+        provider_combo = self._bind_combo(self.model_provider_var, MODEL_PROVIDERS)
+        self._set_help(
+            provider_combo,
+            "Choose LM Studio or Ollama. This controls model discovery, context inspection, unloading, and the default port.",
+            "Choose Ollama for a server normally listening on port 11434.",
+        )
+        connection_grid.addWidget(provider_combo, 1, 1)
+        self.model_provider_var.subscribe(self._on_model_provider_changed)
+        connection_grid.addWidget(QLabel("Host"), 1, 2)
+        connection_grid.addWidget(self._help(self._bind_line(self.lm_host_var), "Host"), 1, 3)
+        connection_grid.addWidget(QLabel("Port"), 1, 4)
+        connection_grid.addWidget(self._help(self._bind_line(self.lm_port_var), "Port"), 1, 5)
+        connection_grid.addWidget(QLabel("Timeout"), 2, 0)
         connection_grid.addWidget(
             self._help(self._bind_spin(self.lm_timeout_var, 30, 3600, 30), "Timeout"),
+            2,
             1,
-            5,
         )
-        connection_grid.addWidget(QLabel("API URL"), 2, 0)
+        connection_grid.addWidget(QLabel("API URL"), 2, 2)
         connection_grid.addWidget(
             self._help(self._bind_line(self.base_url_var, read_only=True), "API URL"),
             2,
+            3,
             1,
-            1,
-            4,
+            2,
         )
         self.test_connection_button = QtButton("Test connection")
         self._help(self.test_connection_button, "Test connection")
-        self.test_connection_button.clicked.connect(self.test_lm_studio_connection)
+        self.test_connection_button.clicked.connect(self.test_model_connection)
         connection_grid.addWidget(self.test_connection_button, 2, 5)
         connection_grid.setColumnStretch(1, 3)
         connection_grid.setColumnStretch(3, 1)
@@ -6039,7 +6100,7 @@ class PromptCorrectorApp:
         self._set_help(
             comic_progress_text,
             "Names the current comic-generation workflow stage.",
-            "It may show Waiting for LM Studio correction.",
+            "It may show Waiting for model correction.",
         )
         self.progress_text_var.subscribe(lambda value: comic_progress_text.setText(str(value)))
         result_layout.addWidget(comic_progress_text)
@@ -6451,7 +6512,7 @@ class PromptCorrectorApp:
         self._set_help(
             meme_progress_text,
             "Names the current meme-generation workflow stage.",
-            "It may show Waiting for LM Studio correction.",
+            "It may show Waiting for model correction.",
         )
         self.progress_text_var.subscribe(
             lambda value: meme_progress_text.setText(str(value))
@@ -6492,7 +6553,7 @@ class PromptCorrectorApp:
             1,
             3,
         )
-        model_hint = QLabel("Uses the LM Studio model and connection selected above.")
+        model_hint = QLabel("Uses the local model provider, model, and connection selected above.")
         model_hint.setStyleSheet("color: #8993a5;")
         self._set_help(
             model_hint,
@@ -6579,7 +6640,7 @@ class PromptCorrectorApp:
             return
         model = self.model_var.get().strip()
         if not model:
-            messagebox.showwarning("Missing model", "Select or enter an LM Studio model first.")
+            messagebox.showwarning("Missing model", "Select or enter a local model first.")
             return
 
         self.chat_messages.append({"role": "user", "content": content})
@@ -6624,7 +6685,7 @@ class PromptCorrectorApp:
                 temperature=self._chat_temperature(),
                 max_tokens=self._chat_max_tokens(),
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
                 chunk_callback=lambda chunk: self._after_threadsafe(
                     0, self._show_chat_chunk, request_id, chunk
@@ -6741,67 +6802,75 @@ class PromptCorrectorApp:
         controls.addWidget(spin)
         layout.addLayout(controls, row, 1)
 
-    def test_lm_studio_connection(self) -> None:
+    def test_model_connection(self) -> None:
         base_url = self._current_base_url()
+        provider = self.model_provider_var.get()
         self._save_settings()
         self.active_activity_workspace = "system"
-        self._log_activity("Started LM Studio connection test.", "system")
-        self.status_var.set("Testing LM Studio...")
-        self._log_activity(f"Testing LM Studio connection at {base_url}...")
+        self._log_activity(f"Started {provider} connection test.", "system")
+        self.status_var.set(f"Testing {provider}...")
+        self._log_activity(f"Testing {provider} connection at {base_url}...")
         self.test_connection_button.configure(state="disabled")
 
         thread = threading.Thread(
-            target=self._test_lm_studio_worker,
-            args=(base_url,),
+            target=self._test_model_worker,
+            args=(provider, base_url),
             daemon=True,
         )
         thread.start()
 
-    def _test_lm_studio_worker(self, base_url: str) -> None:
+    def test_lm_studio_connection(self) -> None:
+        """Compatibility entrypoint retained for existing integrations."""
+
+        self.test_model_connection()
+
+    def _test_model_worker(self, provider: str, base_url: str) -> None:
         try:
-            models = list_lm_studio_models(
+            models = list_local_models(
+                provider=provider,
                 base_url=base_url,
                 timeout=8.0,
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
             )
         except Exception as exc:
             self._log_activity_threadsafe(f"Connection failed: {exc}")
-            self._after_threadsafe(0, self._finish_connection_test, False, str(exc))
+            self._after_threadsafe(0, self._finish_connection_test, provider, False, str(exc))
             return
 
         if models:
-            self._log_activity_threadsafe("LM Studio reachable. Models:")
+            self._log_activity_threadsafe(f"{provider} reachable. Models:")
             for model in models:
                 self._log_activity_threadsafe(f"- {model}")
             self._after_threadsafe(0, self._update_available_models, models)
         else:
-            self._log_activity_threadsafe("LM Studio reachable, but no language models were found.")
-        self._after_threadsafe(0, self._finish_connection_test, True, "")
+            self._log_activity_threadsafe(f"{provider} reachable, but no language models were found.")
+        self._after_threadsafe(0, self._finish_connection_test, provider, True, "")
 
     def _refresh_model_list_in_background(self) -> None:
         thread = threading.Thread(
             target=self._refresh_model_list_worker,
-            args=(self._current_base_url(),),
+            args=(self.model_provider_var.get(), self._current_base_url()),
             daemon=True,
         )
         thread.start()
 
-    def _refresh_model_list_worker(self, base_url: str) -> None:
+    def _refresh_model_list_worker(self, provider: str, base_url: str) -> None:
         try:
-            models = list_lm_studio_models(
+            models = list_local_models(
+                provider=provider,
                 base_url=base_url,
                 timeout=5.0,
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
             )
         except Exception:
             return
         self._after_threadsafe(0, self._update_available_models, models)
 
-    def _finish_connection_test(self, ok: bool, error: str) -> None:
+    def _finish_connection_test(self, provider: str, ok: bool, error: str) -> None:
         self.test_connection_button.configure(state="normal")
-        self.status_var.set("LM Studio reachable" if ok else "LM Studio connection failed")
+        self.status_var.set(f"{provider} reachable" if ok else f"{provider} connection failed")
         if error:
-            messagebox.showerror("LM Studio connection", error)
+            messagebox.showerror(f"{provider} connection", error)
 
     def _single_image_field_context(self) -> dict[str, object]:
         draft = (
@@ -7107,7 +7176,7 @@ class PromptCorrectorApp:
             temperature=min(0.2, max(0.0, float(temperature))),
             max_tokens=768,
             timeout=self._lm_timeout_seconds(),
-            api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+            api_key=self._model_api_key(),
             seed=(None if seed is None else (int(seed) + 1) % 2_147_483_648),
             ttl=CREATIVE_SESSION_TTL_SECONDS,
             cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -7186,7 +7255,7 @@ class PromptCorrectorApp:
         if not model:
             messagebox.showwarning(
                 "Missing model",
-                "Select or enter an LM Studio model first.",
+                "Select or enter a local model first.",
             )
             return
 
@@ -7324,7 +7393,7 @@ class PromptCorrectorApp:
                 focus=focus,
                 model_instructions=model_instructions,
                 timeout=float(self._lm_timeout_seconds()),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
             )
             self._raise_if_cancelled(request_id)
@@ -7377,7 +7446,7 @@ class PromptCorrectorApp:
                 model_probe=model_knowledge,
                 web_research=web_research,
                 timeout=float(self._lm_timeout_seconds()),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
             )
             result["research_context"] = (
@@ -7410,7 +7479,7 @@ class PromptCorrectorApp:
                     concept=image_prompt,
                     image_candidates=image_candidates,
                     timeout=float(self._lm_timeout_seconds()),
-                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    api_key=self._model_api_key(),
                     max_images=2,
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
                 )
@@ -7426,7 +7495,7 @@ class PromptCorrectorApp:
                     image_timeout=float(self._lm_timeout_seconds()),
                     base_url=base_url or DEFAULT_BASE_URL,
                     model=model or DEFAULT_MODEL,
-                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    api_key=self._model_api_key(),
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
                 )
             self._raise_if_cancelled(request_id)
@@ -7477,7 +7546,7 @@ class PromptCorrectorApp:
                 temperature=self._temperature_value(),
                 max_tokens=768,
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 seed=seed,
                 ttl=CREATIVE_SESSION_TTL_SECONDS,
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -7499,7 +7568,7 @@ class PromptCorrectorApp:
             )
             if not suggestion:
                 raise RuntimeError(
-                    "LM Studio did not invent a usable value for this Single Image field."
+                    "The model did not invent a usable value for this Single Image field."
                 )
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
@@ -7626,7 +7695,7 @@ class PromptCorrectorApp:
             story_elements="",
             weighted_terms="",
             timeout=float(self._lm_timeout_seconds()),
-            api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+            api_key=self._model_api_key(),
             cancel_check=lambda: self._raise_if_cancelled(request_id),
         )
         self._raise_if_cancelled(request_id)
@@ -7650,7 +7719,7 @@ class PromptCorrectorApp:
             model_probe=model_knowledge,
             web_research=web_research,
             timeout=float(self._lm_timeout_seconds()),
-            api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+            api_key=self._model_api_key(),
             cancel_check=lambda: self._raise_if_cancelled(request_id),
         )
         self._raise_if_cancelled(request_id)
@@ -7670,7 +7739,7 @@ class PromptCorrectorApp:
         if not model:
             messagebox.showwarning(
                 "Missing model",
-                "Select or enter an LM Studio model first.",
+                "Select or enter a local model first.",
             )
             return
 
@@ -7740,7 +7809,7 @@ class PromptCorrectorApp:
                 temperature=self._temperature_value(),
                 max_tokens=max(512, min(2304, panel_count * 192)),
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 seed=seed,
                 ttl=CREATIVE_SESSION_TTL_SECONDS,
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -7764,7 +7833,7 @@ class PromptCorrectorApp:
                 not panel.strip() for panel in panels
             ):
                 raise RuntimeError(
-                    "LM Studio did not return every requested comic panel. "
+                    "The model did not return every requested comic panel. "
                     f"Expected Panel 1 through Panel {panel_count} in order."
                 )
         except CorrectionCancelled:
@@ -7827,7 +7896,7 @@ class PromptCorrectorApp:
         if not model:
             messagebox.showwarning(
                 "Missing model",
-                "Select or enter an LM Studio model first.",
+                "Select or enter a local model first.",
             )
             return
         panel_match = re.fullmatch(r"panel_(\d+)", normalized_field)
@@ -7906,7 +7975,7 @@ class PromptCorrectorApp:
                     else 192
                 ),
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 seed=seed,
                 ttl=CREATIVE_SESSION_TTL_SECONDS,
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -7946,7 +8015,7 @@ class PromptCorrectorApp:
                 )
             if not suggestion:
                 raise RuntimeError(
-                    "LM Studio did not invent a usable value for this Comic Story field."
+                    "The model did not invent a usable value for this Comic Story field."
                 )
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
@@ -8241,7 +8310,7 @@ class PromptCorrectorApp:
         if not model:
             messagebox.showwarning(
                 "Missing model",
-                "Select or enter an LM Studio model first.",
+                "Select or enter a local model first.",
             )
             return
 
@@ -8292,7 +8361,7 @@ class PromptCorrectorApp:
                 temperature=self._meme_temperature(),
                 max_tokens=192,
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 seed=seed,
                 ttl=CREATIVE_SESSION_TTL_SECONDS,
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -8314,7 +8383,7 @@ class PromptCorrectorApp:
             )
             if not suggestion:
                 raise RuntimeError(
-                    "LM Studio did not invent a usable value for this Meme Creator field."
+                    "The model did not invent a usable value for this Meme Creator field."
                 )
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
@@ -8384,7 +8453,7 @@ class PromptCorrectorApp:
         if not model:
             messagebox.showwarning(
                 "Missing model",
-                "Select or enter an LM Studio model first.",
+                "Select or enter a local model first.",
             )
             return
 
@@ -8468,7 +8537,7 @@ class PromptCorrectorApp:
                 temperature=self._meme_temperature(),
                 max_tokens=96,
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 seed=seed,
                 ttl=CREATIVE_SESSION_TTL_SECONDS,
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
@@ -8499,7 +8568,7 @@ class PromptCorrectorApp:
             )
             if not caption:
                 raise RuntimeError(
-                    "LM Studio did not invent usable caption text from the Meme Creator context."
+                    "The model did not invent usable caption text from the Meme Creator context."
                 )
         except CorrectionCancelled:
             self._after_threadsafe(0, self._show_cancelled, request_id)
@@ -8726,8 +8795,9 @@ class PromptCorrectorApp:
         self.active_activity_workspace = destination
         self._log_activity("Started prompt correction.", destination)
         self._log_activity(f"Settings saved to {SETTINGS_PATH.name}.")
-        self._log_activity(f"LM Studio URL: {base_url}")
-        self._log_activity(f"LM Studio timeout: {self._lm_timeout_seconds()} seconds")
+        provider = self.model_provider_var.get()
+        self._log_activity(f"{provider} URL: {base_url}")
+        self._log_activity(f"{provider} timeout: {self._lm_timeout_seconds()} seconds")
         self._log_activity(
             f"Mode: {self.mode_var.get()} | Detail: {self.detail_var.get()} | "
             f"Length: {self.output_length_var.get()} | Variations: {self._variation_count()} | "
@@ -8945,7 +9015,7 @@ class PromptCorrectorApp:
         self._discard_pending_invent_recall(self.active_request_id)
         # Permanently invalidate the old worker before making the controls usable
         # again.  A newly started request clears cancel_event, so the request id is
-        # what keeps a slow old LM Studio worker stale after that point.
+        # what keeps a slow old model worker stale after that point.
         self.active_request_id += 1
         self.request_in_progress = False
         self.chat_stream_text = ""
@@ -8956,7 +9026,7 @@ class PromptCorrectorApp:
         if self.workbench_widget is not None:
             self.workbench_widget.on_request_stopped()
         self._log_activity(
-            "Stopped. The old LM Studio stream is being closed, its partial result will be discarded, and a new request can start now."
+            "Stopped. The old model stream is being closed, its partial result will be discarded, and a new request can start now."
         )
 
     def _set_request_controls(self, running: bool) -> None:
@@ -9948,7 +10018,7 @@ class PromptCorrectorApp:
                     focus=focus,
                     model_instructions=model_instructions,
                     timeout=float(lm_timeout),
-                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    api_key=self._model_api_key(),
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
                 )
                 self._raise_if_cancelled(request_id)
@@ -10028,7 +10098,7 @@ class PromptCorrectorApp:
                     model_probe=model_knowledge,
                     web_research=research_context,
                     timeout=float(lm_timeout),
-                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    api_key=self._model_api_key(),
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
                 )
                 self._raise_if_cancelled(request_id)
@@ -10101,7 +10171,7 @@ class PromptCorrectorApp:
                     concept=reference_request,
                     image_candidates=image_candidates,
                     timeout=float(lm_timeout),
-                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    api_key=self._model_api_key(),
                     max_images=2,
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
                 )
@@ -10143,7 +10213,7 @@ class PromptCorrectorApp:
                     image_timeout=float(lm_timeout),
                     base_url=base_url or DEFAULT_BASE_URL,
                     model=model or DEFAULT_MODEL,
-                    api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                    api_key=self._model_api_key(),
                     cancel_check=lambda: self._raise_if_cancelled(request_id),
                 )
                 self._raise_if_cancelled(request_id)
@@ -10169,11 +10239,11 @@ class PromptCorrectorApp:
                     )
 
             if audit_repair:
-                self._set_progress_threadsafe(55.0, "Waiting for LM Studio correction, audit, and repair")
-                self._log_activity_threadsafe("Sending prompt to LM Studio for correction and audit/repair...")
+                self._set_progress_threadsafe(55.0, "Waiting for model correction, audit, and repair")
+                self._log_activity_threadsafe(f"Sending prompt to {self.model_provider_var.get()} for correction and audit/repair...")
             else:
-                self._set_progress_threadsafe(65.0, "Waiting for LM Studio correction")
-                self._log_activity_threadsafe("Sending prompt to LM Studio for correction...")
+                self._set_progress_threadsafe(65.0, "Waiting for model correction")
+                self._log_activity_threadsafe(f"Sending prompt to {self.model_provider_var.get()} for correction...")
 
             self._raise_if_cancelled(request_id)
             corrected = post_chat_completion(
@@ -10190,7 +10260,7 @@ class PromptCorrectorApp:
                     else estimate_max_tokens(detail_level, variation_count, output_length, output_max_words)
                 ),
                 timeout=float(lm_timeout),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=self._model_api_key(),
                 mode=mode,
                 visual_direction=visual_direction,
                 detail_level=detail_level,
@@ -10239,18 +10309,20 @@ class PromptCorrectorApp:
             )
             self._raise_if_cancelled(request_id)
             if unload_after_generation:
-                self._set_progress_threadsafe(92.0, "Unloading LM Studio model")
-                self._log_activity_threadsafe("Unloading LM Studio model after correction...")
+                provider = self.model_provider_var.get()
+                self._set_progress_threadsafe(92.0, f"Unloading {provider} model")
+                self._log_activity_threadsafe(f"Unloading {provider} model after correction...")
                 try:
-                    unloaded = unload_lm_studio_model(
+                    unloaded = unload_local_model(
+                        provider=provider,
                         base_url=base_url or DEFAULT_BASE_URL,
                         model=model or DEFAULT_MODEL,
                         timeout=30.0,
-                        api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                        api_key=self._model_api_key(),
                     )
                     self._raise_if_cancelled(request_id)
                     self._log_activity_threadsafe(
-                        "Unloaded LM Studio model instance(s): " + ", ".join(unloaded)
+                        f"Unloaded {provider} model instance(s): " + ", ".join(unloaded)
                     )
                 except Exception as unload_error:
                     self._log_activity_threadsafe(f"Model unload failed: {unload_error}")
@@ -10273,7 +10345,7 @@ class PromptCorrectorApp:
             return
 
         if self._request_cancelled(request_id):
-            self._log_activity_threadsafe("Correction stopped. Late LM Studio result ignored.")
+            self._log_activity_threadsafe("Correction stopped. Late model result ignored.")
             self._after_threadsafe(0, self._show_cancelled, request_id)
             return
         self._set_progress_threadsafe(95.0, "Finalizing prompt")

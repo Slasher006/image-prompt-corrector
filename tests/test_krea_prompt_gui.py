@@ -64,6 +64,42 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertIsNotNone(self.controller.library_dock)
         self.assertTrue(self.controller.library_dock.isVisible())
 
+    def test_ollama_provider_switches_default_port_and_persists(self):
+        self.controller.model_provider_var.set("Ollama")
+        self.assertEqual(self.controller.lm_port_var.get(), "11434")
+        self.assertEqual(
+            self.controller._current_base_url(),
+            "http://127.0.0.1:11434/v1",
+        )
+        self.controller.model_var.set("qwen3:4b")
+        self.controller._save_settings()
+
+        stored = json.loads(gui.SETTINGS_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(stored["model_provider"], "Ollama")
+        self.assertEqual(stored["model"], "qwen3:4b")
+
+    def test_ollama_connection_test_uses_provider_model_discovery(self):
+        self.controller.model_provider_var.set("Ollama")
+        with mock.patch(
+            "krea_prompt_gui.list_local_models",
+            return_value=["qwen3:4b"],
+        ) as list_models:
+            with mock.patch.object(self.controller, "_after_threadsafe") as after:
+                self.controller._test_model_worker(
+                    "Ollama",
+                    "http://127.0.0.1:11434/v1",
+                )
+
+        list_models.assert_called_once_with(
+            provider="Ollama",
+            base_url="http://127.0.0.1:11434/v1",
+            timeout=8.0,
+            api_key="",
+        )
+        self.assertTrue(
+            any(call.args[1] == self.controller._update_available_models for call in after.call_args_list)
+        )
+
     def test_iterate_result_promotes_output_and_applies_optional_feedback(self):
         result = "A red knight stands at an ancient castle gate under cold moonlight."
         self.controller.corrected_text.setPlainText(result)

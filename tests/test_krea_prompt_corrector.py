@@ -1761,6 +1761,43 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(captured["auth"], "Bearer test-token")
         self.assertEqual(models, ["qwen3-vl-4b-instruct"])
 
+    def test_list_ollama_models_reads_native_tags(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            return FakeResponse(
+                {
+                    "models": [
+                        {"name": "qwen3:4b"},
+                        {"name": "gemma3:12b"},
+                    ]
+                }
+            )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            models = corrector.list_local_models(
+                provider="Ollama",
+                base_url="http://ollama-box:11434/v1",
+                timeout=8.0,
+                api_key="",
+            )
+
+        self.assertEqual(captured["url"], "http://ollama-box:11434/api/tags")
+        self.assertEqual(captured["timeout"], 8.0)
+        self.assertEqual(models, ["qwen3:4b", "gemma3:12b"])
+
+    def test_ollama_base_url_and_provider_detection(self):
+        self.assertEqual(
+            corrector.normalize_model_base_url("localhost:11434"),
+            "http://localhost:11434/v1",
+        )
+        self.assertEqual(
+            corrector.model_provider_from_base_url("http://localhost:11434/v1"),
+            "Ollama",
+        )
+
     def test_estimate_max_tokens_scales_by_detail_and_variations(self):
         self.assertEqual(corrector.estimate_max_tokens("Short", 1), 220)
         self.assertEqual(corrector.estimate_max_tokens("Detailed", 3, "Detailed"), 1680)
@@ -7889,6 +7926,33 @@ class PromptCorrectorTests(unittest.TestCase):
                     api_key="test-key",
                 )
 
+    def test_ollama_chat_disables_reasoning_and_recognizes_reasoning_field(self):
+        captured = {}
+        response = {
+            "choices": [{
+                "message": {"content": "", "reasoning": "Still thinking..."},
+                "finish_reason": "length",
+            }]
+        }
+
+        def fake_urlopen(request, timeout):
+            captured.update(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(response)
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaisesRegex(RuntimeError, "Ollama used the output budget"):
+                corrector.chat_completion(
+                    base_url="http://127.0.0.1:11434/v1",
+                    model="qwen3.5:0.8b",
+                    messages=[{"role": "user", "content": "Correct this prompt."}],
+                    temperature=0.1,
+                    max_tokens=128,
+                    timeout=3,
+                    api_key="",
+                )
+
+        self.assertEqual(captured["reasoning_effort"], "none")
+
     def test_lm_studio_timeout_raises_clear_error(self):
         with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
             with self.assertRaisesRegex(RuntimeError, "LM Studio timed out"):
@@ -7947,6 +8011,40 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(captured[1]["url"], "http://127.0.0.1:1234/api/v1/models/unload")
         self.assertEqual(captured[1]["method"], "POST")
         self.assertEqual(captured[1]["body"], {"instance_id": "qwen3-vl-4b-instruct"})
+
+    def test_ollama_context_and_unload_use_native_api(self):
+        captured = []
+
+        def fake_urlopen(request, timeout):
+            payload = json.loads(request.data.decode("utf-8")) if request.data else None
+            captured.append((request.full_url, payload, timeout))
+            if request.full_url.endswith("/api/show"):
+                return FakeResponse(
+                    {"model_info": {"qwen3.context_length": 32768}}
+                )
+            return FakeResponse({"done": True})
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            context_length = corrector.model_context_length(
+                base_url="http://localhost:11434/v1",
+                model="qwen3:4b",
+                timeout=3,
+                api_key="",
+            )
+            unloaded = corrector.unload_local_model(
+                provider="Ollama",
+                base_url="http://localhost:11434/v1",
+                model="qwen3:4b",
+                timeout=3,
+                api_key="",
+            )
+
+        self.assertEqual(context_length, 32768)
+        self.assertEqual(unloaded, ["qwen3:4b"])
+        self.assertEqual(captured[0][0], "http://localhost:11434/api/show")
+        self.assertEqual(captured[0][1], {"model": "qwen3:4b"})
+        self.assertEqual(captured[1][0], "http://localhost:11434/api/generate")
+        self.assertEqual(captured[1][1], {"model": "qwen3:4b", "keep_alive": 0})
 
     def test_collect_duckduckgo_research_handles_search_failure(self):
         with patch(

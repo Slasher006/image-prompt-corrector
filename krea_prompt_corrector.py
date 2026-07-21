@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Clean text-to-image prompts with a local LM Studio model.
+"""Clean text-to-image prompts with a local LM Studio or Ollama model.
 
-The script sends a draft prompt to LM Studio's OpenAI-compatible chat
+The script sends a draft prompt to a local OpenAI-compatible chat
 completions endpoint and asks the model to normalize it for the selected image generator.
 """
 
@@ -34,7 +34,9 @@ from nsfw_scene_contract import (
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_MODEL = "qwen3-vl-4b-instruct"
+MODEL_PROVIDERS = ("LM Studio", "Ollama")
 GENERATOR_TARGETS = ("Krea 2", "FLUX.2 Klein 9B")
 CONTENT_FORMATS = ("Single Image", "Comic Story", "Meme")
 CONTEXT_TOKEN_AUTO = 0
@@ -158,8 +160,8 @@ PROMPT_MODES = (
 )
 
 
-def normalize_lm_studio_base_url(base_url: str | None) -> str:
-    """Return an OpenAI-compatible LM Studio base URL ending at /v1."""
+def normalize_model_base_url(base_url: str | None) -> str:
+    """Return an OpenAI-compatible local-model base URL ending at /v1."""
     value = (base_url or "").strip() or DEFAULT_BASE_URL
     if "://" not in value:
         value = "http://" + value
@@ -179,6 +181,23 @@ def normalize_lm_studio_base_url(base_url: str | None) -> str:
         (parsed.scheme or "http", parsed.netloc, path, "", "")
     )
     return normalized.rstrip("/")
+
+
+def normalize_lm_studio_base_url(base_url: str | None) -> str:
+    """Backward-compatible alias for :func:`normalize_model_base_url`."""
+
+    return normalize_model_base_url(base_url)
+
+
+def model_provider_from_base_url(base_url: str | None) -> str:
+    """Infer the local provider where its conventional port is unambiguous."""
+
+    parsed = urllib.parse.urlsplit(normalize_model_base_url(base_url))
+    return "Ollama" if parsed.port == 11434 else "LM Studio"
+
+
+def model_server_name(base_url: str | None) -> str:
+    return model_provider_from_base_url(base_url)
 
 DETAIL_LEVELS = ("Short", "Balanced", "Detailed", "Rich caption")
 OUTPUT_LENGTHS = ("Concise", "Balanced", "Detailed", "Expanded")
@@ -6838,7 +6857,7 @@ def resolve_context_token_budget(
             min(CONTEXT_TOKEN_MAX, int(requested_budget)),
         )
     try:
-        context_length = lm_studio_model_context_length(
+        context_length = model_context_length(
             base_url=base_url,
             model=model,
             timeout=min(3.0, max(0.5, float(timeout))),
@@ -7740,7 +7759,7 @@ def analyze_reference_images(
         )
         return (
             f"Reference image analysis for {normalize_concept_text(concept)}:\n"
-            f"Image analysis unavailable: LM Studio rejected the reference image payload ({exc}).\n"
+            f"Image analysis unavailable: {model_server_name(base_url)} rejected the reference image payload ({exc}).\n"
             f"Reference candidates attempted:\n{source_lines}"
         )
     allowed_match = re.search(
@@ -10555,7 +10574,8 @@ def chat_completion(
 ) -> str:
     if cancel_check is not None:
         cancel_check()
-    url = normalize_lm_studio_base_url(base_url) + "/chat/completions"
+    server_name = model_server_name(base_url)
+    url = normalize_model_base_url(base_url) + "/chat/completions"
     payload = {
         "model": model,
         "messages": messages,
@@ -10567,6 +10587,10 @@ def chat_completion(
         payload["seed"] = derived_sampling_seed(seed)
     if ttl is not None:
         payload["ttl"] = max(1, int(ttl))
+    if server_name == "Ollama":
+        # Ollama's OpenAI-compatible API supports this field and otherwise some
+        # reasoning models can spend the entire response budget on hidden text.
+        payload["reasoning_effort"] = "none"
 
     request = urllib.request.Request(
         url,
@@ -10598,7 +10622,7 @@ def chat_completion(
 
                 cancel_watcher = threading.Thread(
                     target=close_stream_when_cancelled,
-                    name="lm-studio-cancel-watcher",
+                    name="local-model-cancel-watcher",
                     daemon=True,
                 )
                 cancel_watcher.start()
@@ -10626,7 +10650,10 @@ def chat_completion(
                             choice = event["choices"][0]
                             delta = choice.get("delta", {})
                             part = delta.get("content", "")
-                            reasoning_part = delta.get("reasoning_content", "")
+                            reasoning_part = delta.get(
+                                "reasoning_content",
+                                delta.get("reasoning", ""),
+                            )
                             finish_reason = str(choice.get("finish_reason") or finish_reason)
                         except (KeyError, IndexError, TypeError, json.JSONDecodeError):
                             continue
@@ -10643,22 +10670,22 @@ def chat_completion(
                 if not streamed_content:
                     if reasoning_parts:
                         raise RuntimeError(
-                            "LM Studio used the output budget for hidden reasoning and returned no prompt"
+                            f"{server_name} used the output budget for hidden reasoning and returned no prompt"
                             + (" (finish reason: length)." if finish_reason == "length" else ".")
-                            + " This model does not honor no-thinking mode; use a Qwen3 VL instruct model or increase its output-token budget."
+                            + " Use a non-reasoning instruct model, disable thinking, or increase its output-token budget."
                         )
-                    raise RuntimeError("LM Studio returned an empty streaming response.")
+                    raise RuntimeError(f"{server_name} returned an empty streaming response.")
                 return streamed_content
     except urllib.error.HTTPError as exc:
         detail = read_http_error_detail(exc)
-        raise RuntimeError(f"LM Studio returned HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"{server_name} returned HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(
-            f"Could not reach LM Studio at {url}. Start the LM Studio server and load a model."
+            f"Could not reach {server_name} at {url}. Start {server_name} and make sure the model is available."
         ) from exc
     except (TimeoutError, socket.timeout) as exc:
         raise RuntimeError(
-            f"LM Studio timed out after {timeout:g} seconds. Try a shorter prompt, disable audit/research, or increase --timeout."
+            f"{server_name} timed out after {timeout:g} seconds. Try a shorter prompt, disable audit/research, or increase --timeout."
         ) from exc
 
     try:
@@ -10668,18 +10695,20 @@ def chat_completion(
         content = str(message.get("content") or "").strip()
         if content:
             return content
-        if str(message.get("reasoning_content") or "").strip():
+        if str(
+            message.get("reasoning_content") or message.get("reasoning") or ""
+        ).strip():
             finish_reason = str(choice.get("finish_reason") or "")
             raise RuntimeError(
-                "LM Studio used the output budget for hidden reasoning and returned no prompt"
+                f"{server_name} used the output budget for hidden reasoning and returned no prompt"
                 + (" (finish reason: length)." if finish_reason == "length" else ".")
-                + " This model does not honor no-thinking mode; use a Qwen3 VL instruct model or increase its output-token budget."
+                + " Use a non-reasoning instruct model, disable thinking, or increase its output-token budget."
             )
-        raise RuntimeError("LM Studio returned an empty response.")
+        raise RuntimeError(f"{server_name} returned an empty response.")
     except RuntimeError:
         raise
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Unexpected LM Studio response: {body}") from exc
+        raise RuntimeError(f"Unexpected {server_name} response: {body}") from exc
 
 
 def list_lm_studio_models(
@@ -10722,6 +10751,61 @@ def list_lm_studio_models(
         ]
     except (TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Unexpected LM Studio models response: {body}") from exc
+
+
+def list_ollama_models(
+    *,
+    base_url: str,
+    timeout: float,
+    api_key: str = "",
+) -> list[str]:
+    """Return locally installed Ollama model names from its native inventory."""
+
+    url = lm_studio_rest_api_base_url(base_url) + "/api/tags"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = read_http_error_detail(exc)
+        raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Could not reach Ollama at {url}. Start Ollama and allow port 11434 through the firewall when using another machine."
+        ) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"Ollama connection test timed out after {timeout:g} seconds.") from exc
+
+    try:
+        models = json.loads(body).get("models", [])
+        return [
+            str(model["name"])
+            for model in models
+            if isinstance(model, dict) and model.get("name")
+        ]
+    except (AttributeError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unexpected Ollama models response: {body}") from exc
+
+
+def list_local_models(
+    *,
+    provider: str,
+    base_url: str,
+    timeout: float,
+    api_key: str,
+) -> list[str]:
+    if provider == "Ollama":
+        return list_ollama_models(
+            base_url=base_url,
+            timeout=timeout,
+            api_key=api_key,
+        )
+    return list_lm_studio_models(
+        base_url=base_url,
+        timeout=timeout,
+        api_key=api_key,
+    )
 
 
 def lm_studio_rest_api_base_url(base_url: str) -> str:
@@ -10861,6 +10945,77 @@ def lm_studio_model_context_length(
     return None
 
 
+def ollama_model_context_length(
+    *,
+    base_url: str,
+    model: str,
+    timeout: float,
+    api_key: str = "",
+) -> int | None:
+    """Return Ollama's advertised training context length when available."""
+
+    url = lm_studio_rest_api_base_url(base_url) + "/api/show"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"model": model}).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = read_http_error_detail(exc)
+        raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Ollama at {url}.") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"Ollama context detection timed out after {timeout:g} seconds.") from exc
+
+    try:
+        model_info = json.loads(body).get("model_info", {})
+        if not isinstance(model_info, dict):
+            return None
+        lengths = []
+        for key, value in model_info.items():
+            if not str(key).endswith(".context_length"):
+                continue
+            try:
+                length = int(value)
+            except (TypeError, ValueError):
+                continue
+            if length > 0:
+                lengths.append(length)
+        return max(lengths) if lengths else None
+    except (AttributeError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unexpected Ollama model response: {body}") from exc
+
+
+def model_context_length(
+    *,
+    base_url: str,
+    model: str,
+    timeout: float,
+    api_key: str,
+) -> int | None:
+    if model_provider_from_base_url(base_url) == "Ollama":
+        return ollama_model_context_length(
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            api_key=api_key,
+        )
+    return lm_studio_model_context_length(
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        api_key=api_key,
+    )
+
+
 def unload_lm_studio_model(
     *,
     base_url: str,
@@ -10906,6 +11061,61 @@ def unload_lm_studio_model(
             data = {}
         unloaded.append(str(data.get("instance_id") or instance_id))
     return unloaded
+
+
+def unload_ollama_model(
+    *,
+    base_url: str,
+    model: str,
+    timeout: float,
+    api_key: str = "",
+) -> list[str]:
+    """Unload an Ollama model by setting its native keep-alive to zero."""
+
+    url = lm_studio_rest_api_base_url(base_url) + "/api/generate"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        detail = read_http_error_detail(exc)
+        raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Ollama at {url}.") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"Ollama model unload timed out after {timeout:g} seconds.") from exc
+    return [model]
+
+
+def unload_local_model(
+    *,
+    provider: str,
+    base_url: str,
+    model: str,
+    timeout: float,
+    api_key: str,
+) -> list[str]:
+    if provider == "Ollama":
+        return unload_ollama_model(
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            api_key=api_key,
+        )
+    return unload_lm_studio_model(
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        api_key=api_key,
+    )
 
 
 def is_small_model(model: str, *, max_billions: float = 4.5) -> bool:
@@ -13134,7 +13344,7 @@ def post_meme_completion(
     if diagnostic_callback is not None:
         diagnostic_callback("Best rejected meme candidate: " + best_candidate[:1200])
     raise RuntimeError(
-        "LM Studio did not produce a finished inventive meme prompt: "
+        f"{model_server_name(base_url)} did not produce a finished inventive meme prompt: "
         + "; ".join(best_issues[:4])
     )
 
@@ -13810,7 +14020,7 @@ def post_chat_completion(
     if not issues or not final_gate_repair:
         if final_prompt:
             return final_prompt
-        raise RuntimeError("LM Studio returned no usable final prompt.")
+        raise RuntimeError(f"{model_server_name(base_url)} returned no usable final prompt.")
 
     if small_model:
         repair_issues, soft_issues = split_compliance_issues(issues)
@@ -14182,11 +14392,11 @@ def post_chat_completion(
                 "fallback: " + summary
             )
             raise RuntimeError(
-                "LM Studio could not preserve the prompt's hard fidelity contract: " + summary
+                f"{model_server_name(base_url)} could not preserve the prompt's hard fidelity contract: " + summary
             )
         return final_prompt
     report_diagnostic("Final validation rejected every candidate as unusable.")
-    raise RuntimeError("LM Studio returned no usable final prompt.")
+    raise RuntimeError(f"{model_server_name(base_url)} returned no usable final prompt.")
 
 
 def read_prompt(args: argparse.Namespace) -> str:
@@ -14202,7 +14412,7 @@ def read_prompt(args: argparse.Namespace) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Format and clean a text-to-image prompt for Krea 2 or FLUX.2 Klein 9B using LM Studio."
+        description="Format and clean a text-to-image prompt for Krea 2 or FLUX.2 Klein 9B using LM Studio or Ollama."
     )
     input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument("-p", "--prompt", help="Draft prompt text to correct.")
@@ -14221,8 +14431,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-m",
         "--model",
-        default=os.getenv("LM_STUDIO_MODEL", DEFAULT_MODEL),
-        help="LM Studio model identifier. Defaults to LM_STUDIO_MODEL or 'qwen3-vl-4b-instruct'.",
+        default=os.getenv("MODEL_NAME", os.getenv("LM_STUDIO_MODEL", DEFAULT_MODEL)),
+        help="Local model identifier. Defaults to MODEL_NAME, then LM_STUDIO_MODEL or 'qwen3-vl-4b-instruct'.",
     )
     parser.add_argument(
         "--target",
@@ -14248,13 +14458,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--base-url",
-        default=os.getenv("LM_STUDIO_BASE_URL", DEFAULT_BASE_URL),
-        help="LM Studio OpenAI-compatible base URL. Defaults to http://127.0.0.1:1234/v1.",
+        default=os.getenv("MODEL_BASE_URL", os.getenv("LM_STUDIO_BASE_URL", DEFAULT_BASE_URL)),
+        help="LM Studio or Ollama OpenAI-compatible base URL. Defaults to http://127.0.0.1:1234/v1.",
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
-        help="Bearer token for LM Studio. Defaults to LM_STUDIO_API_KEY or 'lm-studio'.",
+        default=os.getenv("MODEL_API_KEY", os.getenv("LM_STUDIO_API_KEY", "lm-studio")),
+        help="Optional bearer token for the local model server. Defaults to MODEL_API_KEY, then LM_STUDIO_API_KEY.",
     )
     parser.add_argument(
         "--temperature",
@@ -14266,7 +14476,7 @@ def parse_args() -> argparse.Namespace:
         "--seed",
         type=int,
         default=None,
-        help="Optional fixed LM Studio sampling seed. Omit for random sampling.",
+        help="Optional fixed local-model sampling seed. Omit for random sampling.",
     )
     parser.add_argument(
         "--max-tokens",
@@ -14291,7 +14501,7 @@ def parse_args() -> argparse.Namespace:
         "--timeout",
         type=float,
         default=600.0,
-        help="LM Studio request timeout in seconds. Default: 600 for CPU-only or remote models.",
+        help="Local-model request timeout in seconds. Default: 600 for CPU-only or remote models.",
     )
     parser.add_argument(
         "--mode",
