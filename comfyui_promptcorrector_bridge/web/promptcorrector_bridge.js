@@ -1,6 +1,8 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
+const QUEUE_AFTER_UPDATE_DELAY_MS = 500;
+
 function matchingBridgeNodes(workspace) {
     return (app.graph?._nodes || []).filter((node) => {
         if (node.type !== "PromptCorrectorBridge") {
@@ -14,7 +16,7 @@ function matchingBridgeNodes(workspace) {
     });
 }
 
-function updateBridgeNode(node, payload, status) {
+async function updateBridgeNode(node, payload, status) {
     const promptWidget = node.widgets?.find(
         (widget) => widget.name === "prompt",
     );
@@ -22,7 +24,7 @@ function updateBridgeNode(node, payload, status) {
         return;
     }
     promptWidget.value = payload.prompt;
-    promptWidget.callback?.(payload.prompt);
+    await promptWidget.callback?.(payload.prompt);
     if (node.promptCorrectorBridgeButton) {
         node.promptCorrectorBridgeButton.name = status;
         window.setTimeout(() => {
@@ -36,14 +38,22 @@ function updateBridgeNode(node, payload, status) {
     node.setDirtyCanvas(true, true);
 }
 
+function waitForBridgeUpdate() {
+    return new Promise((resolve) => {
+        window.setTimeout(resolve, QUEUE_AFTER_UPDATE_DELAY_MS);
+    });
+}
+
 api.addEventListener("promptcorrector_bridge_prompt", async ({ detail }) => {
     if (!detail?.prompt || !detail?.workspace) {
         return;
     }
     const nodes = matchingBridgeNodes(detail.workspace);
-    for (const node of nodes) {
-        updateBridgeNode(node, detail, `Pushed: ${detail.source}`);
-    }
+    await Promise.all(
+        nodes.map((node) =>
+            updateBridgeNode(node, detail, `Pushed: ${detail.source}`),
+        ),
+    );
     app.graph?.setDirtyCanvas(true, true);
     if (!detail.queue_after_send) {
         return;
@@ -61,7 +71,9 @@ api.addEventListener("promptcorrector_bridge_prompt", async ({ detail }) => {
         return;
     }
     try {
-        await Promise.resolve();
+        // Give ComfyUI time to commit the widget callback and serialize the
+        // updated graph before queuePrompt captures the current workflow.
+        await waitForBridgeUpdate();
         await app.queuePrompt();
         app.extensionManager?.toast?.add?.({
             severity: "success",

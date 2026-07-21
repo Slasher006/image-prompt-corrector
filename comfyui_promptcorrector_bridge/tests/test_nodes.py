@@ -36,6 +36,19 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
     def write_settings(self, payload):
         self.settings_path.write_text(json.dumps(payload), encoding="utf-8")
 
+    def test_browser_waits_for_node_update_before_queueing_workflow(self):
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "web"
+            / "promptcorrector_bridge.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const QUEUE_AFTER_UPDATE_DELAY_MS = 500;", script)
+        wait_index = script.index("await waitForBridgeUpdate();")
+        queue_index = script.index("await app.queuePrompt();")
+        self.assertLess(wait_index, queue_index)
+        self.assertIn("await promptWidget.callback?.(payload.prompt);", script)
+
     def test_latest_result_uses_first_valid_history_entry(self):
         self.write_settings(
             {

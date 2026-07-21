@@ -3825,9 +3825,12 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertIn("A woman walks through a rainy city street", result)
         self.assertIn(
-            "prominently integrate red umbrella into the existing subject and object design",
+            "The red umbrella receives strong visual prominence in the scene",
             result,
         )
+        self.assertNotIn("The composition prominently features", result)
+        self.assertNotIn("prominently integrate", result)
+        self.assertNotIn("existing subject and object design", result)
         self.assertNotIn("Required visual elements", result)
         self.assertNotIn("Prominent visual elements", result)
         self.assertFalse(
@@ -3843,6 +3846,64 @@ class PromptCorrectorTests(unittest.TestCase):
             )
         )
         self.assertEqual(hard, [])
+
+    def test_exact_fallback_binds_missing_mix_influence_to_existing_concept(self):
+        result = corrector.deterministic_fidelity_fallback(
+            "A large green dildo rests at the center of a sunlit park scene.",
+            concept_keywords="dildo, xenomorph",
+            weighted_terms="dildo:1.4, xenomorph:2.1",
+        )
+
+        self.assertIn(
+            "The dildo's design prominently incorporates xenomorph-inspired visual traits",
+            result,
+        )
+        self.assertNotIn("The composition prominently features xenomorph", result)
+        self.assertFalse(
+            corrector.missing_required_concepts(result, "dildo, xenomorph")
+        )
+        self.assertFalse(
+            corrector.missing_weighted_terms(result, "dildo:1.4, xenomorph:2.1")
+        )
+
+    def test_model_prominence_boilerplate_binds_mix_to_existing_subject(self):
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "A large green dildo rests at the center of a sunlit park. "
+                            "The composition prominently features xenomorph."
+                        )
+                    }
+                }
+            ]
+        }
+        with patch("urllib.request.urlopen", return_value=FakeResponse(response)):
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="qwen3-vl-4b-instruct",
+                prompt="A large green dildo rests at the center of a sunlit park.",
+                temperature=0.1,
+                max_tokens=300,
+                timeout=5,
+                api_key="test-key",
+                concept_keywords="dildo, xenomorph",
+                weighted_terms="dildo:1.4, xenomorph:2.1",
+                final_gate_repair=False,
+            )
+
+        self.assertIn(
+            "The dildo's design prominently incorporates xenomorph-inspired visual traits",
+            result,
+        )
+        self.assertNotIn("The composition prominently features xenomorph", result)
+        self.assertFalse(
+            corrector.missing_required_concepts(result, "dildo, xenomorph")
+        )
+        self.assertFalse(
+            corrector.missing_weighted_terms(result, "dildo:1.4, xenomorph:2.1")
+        )
 
     def test_exact_mode_uses_fallback_when_model_returns_empty_content(self):
         response = {"choices": [{"message": {"content": ""}}]}

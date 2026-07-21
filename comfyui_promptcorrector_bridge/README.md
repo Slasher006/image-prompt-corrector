@@ -41,8 +41,10 @@ saved result whenever the workflow runs.
 In PromptCorrector, enable **ComfyUI > Auto-send completed results** to push each
 successful Prompt Corrector, Comic Story, or Meme Creator result automatically.
 Enable **Queue workflow after sending** to queue the currently open ComfyUI
-workflow immediately after its matching bridge node is updated. For safety, the
-bridge skips automatic queueing if the open workflow has no matching bridge
+workflow after its matching bridge node is updated. The browser bridge waits
+briefly for ComfyUI to commit and serialize the new widget value before it sends
+the queue command. For safety, the bridge skips automatic queueing if the open
+workflow has no matching bridge
 node. Keep only the ComfyUI page you intend to run connected when automatic
 queueing is enabled.
 

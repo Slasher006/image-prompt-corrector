@@ -2884,6 +2884,70 @@ def naturalize_krea_workflow_labels(text: str) -> str:
     return "".join(cleaned_parts).strip()
 
 
+def bind_generic_prominence_sentences(
+    text: str,
+    original_prompt: str,
+    concept_keywords: str = "",
+    weighted_terms: str = "",
+) -> str:
+    """Bind stock prominence wording to an existing subject when possible."""
+
+    support_concepts = parse_concepts(concept_keywords)
+    for term, _weight in parse_weighted_terms(weighted_terms):
+        if not any(
+            semantic_term_present(term, concept)
+            or semantic_term_present(concept, term)
+            for concept in support_concepts
+        ):
+            support_concepts.append(term)
+
+    pattern = re.compile(
+        r"\bThe\s+composition\s+prominently\s+features\s+"
+        r"(?P<term>[^.!?\n]+?)(?P<punctuation>[.!?])(?=\s|$)",
+        flags=re.IGNORECASE,
+    )
+
+    def naturalize_segment(segment: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            rendered_term = re.sub(
+                r"^(?:an?|the)\s+",
+                "",
+                match.group("term").strip(),
+                flags=re.IGNORECASE,
+            )
+            anchor = next(
+                (
+                    concept
+                    for concept in support_concepts
+                    if concept_is_represented(concept, original_prompt)
+                    and not (
+                        semantic_term_present(concept, rendered_term)
+                        or semantic_term_present(rendered_term, concept)
+                    )
+                ),
+                "",
+            )
+            if anchor:
+                replacement = (
+                    f"The {anchor}'s design prominently incorporates "
+                    f"{rendered_term}-inspired visual traits"
+                )
+            else:
+                replacement = (
+                    f"{rendered_term[:1].upper() + rendered_term[1:]} receives "
+                    "strong visual prominence in the scene"
+                )
+            return replacement + match.group("punctuation")
+
+        return pattern.sub(replace, segment)
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    return "".join(
+        part if index % 2 else naturalize_segment(part)
+        for index, part in enumerate(parts)
+    ).strip()
+
+
 def unquoted_text(text: str) -> str:
     return " ".join(
         part
@@ -6613,6 +6677,11 @@ def deterministic_fidelity_fallback(
         for term in missing_weighted
     ]
     prominent_terms = [term for term in prominent_terms if term]
+    represented_concepts = [
+        concept
+        for concept in parse_concepts(concept_keywords)
+        if concept_is_represented(concept, fallback)
+    ]
     required_only = [
         concept
         for concept in missing_concepts
@@ -6628,18 +6697,37 @@ def deterministic_fidelity_fallback(
         else ""
     )
     if prominent_terms:
-        additions.append(
-            page_prefix
-            + "prominently integrate "
-            + ", ".join(prominent_terms)
-            + " into the existing subject and object design"
-        )
+        for term in prominent_terms:
+            anchor = next(
+                (
+                    concept
+                    for concept in represented_concepts
+                    if not (
+                        semantic_term_present(concept, term)
+                        or semantic_term_present(term, concept)
+                    )
+                ),
+                "",
+            )
+            if anchor:
+                additions.append(
+                    page_prefix
+                    + ("the" if page_prefix else "The")
+                    + f" {anchor}'s design prominently incorporates "
+                    + f"{term}-inspired visual traits"
+                )
+            else:
+                additions.append(
+                    page_prefix
+                    + ("the" if page_prefix else "The")
+                    + f" {term} receives strong visual prominence in the scene"
+                )
     if required_only:
         additions.append(
             page_prefix
-            + "visibly integrate "
+            + ("the" if page_prefix else "The")
+            + " scene visibly includes "
             + ", ".join(required_only)
-            + " into the existing scene design"
         )
     if focus.strip() and focus_issue(fallback, focus.strip()):
         additions.append(
@@ -13791,6 +13879,12 @@ def post_chat_completion(
             candidate = translate_explicit_adult_language(candidate)
         if normalize_generator_target(generator_target) == "Krea 2":
             candidate = naturalize_krea_workflow_labels(candidate)
+        candidate = bind_generic_prominence_sentences(
+            candidate,
+            prompt,
+            concept_keywords,
+            weighted_terms,
+        )
         candidate = enforce_style_mode_contract(candidate, mode, prompt)
         candidate = enforce_visual_direction_contract(candidate, visual_direction)
         return strip_unexpected_scripts(candidate, source_script_context)
