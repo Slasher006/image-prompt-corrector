@@ -139,6 +139,27 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
                 {"prompt": "Result", "workspace": "Latest result"}
             )
 
+    def test_push_payload_accepts_only_boolean_queue_request(self):
+        result = nodes.validate_bridge_push_payload(
+            {
+                "prompt": "Queued result",
+                "workspace": "Prompt Corrector",
+                "queue_after_send": True,
+            }
+        )
+        self.assertTrue(result["queue_after_send"])
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "true or false",
+        ):
+            nodes.validate_bridge_push_payload(
+                {
+                    "prompt": "Queued result",
+                    "workspace": "Prompt Corrector",
+                    "queue_after_send": "yes",
+                }
+            )
+
     @unittest.skipIf(
         bridge_package is None,
         "Route registration is tested from the repository package layout.",
@@ -187,18 +208,21 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
                 return {
                     "prompt": "Pushed result",
                     "workspace": "Meme Creator",
+                    "queue_after_send": True,
                 }
 
         response, status = asyncio.run(handler(Request()))
 
         self.assertEqual(status, 200)
         self.assertEqual(response["characters"], len("Pushed result"))
+        self.assertTrue(response["queue_requested"])
         self.assertEqual(
             registered[("EVENT", "promptcorrector_bridge_prompt")],
             {
                 "prompt": "Pushed result",
                 "workspace": "Meme Creator",
                 "source": "Meme Creator",
+                "queue_after_send": True,
             },
         )
 

@@ -462,6 +462,21 @@ class PromptWorkbench(QWidget):
         comfy_controls.addWidget(self._button("Choose workflow JSON", self.choose_comfy_workflow))
         comfy_controls.addWidget(self._button("Enqueue current prompt", self.send_to_comfyui, True))
         integration_layout.addLayout(comfy_controls)
+        bridge_automation = QHBoxLayout()
+        bridge_automation.addWidget(
+            self.controller._bind_check(
+                "Auto-send completed results",
+                self.controller.comfyui_auto_send_var,
+            )
+        )
+        bridge_automation.addWidget(
+            self.controller._bind_check(
+                "Queue workflow after sending",
+                self.controller.comfyui_queue_after_send_var,
+            )
+        )
+        bridge_automation.addStretch()
+        integration_layout.addLayout(bridge_automation)
         self.integration_output = QTextEdit()
         self.integration_output.setReadOnly(True)
         self.integration_output.setMaximumHeight(120)

@@ -36,7 +36,7 @@ class PromptCorrectorBridgeError(RuntimeError):
     """Raised when the PromptCorrector state cannot provide usable text."""
 
 
-def validate_bridge_push_payload(payload: Any) -> dict[str, str]:
+def validate_bridge_push_payload(payload: Any) -> dict[str, object]:
     """Validate a result sent by the desktop app before broadcasting it."""
 
     if not isinstance(payload, dict):
@@ -54,11 +54,19 @@ def validate_bridge_push_payload(payload: Any) -> dict[str, str]:
         raise PromptCorrectorBridgeError(
             f"Unsupported pushed workspace: {workspace}"
         )
-    return {
+    queue_after_send = payload.get("queue_after_send", False)
+    if not isinstance(queue_after_send, bool):
+        raise PromptCorrectorBridgeError(
+            "queue_after_send must be true or false."
+        )
+    result = {
         "prompt": prompt,
         "workspace": workspace,
         "source": workspace,
     }
+    if queue_after_send:
+        result["queue_after_send"] = True
+    return result
 
 
 def _resolve_settings_path(settings_path: Path | None = None) -> Path:

@@ -46,6 +46,7 @@ def _register_latest_prompt_route() -> None:
                 "ok": True,
                 "workspace": result["workspace"],
                 "characters": len(result["prompt"]),
+                "queue_requested": bool(result.get("queue_after_send")),
             }
         )
 

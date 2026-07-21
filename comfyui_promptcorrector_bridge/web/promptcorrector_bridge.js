@@ -36,7 +36,7 @@ function updateBridgeNode(node, payload, status) {
     node.setDirtyCanvas(true, true);
 }
 
-api.addEventListener("promptcorrector_bridge_prompt", ({ detail }) => {
+api.addEventListener("promptcorrector_bridge_prompt", async ({ detail }) => {
     if (!detail?.prompt || !detail?.workspace) {
         return;
     }
@@ -45,6 +45,39 @@ api.addEventListener("promptcorrector_bridge_prompt", ({ detail }) => {
         updateBridgeNode(node, detail, `Pushed: ${detail.source}`);
     }
     app.graph?.setDirtyCanvas(true, true);
+    if (!detail.queue_after_send) {
+        return;
+    }
+    if (!nodes.length) {
+        console.warn(
+            "[PromptCorrector Bridge] Queue skipped because no matching bridge node is open.",
+        );
+        app.extensionManager?.toast?.add?.({
+            severity: "warn",
+            summary: "PromptCorrector queue skipped",
+            detail: "No matching PromptCorrector Bridge node is open in this workflow.",
+            life: 5000,
+        });
+        return;
+    }
+    try {
+        await Promise.resolve();
+        await app.queuePrompt();
+        app.extensionManager?.toast?.add?.({
+            severity: "success",
+            summary: "PromptCorrector queued",
+            detail: `${detail.source} was sent and the current workflow was queued.`,
+            life: 3000,
+        });
+    } catch (error) {
+        console.error("[PromptCorrector Bridge] Queue failed", error);
+        app.extensionManager?.toast?.add?.({
+            severity: "error",
+            summary: "PromptCorrector queue failed",
+            detail: error?.message || "ComfyUI could not queue the current workflow.",
+            life: 6000,
+        });
+    }
 });
 
 app.registerExtension({

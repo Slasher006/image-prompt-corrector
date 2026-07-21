@@ -38,6 +38,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertIn("File", menus)
         self.assertIn("Edit", menus)
         self.assertIn("Create", menus)
+        self.assertIn("ComfyUI", menus)
         self.assertIn("Model", menus)
         self.assertIn("Research", menus)
         self.assertIn("Library", menus)
@@ -97,6 +98,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.controller.workbench_widget.comfy_url.setText(
             "http://127.0.0.1:8199"
         )
+        self.controller.comfyui_queue_after_send_var.set(True)
         with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
             self.controller.send_result_to_comfyui("Prompt Corrector")
 
@@ -108,6 +110,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 "http://127.0.0.1:8199",
                 "A corrected prompt ready for ComfyUI.",
                 "Prompt Corrector",
+                True,
             ),
         )
         self.assertEqual(
@@ -119,6 +122,47 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             saved["corrected_prompt"],
             "A corrected prompt ready for ComfyUI.",
         )
+        self.assertTrue(saved["comfyui_queue_after_send"])
+
+    def test_comfyui_automation_toggles_are_visible_and_persistent(self):
+        self.controller.comfyui_auto_send_var.set(True)
+        self.controller.comfyui_queue_after_send_var.set(True)
+        self.controller._save_settings()
+
+        snapshot = self.controller._settings_snapshot()
+        self.assertTrue(snapshot["comfyui_auto_send"])
+        self.assertTrue(snapshot["comfyui_queue_after_send"])
+        labels = [
+            checkbox.text()
+            for checkbox in self.root.findChildren(gui.QCheckBox)
+        ]
+        self.assertIn("Auto-send completed results", labels)
+        self.assertIn("Queue workflow after sending", labels)
+
+        self.controller.comfyui_auto_send_var.set(False)
+        self.controller.comfyui_queue_after_send_var.set(False)
+        self.controller._load_settings()
+        self.assertTrue(self.controller.comfyui_auto_send_var.get())
+        self.assertTrue(self.controller.comfyui_queue_after_send_var.get())
+
+    def test_successful_result_auto_sends_its_workspace(self):
+        self.controller.comfyui_auto_send_var.set(True)
+        with mock.patch.object(
+            self.controller,
+            "send_result_to_comfyui",
+        ) as send_result:
+            self.controller._show_corrected(
+                self.controller.active_request_id,
+                "Comic draft",
+                "Finished comic prompt",
+                "comic",
+            )
+
+        self.assertEqual(
+            self.controller.comic_result_text.toPlainText(),
+            "Finished comic prompt",
+        )
+        send_result.assert_called_once_with("Comic Story", automatic=True)
 
     def test_send_to_comfyui_rejects_empty_result_before_network_thread(self):
         self.controller.corrected_text.clear()
@@ -160,6 +204,32 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             },
         )
         self.assertTrue(result["ok"])
+
+    def test_push_prompt_to_comfyui_bridge_requests_queue_when_enabled(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok": true, "queue_requested": true}'
+        )
+        with mock.patch(
+            "krea_prompt_gui.urllib.request.urlopen",
+            return_value=response,
+        ) as urlopen:
+            gui.push_prompt_to_comfyui_bridge(
+                server_url="http://127.0.0.1:8188",
+                prompt="A queued result",
+                workspace="Prompt Corrector",
+                queue_after_send=True,
+            )
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            json.loads(request.data.decode("utf-8")),
+            {
+                "prompt": "A queued result",
+                "workspace": "Prompt Corrector",
+                "queue_after_send": True,
+            },
+        )
 
     def test_iteration_feedback_stays_separate_from_persistent_model_instructions(self):
         self.controller.draft_text.setPlainText("A red knight at a castle gate.")

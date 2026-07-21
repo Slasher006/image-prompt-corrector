@@ -189,6 +189,7 @@ def push_prompt_to_comfyui_bridge(
     server_url: str,
     prompt: str,
     workspace: str,
+    queue_after_send: bool = False,
     timeout: float = 5.0,
 ) -> dict[str, object]:
     """Push one visible result to the installed ComfyUI bridge."""
@@ -205,12 +206,13 @@ def push_prompt_to_comfyui_bridge(
     endpoint = urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, "/promptcorrector_bridge/push", "", "")
     )
-    payload = json.dumps(
-        {
-            "prompt": cleaned_prompt,
-            "workspace": workspace,
-        }
-    ).encode("utf-8")
+    payload_data: dict[str, object] = {
+        "prompt": cleaned_prompt,
+        "workspace": workspace,
+    }
+    if queue_after_send:
+        payload_data["queue_after_send"] = True
+    payload = json.dumps(payload_data).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
         data=payload,
@@ -891,6 +893,14 @@ UI_HELP: dict[str, tuple[str, str]] = {
         "Push the visible result into matching open PromptCorrector Bridge nodes.",
         "Keep Refresh on queue enabled for automatic updates, or use this button to update the node immediately.",
     ),
+    "Auto-send completed results": (
+        "Automatically push each successful Prompt Corrector, Comic Story, or Meme Creator result to matching open ComfyUI bridge nodes.",
+        "Enable it before correcting a prompt so the finished result appears in ComfyUI without clicking Send to ComfyUI.",
+    ),
+    "Queue workflow after sending": (
+        "Ask the connected ComfyUI page to queue its current workflow after a bridge result has updated matching nodes.",
+        "Enable it with Auto-send completed results to generate automatically when correction finishes.",
+    ),
     "Iterate result": ("Use the current result as the next draft and refine it again.", "Ask for warmer lighting while keeping the existing subject and settings."),
     "Corrected prompt": ("Review and optionally edit the model's final prompt.", "Adjust one camera detail before copying."),
     "Activity": (
@@ -1394,6 +1404,8 @@ class PromptCorrectorApp:
         self.include_settings_var = Value(True)
         self.unload_after_generation_var = Value(False)
         self.remember_window_size_var = Value(False)
+        self.comfyui_auto_send_var = Value(False)
+        self.comfyui_queue_after_send_var = Value(False)
         self.creativity_var = Value("raw")
         self.intensity_var = Value(0)
         self.complexity_var = Value(0)
@@ -1651,6 +1663,8 @@ class PromptCorrectorApp:
             "complexity": slider_value(self.complexity_var.get()),
             "movement": slider_value(self.movement_var.get()),
             "remember_window_size": self.remember_window_size_var.get(),
+            "comfyui_auto_send": self.comfyui_auto_send_var.get(),
+            "comfyui_queue_after_send": self.comfyui_queue_after_send_var.get(),
             "workbench": workbench_state,
         }
         if self.remember_window_size_var.get():
@@ -2073,6 +2087,18 @@ class PromptCorrectorApp:
         self.movement_var.set(self._int_setting(settings.get("movement"), -100, 100, self.movement_var.get()))
         self.remember_window_size_var.set(
             self._bool_setting(settings.get("remember_window_size"), self.remember_window_size_var.get())
+        )
+        self.comfyui_auto_send_var.set(
+            self._bool_setting(
+                settings.get("comfyui_auto_send"),
+                self.comfyui_auto_send_var.get(),
+            )
+        )
+        self.comfyui_queue_after_send_var.set(
+            self._bool_setting(
+                settings.get("comfyui_queue_after_send"),
+                self.comfyui_queue_after_send_var.get(),
+            )
         )
 
         # Settings created before workflow profiles used enrichment-heavy values.
@@ -4743,6 +4769,18 @@ class PromptCorrectorApp:
         send_chat_action.triggered.connect(self.send_chat_message)
         chat.addAction("New chat", lambda _checked=False: self.clear_chat())
         chat.addAction("Copy last response", self.copy_last_chat_response)
+
+        comfyui_menu = bar.addMenu("ComfyUI")
+        self._menu_check(
+            comfyui_menu,
+            "Auto-send completed results",
+            self.comfyui_auto_send_var,
+        )
+        self._menu_check(
+            comfyui_menu,
+            "Queue workflow after sending",
+            self.comfyui_queue_after_send_var,
+        )
 
         model_menu = bar.addMenu("Model")
         connection = model_menu.addMenu("Connection")
@@ -10285,6 +10323,12 @@ class PromptCorrectorApp:
         self._finish_progress(True)
         self.request_in_progress = False
         self._set_request_controls(False)
+        if self.comfyui_auto_send_var.get():
+            workspace = {
+                "comic": "Comic Story",
+                "meme": "Meme Creator",
+            }.get(destination, "Prompt Corrector")
+            self.send_result_to_comfyui(workspace, automatic=True)
 
     def _show_cancelled(self, request_id: int) -> None:
         self._discard_pending_invent_recall(request_id)
@@ -10355,7 +10399,12 @@ class PromptCorrectorApp:
             return self.meme_result_text.toPlainText().strip()
         return ""
 
-    def send_result_to_comfyui(self, workspace: str = "Prompt Corrector") -> None:
+    def send_result_to_comfyui(
+        self,
+        workspace: str = "Prompt Corrector",
+        *,
+        automatic: bool = False,
+    ) -> None:
         prompt = self._result_for_comfyui_workspace(workspace)
         if not prompt:
             messagebox.showwarning(
@@ -10368,10 +10417,15 @@ class PromptCorrectorApp:
         # before also broadcasting it to open bridge nodes.
         self._save_settings()
         server_url = self._comfyui_bridge_server_url()
-        self.status_var.set("Sending result to ComfyUI...")
+        queue_after_send = bool(self.comfyui_queue_after_send_var.get())
+        self.status_var.set(
+            "Automatically sending result to ComfyUI..."
+            if automatic
+            else "Sending result to ComfyUI..."
+        )
         thread = threading.Thread(
             target=self._push_result_to_comfyui_worker,
-            args=(server_url, prompt, workspace),
+            args=(server_url, prompt, workspace, queue_after_send),
             daemon=True,
         )
         thread.start()
@@ -10381,12 +10435,14 @@ class PromptCorrectorApp:
         server_url: str,
         prompt: str,
         workspace: str,
+        queue_after_send: bool = False,
     ) -> None:
         try:
             result = push_prompt_to_comfyui_bridge(
                 server_url=server_url,
                 prompt=prompt,
                 workspace=workspace,
+                queue_after_send=queue_after_send,
             )
         except (ValueError, RuntimeError) as exc:
             self._after_threadsafe(
@@ -10397,14 +10453,18 @@ class PromptCorrectorApp:
             return
         characters = int(result.get("characters", len(prompt)))
         self._log_activity_threadsafe(
-            f"Sent {workspace} result to ComfyUI ({characters} characters).",
+            f"Sent {workspace} result to ComfyUI ({characters} characters)"
+            + (" and requested a workflow queue." if queue_after_send else "."),
             {
                 "Prompt Corrector": "prompt",
                 "Comic Story": "comic",
                 "Meme Creator": "meme",
             }.get(workspace, "system"),
         )
-        self._set_status_threadsafe(f"Sent {workspace} result to ComfyUI")
+        self._set_status_threadsafe(
+            f"Sent {workspace} result to ComfyUI"
+            + (" and requested queue" if queue_after_send else "")
+        )
 
     def _show_comfyui_push_error(self, error: str) -> None:
         self.status_var.set("ComfyUI push failed")

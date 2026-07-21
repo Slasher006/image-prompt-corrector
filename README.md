@@ -260,6 +260,10 @@ Prompt Corrector, Comic Story, or Meme Creator result as a normal ComfyUI
 `STRING` output, with automatic queue-time refresh and an editable manual mode.
 Each PromptCorrector result pane also has **Send to ComfyUI**, which immediately
 updates matching bridge nodes without disabling **Refresh on queue**.
+Enable **ComfyUI > Auto-send completed results** to push every successful result
+without clicking the button. Enable **Queue workflow after sending** to run the
+open ComfyUI workflow after its matching bridge node has been updated. Queueing
+is skipped when no matching bridge node is open.
 See [`comfyui_promptcorrector_bridge/README.md`](comfyui_promptcorrector_bridge/README.md)
 for installation and usage.
 
