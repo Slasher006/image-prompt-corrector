@@ -2989,8 +2989,22 @@ def significant_words(text: str) -> list[str]:
     ]
 
 
-def person_role_mentions(prompt: str) -> list[str]:
+def _person_scene_searchable(prompt: str) -> str:
+    """Return person-scene text without camera viewpoint pseudo-roles."""
+
     searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
+    # Viewpoint language describes the camera, not an additional human role.
+    # Without removing it first, a prompt such as "First-person view. A woman..."
+    # is misclassified as containing both a generic "person" and a woman.
+    return re.sub(
+        r"\b(?:first|second|third)[ -]person\b",
+        " ",
+        searchable,
+    )
+
+
+def person_role_mentions(prompt: str) -> list[str]:
+    searchable = _person_scene_searchable(prompt)
     mentions: list[str] = []
     for word in PERSON_ROLE_WORDS + PLURAL_PERSON_ROLE_WORDS:
         if re.search(rf"\b{re.escape(word)}\b", searchable) and word not in mentions:
@@ -3012,9 +3026,7 @@ def person_role_mentions(prompt: str) -> list[str]:
 def _collective_person_scene(prompt: str) -> bool:
     """Return whether people act only as named groups, not tracked individuals."""
 
-    searchable = text_without_negative_constraints(
-        normalize_concept_text(prompt)
-    ).lower()
+    searchable = _person_scene_searchable(prompt)
     collective = [
         word
         for word in COLLECTIVE_PERSON_ROLE_WORDS
@@ -3155,7 +3167,7 @@ def _single_gender_alias_scene(searchable: str) -> bool:
 
 
 def appears_multi_person_scene(prompt: str) -> bool:
-    searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
+    searchable = _person_scene_searchable(prompt)
     role_mentions = person_role_mentions(searchable)
     if any(
         re.search(rf"\b{re.escape(word)}\b", searchable)
@@ -3182,7 +3194,7 @@ def appears_multi_person_scene(prompt: str) -> bool:
 
 
 def multi_person_role_issues(prompt: str) -> list[str]:
-    searchable = text_without_negative_constraints(normalize_concept_text(prompt)).lower()
+    searchable = _person_scene_searchable(prompt)
     if not appears_multi_person_scene(searchable):
         return []
     if _collective_person_scene(searchable):
@@ -3276,6 +3288,39 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         issues.append("action verbs are not clearly bound to a named person")
 
     return issues
+
+
+def multi_person_ambiguity_spans(
+    prompt: str,
+    issues: list[str] | None = None,
+) -> list[tuple[int, int]]:
+    """Locate disputed references and actions for source-editor highlighting."""
+
+    issue_values = issues if issues is not None else multi_person_role_issues(prompt)
+    reference_terms: list[str] = []
+    highlight_actions = False
+    for issue in issue_values:
+        if issue.startswith("ambiguous person references:"):
+            reference_terms.extend(
+                term.strip()
+                for term in issue.partition(":")[2].split(",")
+                if term.strip()
+            )
+        elif issue == "action verbs are not clearly bound to a named person":
+            highlight_actions = True
+
+    searchable_terms = list(reference_terms)
+    if highlight_actions:
+        searchable_terms.extend(ACTION_POSE_KEYWORDS)
+    spans: set[tuple[int, int]] = set()
+    for term in sorted(set(searchable_terms), key=len, reverse=True):
+        for match in re.finditer(
+            rf"\b{re.escape(term)}\b",
+            str(prompt or ""),
+            flags=re.IGNORECASE,
+        ):
+            spans.add(match.span())
+    return sorted(spans)
 
 
 def _unambiguous_gender_label(

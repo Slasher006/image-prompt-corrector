@@ -92,6 +92,7 @@ from krea_prompt_corrector import (
     build_meme_field_suggestion_messages,
     build_single_image_field_suggestion_messages,
     chat_completion,
+    canonical_validation_text,
     estimate_audit_max_tokens,
     estimate_max_tokens,
     enforce_comic_speech_bubble_contract,
@@ -108,6 +109,8 @@ from krea_prompt_corrector import (
     canonicalize_saved_invent_value,
     normalize_model_base_url,
     natural_visual_direction,
+    multi_person_ambiguity_spans,
+    multi_person_role_issues,
     parse_concepts,
     parse_concept_mix,
     normalize_concept_mix_groups,
@@ -1443,6 +1446,7 @@ class PromptCorrectorApp:
         self.progress_stage = "Idle"
         self.progress_stage_started_at = 0.0
         self.weighted_highlight_after_id: QTimer | None = None
+        self.ambiguity_highlight_spans: list[tuple[int, int]] = []
         self.cancel_event = threading.Event()
         self.active_request_id = 0
         self.active_request_workspace = "system"
@@ -2581,6 +2585,9 @@ class PromptCorrectorApp:
         self.weighted_highlight_after_id = timer
 
     def _on_draft_modified(self, _event: object | None = None) -> str:
+        # Ambiguity offsets describe the previous submitted text. Remove them
+        # as soon as the user edits, then recompute on the next correction.
+        self.ambiguity_highlight_spans = []
         self._schedule_weighted_highlights()
         self._update_text_counters()
         self._update_diff_view(self.draft_text.toPlainText(), self.corrected_text.toPlainText())
@@ -2665,6 +2672,18 @@ class PromptCorrectorApp:
                 cursor.setPosition(match.end(), QTextCursor.MoveMode.KeepAnchor)
                 selection.cursor = cursor
                 selections.append(selection)
+        for start, end in self.ambiguity_highlight_spans:
+            if start < 0 or end <= start or end > len(document_text):
+                continue
+            selection = QTextEdit.ExtraSelection()
+            selection.format.setForeground(QColor("#ff6677"))
+            selection.format.setBackground(QColor("#4b2029"))
+            selection.format.setFontUnderline(True)
+            cursor = self.draft_text.textCursor()
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            selection.cursor = cursor
+            selections.append(selection)
         self.draft_text.setExtraSelections(selections)
 
     def _adjust_weighted_term(self, delta: float) -> str:
@@ -8626,6 +8645,55 @@ class PromptCorrectorApp:
             destination="meme",
         )
 
+    def _prompt_ambiguity_preflight(
+        self,
+        *,
+        requested_prompt: str,
+        effective_prompt: str,
+        story_elements: str,
+        destination: str,
+    ) -> bool:
+        """Stop a Single Image request before inference when roles are ambiguous."""
+
+        if destination != "prompt":
+            return True
+        source = "\n".join(
+            value
+            for value in (effective_prompt, story_elements)
+            if str(value or "").strip()
+        )
+        issues = multi_person_role_issues(canonical_validation_text(source))
+        self.ambiguity_highlight_spans = multi_person_ambiguity_spans(
+            requested_prompt,
+            issues,
+        )
+        self._highlight_weighted_terms()
+        if not issues:
+            return True
+
+        detail = "; ".join(issues)
+        self.active_activity_workspace = destination
+        self._log_activity(
+            "Ambiguity preflight stopped correction before contacting the model: "
+            + detail
+            + ". The disputed source words are highlighted in red.",
+            destination,
+        )
+        self._save_settings()
+        self.status_var.set("Clarify highlighted ambiguity")
+        self.progress_var.set(0.0)
+        self.progress_text_var.set("Stopped before model request")
+        self.show_library_tab("Activity")
+        messagebox.showwarning(
+            "Clarify highlighted ambiguity",
+            "Prompt Corrector found ambiguous person references or actions before "
+            "contacting the model.\n\n"
+            + detail
+            + "\n\nThe disputed words are marked in red in Your prompt. Name the "
+            "person performing each action or receiving each reference, then retry.",
+        )
+        return False
+
     def _start_prompt_correction(
         self,
         *,
@@ -8639,6 +8707,13 @@ class PromptCorrectorApp:
 
         requested_prompt = draft
         draft = self._apply_camera_direction(draft, destination)
+        if not self._prompt_ambiguity_preflight(
+            requested_prompt=requested_prompt,
+            effective_prompt=draft,
+            story_elements=story_elements,
+            destination=destination,
+        ):
+            return
         effective_visual_direction = {
             "comic": self.comic_visual_direction_var.get(),
             "meme": self.meme_visual_direction_var.get(),

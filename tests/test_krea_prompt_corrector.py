@@ -2382,6 +2382,34 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertFalse(corrector.appears_multi_person_scene(prompt))
         self.assertEqual(corrector.multi_person_role_issues(prompt), [])
 
+    def test_camera_viewpoint_person_is_not_a_second_person_role(self):
+        for viewpoint in ("First-person", "second person", "third-person"):
+            prompt = (
+                f"{viewpoint} hands-in-frame view. A woman performs "
+                "self-stimulation of their own genitals."
+            )
+            with self.subTest(viewpoint=viewpoint):
+                translated = corrector.translate_explicit_adult_language(prompt)
+
+                self.assertEqual(corrector.person_role_mentions(prompt), ["woman"])
+                self.assertFalse(corrector.appears_multi_person_scene(prompt))
+                self.assertIn("her own genitals", translated)
+                self.assertEqual(corrector.multi_person_role_issues(translated), [])
+
+    def test_multi_person_ambiguity_spans_locate_disputed_source_words(self):
+        prompt = "Two people enter a cave; he follows her while they carry a torch."
+        issues = corrector.multi_person_role_issues(prompt)
+        highlighted = {
+            prompt[start:end].casefold()
+            for start, end in corrector.multi_person_ambiguity_spans(
+                prompt,
+                issues,
+            )
+        }
+
+        self.assertTrue(issues)
+        self.assertTrue({"he", "her", "they"}.issubset(highlighted))
+
     def test_adult_magazine_style_is_not_a_second_person_role(self):
         prompt = (
             "Photoreal, glossy adult magazine finish. A mature adult woman "

@@ -296,6 +296,52 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         self.assertNotIn("Generation feedback", sent["model_instructions"])
 
+    def test_ambiguity_preflight_blocks_model_and_marks_disputed_words_red(self):
+        prompt = "Two people enter a cave; he follows her while they carry a torch."
+        self.controller.camera_control_var.set("Auto")
+        self.controller.draft_text.setPlainText(prompt)
+
+        with (
+            mock.patch("krea_prompt_gui.threading.Thread") as thread_class,
+            mock.patch.object(gui.messagebox, "showwarning") as warning,
+        ):
+            self.controller.correct_prompt()
+
+        thread_class.assert_not_called()
+        warning.assert_called_once()
+        highlighted = {
+            prompt[start:end].casefold()
+            for start, end in self.controller.ambiguity_highlight_spans
+        }
+        self.assertTrue({"he", "her", "they"}.issubset(highlighted))
+        red_selections = [
+            selection
+            for selection in self.controller.draft_text.extraSelections()
+            if selection.format.foreground().color().name() == "#ff6677"
+        ]
+        self.assertGreaterEqual(len(red_selections), 3)
+        self.assertEqual(
+            self.controller.status_var.get(),
+            "Clarify highlighted ambiguity",
+        )
+        activity = self.controller.activity_text.toPlainText()
+        self.assertIn("Ambiguity preflight stopped correction", activity)
+        self.assertNotIn("Started prompt correction", activity)
+
+    def test_ambiguity_preflight_allows_first_person_single_subject(self):
+        self.controller.camera_control_var.set(
+            "First-person hands-in-frame view, 24mm lens"
+        )
+        self.controller.draft_text.setPlainText(
+            "A woman performs self-stimulation of their own genitals."
+        )
+
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+
+        thread_class.return_value.start.assert_called_once()
+        self.assertEqual(self.controller.ambiguity_highlight_spans, [])
+
     def test_context_tokens_default_dropdown_and_legacy_migration(self):
         self.assertEqual(
             self.controller.context_token_budget_var.get(),
