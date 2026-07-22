@@ -674,6 +674,8 @@ QProgressBar { background: #171c25; border: 1px solid #30394a; border-radius: 4p
 QProgressBar::chunk { background-color: #6d5dfc; border-radius: 3px; }
 QSlider::groove:horizontal { height: 5px; background: #293142; border-radius: 2px; }
 QSlider::handle:horizontal { width: 15px; margin: -5px 0; background: #7c6cff; border-radius: 7px; }
+QSlider::groove:vertical { width: 6px; background: #293142; border-radius: 3px; }
+QSlider::handle:vertical { height: 16px; margin: 0 -5px; background: #7c6cff; border-radius: 8px; }
 QCheckBox::indicator { width: 16px; height: 16px; }
 QCheckBox::indicator:checked { background: #6d5dfc; border: 1px solid #9389ff; border-radius: 3px; }
 QSplitter::handle { background: #242b38; width: 2px; }
@@ -924,7 +926,8 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "New chat": ("Clear the current conversation and start fresh.", "Use before changing to an unrelated topic."),
     "Copy last response": ("Copy the newest model reply to the clipboard.", "Paste the advice into your notes."),
     "Single-image direction": ("Set creative direction used only by Prompt Corrector.", "Name the concept, focus, and story beat for one still image."),
-    "Single-image options": ("Shows Prompt Corrector-only direction, guidance, and reference controls.", "Open it to add a goal, weighted words, or a local reference image."),
+    "More prompt options": ("Shows optional Prompt Corrector direction, guidance, and reference controls.", "Open it to add a goal, weighted words, or a local reference image."),
+    "Rule equalizer": ("Opens individual vertical controls for optional rewrite behaviors.", "Lower Story while keeping Logic high for a faithful cleanup."),
     "Generation": ("Control shared rewrite length, detail, variation, and sampling.", "Choose detailed output with two variations."),
     "Krea controls": ("Set Krea-specific values that may accompany the prompt.", "Raise Movement for an action scene."),
     "Processing": ("Choose shared rewrite safeguards, quality passes, and web research.", "Enable audit and repair for every image-prompt mode."),
@@ -1405,6 +1408,33 @@ class PromptCorrectorApp:
         self.artistic_detail_freedom_var = Value(False)
         self.clean_constraints_var = Value(True)
         self.rule_strength_var = Value(100)
+        self.rule_equalizer_vars: dict[str, Value] = {
+            "fidelity": Value(100),
+            "logic": Value(100),
+            "actions": Value(0),
+            "story": Value(0),
+            "detail_freedom": Value(0),
+            "cleanup": Value(100),
+        }
+        self._rule_equalizer_toggles: dict[str, Value] = {
+            "fidelity": self.preserve_var,
+            "logic": self.fix_logic_var,
+            "actions": self.enhance_actions_var,
+            "story": self.develop_story_var,
+            "detail_freedom": self.artistic_detail_freedom_var,
+            "cleanup": self.clean_constraints_var,
+        }
+        for channel, toggle in self._rule_equalizer_toggles.items():
+            toggle.subscribe(
+                lambda enabled, name=channel: self._sync_rule_equalizer_toggle(
+                    name, bool(enabled)
+                )
+            )
+            self.rule_equalizer_vars[channel].subscribe(
+                lambda value, name=channel: self._sync_rule_equalizer_value(
+                    name, value
+                )
+            )
         self.safe_for_work_var = Value(False)
         self.explicit_nsfw_var = Value(False)
         self.safe_for_work_var.subscribe(
@@ -1435,6 +1465,7 @@ class PromptCorrectorApp:
         self.remember_window_size_var = Value(False)
         self.comfyui_auto_send_var = Value(False)
         self.comfyui_queue_after_send_var = Value(False)
+        self.simple_mode_var = Value(True)
         self.creativity_var = Value("raw")
         self.intensity_var = Value(0)
         self.complexity_var = Value(0)
@@ -1537,17 +1568,28 @@ class PromptCorrectorApp:
         self.generator_controls_tab_index: int | None = None
         self.prompt_guidance_page: QWidget | None = None
         self.prompt_options_button: QtButton | None = None
+        self.beginner_options_button: QtButton | None = None
+        self.beginner_intent_group: QGroupBox | None = None
+        self.beginner_intent_buttons: dict[str, QtButton] = {}
+        self.advanced_prompt_options_widget: QWidget | None = None
+        self.advanced_top_widgets: list[QWidget] = []
+        self.advanced_view_button: QtButton | None = None
         self.setup_action = None
         self.reference_preview_list: QListWidget | None = None
         self.correct_button: QtButton | None = None
         self.stop_button: QtButton | None = None
         self.single_clear_button: QtButton | None = None
         self.iterate_button: QtButton | None = None
+        self.copy_button: QtButton | None = None
+        self.comfy_push_button: QtButton | None = None
+        self.quick_refine_buttons: list[QtButton] = []
+        self.quick_refine_label: QLabel | None = None
         self.chat_send_button: QtButton | None = None
         self.chat_stop_button: QtButton | None = None
         self.chat_transcript: QTextEdit | None = None
         self.chat_input: ChatInputEdit | None = None
         self.workbench_widget: PromptWorkbench | None = None
+        self.rule_equalizer_dialog: QDialog | None = None
         self.request_in_progress = False
         self.dispatcher = UiDispatcher()
         self.dispatcher.invoke.connect(lambda callback, args: callback(*args))
@@ -1558,6 +1600,8 @@ class PromptCorrectorApp:
         self.workflow_profile_var.subscribe(self._apply_workflow_profile)
         self.meme_preset_var.subscribe(self._apply_meme_preset)
         self._build_ui()
+        self.simple_mode_var.subscribe(self._apply_simple_mode)
+        self._apply_simple_mode(self.simple_mode_var.get())
         self._refresh_invent_recall_buttons()
         if self.recovered_draft:
             self.draft_text.setPlainText(self.recovered_draft)
@@ -1676,6 +1720,10 @@ class PromptCorrectorApp:
             "artistic_detail_freedom": self.artistic_detail_freedom_var.get(),
             "clean_constraints": self.clean_constraints_var.get(),
             "rule_strength": rule_strength_value(self.rule_strength_var.get()),
+            "rule_equalizer": {
+                channel: self._int_setting(variable.get(), 0, 100, 0)
+                for channel, variable in self.rule_equalizer_vars.items()
+            },
             "safe_for_work": self.safe_for_work_var.get(),
             "explicit_nsfw": self.explicit_nsfw_var.get(),
             "altered_text_encoder": self.altered_encoder_var.get(),
@@ -1696,6 +1744,7 @@ class PromptCorrectorApp:
             "remember_window_size": self.remember_window_size_var.get(),
             "comfyui_auto_send": self.comfyui_auto_send_var.get(),
             "comfyui_queue_after_send": self.comfyui_queue_after_send_var.get(),
+            "simple_mode": self.simple_mode_var.get(),
             "workbench": workbench_state,
         }
         if self.remember_window_size_var.get():
@@ -1729,6 +1778,10 @@ class PromptCorrectorApp:
             "artistic_detail_freedom": self.artistic_detail_freedom_var.get(),
             "clean_constraints": self.clean_constraints_var.get(),
             "rule_strength": rule_strength_value(self.rule_strength_var.get()),
+            "rule_equalizer": {
+                channel: self._int_setting(variable.get(), 0, 100, 0)
+                for channel, variable in self.rule_equalizer_vars.items()
+            },
             "safe_for_work": self.safe_for_work_var.get(),
             "explicit_nsfw": self.explicit_nsfw_var.get(),
             "altered_text_encoder": self.altered_encoder_var.get(),
@@ -2070,6 +2123,10 @@ class PromptCorrectorApp:
                 self.rule_strength_var.get(),
             )
         )
+        for channel, value in self._rule_equalizer_setting(
+            settings.get("rule_equalizer")
+        ).items():
+            self.rule_equalizer_vars[channel].set(value)
         self.safe_for_work_var.set(
             self._bool_setting(settings.get("safe_for_work"), self.safe_for_work_var.get())
         )
@@ -2137,6 +2194,9 @@ class PromptCorrectorApp:
                 settings.get("comfyui_queue_after_send"),
                 self.comfyui_queue_after_send_var.get(),
             )
+        )
+        self.simple_mode_var.set(
+            self._bool_setting(settings.get("simple_mode"), self.simple_mode_var.get())
         )
 
         # Settings created before workflow profiles used enrichment-heavy values.
@@ -2504,6 +2564,64 @@ class PromptCorrectorApp:
             return default
         return max(minimum, min(maximum, parsed))
 
+    def _rule_equalizer_setting(self, value: object) -> dict[str, int]:
+        stored = value if isinstance(value, dict) else {}
+        return {
+            channel: self._int_setting(
+                stored.get(channel),
+                0,
+                100,
+                int(variable.get()),
+            )
+            for channel, variable in self.rule_equalizer_vars.items()
+        }
+
+    def _sync_rule_equalizer_toggle(self, channel: str, enabled: bool) -> None:
+        variable = self.rule_equalizer_vars[channel]
+        current = self._int_setting(variable.get(), 0, 100, 0)
+        target = current if enabled and current > 0 else 100 if enabled else 0
+        if current != target:
+            variable.set(target)
+
+    def _sync_rule_equalizer_value(self, channel: str, value: object) -> None:
+        enabled = self._int_setting(value, 0, 100, 0) > 0
+        toggle = self._rule_equalizer_toggles[channel]
+        if bool(toggle.get()) != enabled:
+            toggle.set(enabled)
+
+    def _rule_equalizer_instruction(self) -> str:
+        master = rule_strength_value(self.rule_strength_var.get())
+        labels = {
+            "fidelity": "source-wording fidelity",
+            "logic": "logic repair",
+            "actions": "action enhancement",
+            "story": "story development",
+            "detail_freedom": "artistic detail freedom",
+            "cleanup": "generator-constraint cleanup",
+        }
+        raw_values = {
+            channel: self._int_setting(variable.get(), 0, 100, 0)
+            for channel, variable in self.rule_equalizer_vars.items()
+        }
+        if all(value in {0, 100} for value in raw_values.values()):
+            return ""
+        values = {
+            channel: min(value, master) if value > 0 else 0
+            for channel, value in raw_values.items()
+        }
+        channels = "; ".join(
+            f"{labels[channel]}={value}/100"
+            for channel, value in values.items()
+        )
+        return (
+            "Private optional-rule equalizer: "
+            + channels
+            + ". A value of 0 disables that optional behavior; 1-35 is light, "
+            "36-70 is moderate, and 71-100 is firm. Treat these as degrees, never "
+            "print these controls or their values. Explicit subjects, counts, "
+            "positions, quoted text, safety, and output cleanup remain strict."
+        )
+
     def _context_token_setting(self, source: dict[str, object], default: object) -> str:
         if "context_token_budget" in source:
             value = source.get("context_token_budget")
@@ -2646,6 +2764,30 @@ class PromptCorrectorApp:
         self._update_diff_view(self.draft_text.toPlainText(), self.corrected_text.toPlainText())
         if self.iterate_button is not None and not self.request_in_progress:
             self.iterate_button.setEnabled(bool(self.corrected_text.toPlainText().strip()))
+        self._update_result_action_visibility()
+
+    def _update_result_action_visibility(self) -> None:
+        if not hasattr(self, "corrected_text"):
+            return
+        has_result = bool(self.corrected_text.toPlainText().strip())
+        contextual = bool(self.simple_mode_var.get())
+        for button in (self.copy_button, self.comfy_push_button, self.iterate_button):
+            if button is not None:
+                button.setVisible(has_result or not contextual)
+        for button in self.quick_refine_buttons:
+            button.setVisible(has_result and contextual)
+        if self.quick_refine_label is not None:
+            self.quick_refine_label.setVisible(has_result and contextual)
+        self._update_krea_recommendation()
+
+    def quick_refine_result(self, feedback: str) -> None:
+        result = self.corrected_text.toPlainText().strip()
+        if not result or self.request_in_progress:
+            return
+        self.draft_text.setPlainText(result)
+        self.generation_feedback_var.set(feedback)
+        self.status_var.set("Refining the current result…")
+        self.correct_prompt()
 
     def _highlight_weighted_terms(self) -> None:
         self.weighted_highlight_after_id = None
@@ -2836,6 +2978,10 @@ class PromptCorrectorApp:
                 self.rule_strength_var.get(),
             )
         )
+        for channel, value in self._rule_equalizer_setting(
+            entry.get("rule_equalizer")
+        ).items():
+            self.rule_equalizer_vars[channel].set(value)
         self.safe_for_work_var.set(
             self._bool_setting(entry.get("safe_for_work"), self.safe_for_work_var.get())
         )
@@ -4841,7 +4987,9 @@ class PromptCorrectorApp:
         chat.addAction("New chat", lambda _checked=False: self.clear_chat())
         chat.addAction("Copy last response", self.copy_last_chat_response)
 
-        comfyui_menu = bar.addMenu("ComfyUI")
+        options_menu = bar.addMenu("Options")
+
+        comfyui_menu = options_menu.addMenu("ComfyUI")
         self._menu_check(
             comfyui_menu,
             "Auto-send completed results",
@@ -4853,7 +5001,9 @@ class PromptCorrectorApp:
             self.comfyui_queue_after_send_var,
         )
 
-        model_menu = bar.addMenu("Model")
+        model_menu = options_menu.addMenu("Model and processing")
+        model_menu.addAction("Rule equalizer…", self.show_rule_equalizer)
+        model_menu.addSeparator()
         connection = model_menu.addMenu("Connection")
         connection.addAction("Test model server", self.test_model_connection)
         connection.addAction("Save settings", self._save_settings)
@@ -4889,7 +5039,7 @@ class PromptCorrectorApp:
         self._menu_check(generation, "Audit and repair", self.audit_repair_var)
         self._menu_check(generation, "Show generator setup recommendation", self.include_settings_var)
 
-        research = bar.addMenu("Research")
+        research = options_menu.addMenu("Research")
         self._menu_check(research, "Grounded web verification", self.live_research_var)
         self._menu_choices(research, "Search engine", self.search_engine_var, TEXT_RESEARCH_ENGINES)
         research.addSeparator()
@@ -4947,11 +5097,18 @@ class PromptCorrectorApp:
         library.addAction("Clear Activity", self.clear_activity_history)
 
         self.view_menu = bar.addMenu("View")
-        self.setup_action = self.view_menu.addAction("Show shared settings")
+        self._menu_check(self.view_menu, "Simple mode", self.simple_mode_var)
+        self.view_menu.addSeparator()
+        self.setup_action = self.view_menu.addAction("Show advanced settings")
         self.setup_action.setCheckable(True)
         self.setup_action.setChecked(False)
         self.setup_action.setShortcut("Ctrl+Shift+Space")
         self.setup_action.toggled.connect(lambda visible: self.setup_tabs.setVisible(visible))
+        self.setup_action.toggled.connect(
+            lambda visible: self.simple_mode_var.set(False)
+            if visible and self.simple_mode_var.get()
+            else None
+        )
         self._menu_check(
             self.view_menu,
             "Remember window size",
@@ -4979,6 +5136,7 @@ class PromptCorrectorApp:
             "Adapts prompt structure and setup guidance to the destination generator.",
             "FLUX.2 Klein uses explicit detailed prompts because it has no prompt upsampling.",
         )
+        target_combo.setMaximumWidth(280)
         quick.addWidget(target_combo)
         workflow_label = QLabel("Workflow")
         self._set_help(
@@ -5004,7 +5162,7 @@ class PromptCorrectorApp:
             editable=True,
         )
         self._help(self.camera_combo, "Camera")
-        self.camera_combo.setMinimumContentsLength(18)
+        self.camera_combo.setMinimumContentsLength(14)
         quick.addWidget(self.camera_combo)
         model_label = QLabel("Model")
         self._help(model_label, "Model")
@@ -5019,12 +5177,11 @@ class PromptCorrectorApp:
             "Exact uses raw creativity and forbids invented content.",
         )
         self.workflow_profile_var.subscribe(lambda _value: self._update_profile_summary())
-        quick.addWidget(self.profile_summary_label, 1)
-        advanced_button = QtButton("Settings")
+        advanced_button = QtButton("Advanced settings")
         self._set_help(
             advanced_button,
-            "Shows settings shared by the image-prompt workspaces and local model connection.",
-            "Open this to adjust generation, processing, research, or connection settings.",
+            "Shows less frequently changed sampling, processing, generator, and connection settings.",
+            "Open this to adjust temperature, safety processing, research, or the model server.",
         )
         advanced_button.setCheckable(True)
         advanced_button.setChecked(False)
@@ -5032,7 +5189,30 @@ class PromptCorrectorApp:
             advanced_button.toggled.connect(self.setup_action.setChecked)
             self.setup_action.toggled.connect(advanced_button.setChecked)
         quick.addWidget(advanced_button)
+        self.advanced_top_widgets = [
+            workflow_label,
+            profile_combo,
+            self.camera_label,
+            self.camera_combo,
+            model_label,
+            self.model_combo,
+            advanced_button,
+        ]
+        self.advanced_view_button = QtButton("Advanced view")
+        self._set_help(
+            self.advanced_view_button,
+            "Switches between the guided beginner layout and the complete control surface.",
+            "Open Advanced view to configure the model, camera, research, and rewrite controls.",
+        )
+        self.advanced_view_button.clicked.connect(
+            lambda: self.simple_mode_var.set(not bool(self.simple_mode_var.get()))
+        )
+        self.advanced_view_button.setMaximumWidth(160)
+        quick.addStretch()
+        quick.addWidget(self.advanced_view_button)
         outer.addLayout(quick)
+        self.profile_summary_label.setStyleSheet("color: #8993a5;")
+        outer.addWidget(self.profile_summary_label)
 
         setup_tabs = QTabWidget()
         self.setup_tabs = setup_tabs
@@ -5046,20 +5226,93 @@ class PromptCorrectorApp:
         prompt_outer.setContentsMargins(0, 8, 0, 0)
         prompt_outer.setSpacing(12)
 
+        self.beginner_intent_group = QGroupBox("How much may the prompt change?")
+        intent_layout = QHBoxLayout(self.beginner_intent_group)
+        intent_specs = (
+            (
+                "Exact",
+                "Keep faithful",
+                "Preserve the subject, composition, counts, positions, and wording.",
+            ),
+            (
+                "Improve",
+                "Polish",
+                "Improve clarity, lighting, composition, and visual detail without changing the idea.",
+            ),
+            (
+                "Explore",
+                "Creative",
+                "Develop the idea with stronger atmosphere, action, and supporting details.",
+            ),
+        )
+        for profile, label, description in intent_specs:
+            column = QVBoxLayout()
+            button = QtButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, value=profile: self.workflow_profile_var.set(value)
+            )
+            column.addWidget(button)
+            explanation = QLabel(description)
+            explanation.setWordWrap(True)
+            explanation.setAlignment(Qt.AlignmentFlag.AlignTop)
+            explanation.setStyleSheet("color: #8993a5;")
+            column.addWidget(explanation)
+            intent_layout.addLayout(column, 1)
+            self.beginner_intent_buttons[profile] = button
+        self.workflow_profile_var.subscribe(
+            lambda _value: self._update_beginner_intent_buttons()
+        )
+        self._update_beginner_intent_buttons()
+        prompt_outer.addWidget(self.beginner_intent_group)
+
+        self.beginner_options_button = QtButton("Optional additions…")
+        self.beginner_options_button.setCheckable(True)
+        self._set_help(
+            self.beginner_options_button,
+            "Shows optional style, story, weighting, and reference controls.",
+            "Open this when the basic prompt needs a specific visual direction or reference image.",
+        )
+        prompt_outer.addWidget(self.beginner_options_button)
+
+        advanced_prompt_options_widget = QWidget()
+        self.advanced_prompt_options_widget = advanced_prompt_options_widget
         prompt_options_bar = QHBoxLayout()
-        self.prompt_options_button = QtButton("Single-image options")
+        prompt_options_bar.setContentsMargins(0, 0, 0, 0)
+        prompt_options_bar.addWidget(QLabel("Mode"))
+        prompt_options_bar.addWidget(
+            self._help(self._bind_combo(self.mode_var, PROMPT_MODES), "Mode")
+        )
+        prompt_options_bar.addWidget(QLabel("Detail"))
+        prompt_options_bar.addWidget(
+            self._help(self._bind_combo(self.detail_var, DETAIL_LEVELS), "Detail")
+        )
+        prompt_options_bar.addWidget(QLabel("Length"))
+        prompt_options_bar.addWidget(
+            self._help(self._bind_combo(self.output_length_var, OUTPUT_LENGTHS), "Output length")
+        )
+        prompt_options_bar.addWidget(QLabel("Preset"))
+        prompt_options_bar.addWidget(
+            self._help(self._bind_combo(self.prompt_preset_var, PROMPT_PRESETS), "Preset")
+        )
+        self.prompt_options_button = QtButton("More prompt options")
         self.prompt_options_button.setCheckable(True)
         self.prompt_options_button.setChecked(False)
-        self._help(self.prompt_options_button, "Single-image options")
+        self._help(self.prompt_options_button, "More prompt options")
         prompt_options_bar.addWidget(self.prompt_options_button)
-        prompt_options_hint = QLabel(
-            "Optional direction, weighting, model guidance, and reference images for Prompt Corrector only."
-        )
-        prompt_options_hint.setStyleSheet("color: #8993a5;")
-        self._help(prompt_options_hint, "Single-image options")
-        prompt_options_bar.addWidget(prompt_options_hint)
+        equalizer_button = QtButton("Rule equalizer…")
+        self._help(equalizer_button, "Rule equalizer")
+        equalizer_button.clicked.connect(self.show_rule_equalizer)
+        prompt_options_bar.addWidget(equalizer_button)
         prompt_options_bar.addStretch()
-        prompt_outer.addLayout(prompt_options_bar)
+        advanced_prompt_options_widget.setLayout(prompt_options_bar)
+        prompt_outer.addWidget(advanced_prompt_options_widget)
+        self.beginner_options_button.toggled.connect(
+            self.prompt_options_button.setChecked
+        )
+        self.prompt_options_button.toggled.connect(
+            self.beginner_options_button.setChecked
+        )
         self.prompt_options_button.toggled.connect(
             lambda visible: advanced_button.setChecked(False) if visible else None
         )
@@ -5242,23 +5495,19 @@ class PromptCorrectorApp:
 
         generation_page = QWidget()
         generation_grid = QGridLayout(generation_page)
-        generation_grid.addWidget(QLabel("Mode"), 0, 0)
-        generation_grid.addWidget(self._help(self._bind_combo(self.mode_var, PROMPT_MODES), "Mode"), 0, 1)
-        generation_grid.addWidget(QLabel("Detail"), 0, 2)
-        generation_grid.addWidget(self._help(self._bind_combo(self.detail_var, DETAIL_LEVELS), "Detail"), 0, 3)
-        generation_grid.addWidget(QLabel("Output length"), 1, 0)
-        generation_grid.addWidget(
-            self._help(self._bind_combo(self.output_length_var, OUTPUT_LENGTHS), "Output length"),
-            1,
-            1,
+        advanced_hint = QLabel(
+            "Sampling and reusable setup controls. Everyday prompt choices are available above the prompt."
         )
+        advanced_hint.setWordWrap(True)
+        advanced_hint.setStyleSheet("color: #8993a5;")
+        generation_grid.addWidget(advanced_hint, 0, 0, 1, 4)
         generation_grid.addWidget(
             self._bind_check(
                 "Artistic detail freedom",
                 self.artistic_detail_freedom_var,
             ),
             1,
-            2,
+            0,
             1,
             2,
         )
@@ -5267,12 +5516,6 @@ class PromptCorrectorApp:
             self._help(self._bind_combo(self.risk_level_var, RISK_LEVELS), "Creative freedom"),
             2,
             1,
-        )
-        generation_grid.addWidget(QLabel("Preset"), 2, 2)
-        generation_grid.addWidget(
-            self._help(self._bind_combo(self.prompt_preset_var, PROMPT_PRESETS), "Preset"),
-            2,
-            3,
         )
         generation_grid.addWidget(QLabel("Variations"), 3, 0)
         generation_grid.addWidget(self._help(self._bind_spin(self.variation_var, 1, 3), "Variations"), 3, 1)
@@ -5319,7 +5562,7 @@ class PromptCorrectorApp:
         generation_grid.addLayout(preset_controls, 5, 2, 1, 2)
         generation_grid.setColumnStretch(1, 1)
         generation_grid.setColumnStretch(3, 1)
-        setup_tabs.addTab(generation_page, "Generation")
+        setup_tabs.addTab(generation_page, "Sampling and presets")
 
         krea_page = QWidget()
         krea_grid = QGridLayout(krea_page)
@@ -5461,7 +5704,9 @@ class PromptCorrectorApp:
         draft_layout.addLayout(draft_invent_row)
         self.draft_text = QtTextEdit()
         self.draft_text.enable_clear_button()
-        self.draft_text.setPlaceholderText("Paste or type a rough image prompt…")
+        self.draft_text.setPlaceholderText(
+            "Paste an existing prompt, describe an image idea, or start with a few rough words…"
+        )
         self._help(self.draft_text, "Your prompt")
         self.draft_text.textChanged.connect(self._on_draft_modified)
         self.draft_text.increase_weight_callback = self._increase_draft_weighted_term
@@ -5485,6 +5730,7 @@ class PromptCorrectorApp:
         self.stop_button = QtButton("Stop")
         self.stop_button.clicked.connect(self.stop_current_request)
         self.stop_button.setEnabled(False)
+        self.stop_button.setVisible(False)
         controls.addWidget(self.stop_button)
         self.single_clear_button = QtButton("Clear all")
         self._set_help(
@@ -5497,14 +5743,18 @@ class PromptCorrectorApp:
         weight_down_button = QtButton("Weight −")
         self._help(weight_down_button, "Weight −")
         weight_down_button.clicked.connect(self._decrease_draft_weighted_term)
+        weight_down_button.setVisible(False)
+        self.prompt_options_button.toggled.connect(weight_down_button.setVisible)
         controls.addWidget(weight_down_button)
         weight_up_button = QtButton("Weight +")
         self._help(weight_up_button, "Weight +")
         weight_up_button.clicked.connect(self._increase_draft_weighted_term)
+        weight_up_button.setVisible(False)
+        self.prompt_options_button.toggled.connect(weight_up_button.setVisible)
         controls.addWidget(weight_up_button)
-        copy_button = QtButton("Copy corrected")
-        copy_button.clicked.connect(self.copy_corrected)
-        controls.addWidget(copy_button)
+        self.copy_button = QtButton("Copy corrected")
+        self.copy_button.clicked.connect(self.copy_corrected)
+        controls.addWidget(self.copy_button)
         self.comfy_push_button = QtButton("Send to ComfyUI")
         self._help(self.comfy_push_button, "Send to ComfyUI")
         self.comfy_push_button.clicked.connect(
@@ -5552,7 +5802,9 @@ class PromptCorrectorApp:
         corrected_layout = QVBoxLayout(corrected_group)
         result_tabs = QTabWidget()
         self.corrected_text = QtTextEdit()
-        self.corrected_text.setPlaceholderText("The corrected prompt will appear here.")
+        self.corrected_text.setPlaceholderText(
+            "Your improved prompt will appear here, ready to copy, refine, or send to ComfyUI."
+        )
         self._help(self.corrected_text, "Corrected prompt")
         self.corrected_text.textChanged.connect(self._on_corrected_modified)
         result_tabs.addTab(self.corrected_text, "Result")
@@ -5561,6 +5813,25 @@ class PromptCorrectorApp:
         self._help(self.diff_text, "Changes")
         result_tabs.addTab(self.diff_text, "Changes")
         corrected_layout.addWidget(result_tabs)
+        refine_row = QHBoxLayout()
+        self.quick_refine_label = QLabel("Quick refinement")
+        refine_row.addWidget(self.quick_refine_label)
+        for label, feedback in (
+            ("More detailed", "Add useful visual detail while preserving the current subject and composition."),
+            ("More faithful", "Stay closer to the original idea and remove unsupported additions."),
+            ("More cinematic", "Strengthen lighting, atmosphere, depth, and cinematic composition."),
+            ("Stronger action", "Make the action clearer and more visually decisive without changing who does what."),
+        ):
+            button = QtButton(label)
+            button.clicked.connect(
+                lambda _checked=False, instruction=feedback: self.quick_refine_result(
+                    instruction
+                )
+            )
+            refine_row.addWidget(button)
+            self.quick_refine_buttons.append(button)
+        refine_row.addStretch()
+        corrected_layout.addLayout(refine_row)
         self.corrected_counter_label = QLabel()
         self._set_help(
             self.corrected_counter_label,
@@ -6175,7 +6446,7 @@ class PromptCorrectorApp:
             )
 
     def _on_workspace_changed(self, index: int) -> None:
-        camera_visible = index in {0, 1, 2}
+        camera_visible = index in {0, 1, 2} and not bool(self.simple_mode_var.get())
         self.camera_label.setVisible(camera_visible)
         self.camera_combo.setVisible(camera_visible)
         if index == 0:
@@ -6789,6 +7060,110 @@ class PromptCorrectorApp:
         controls.addWidget(slider, 1)
         controls.addWidget(spin)
         layout.addLayout(controls, row, 1, 1, 3)
+
+    def show_rule_equalizer(self, _checked: bool = False) -> None:
+        if self.rule_equalizer_dialog is not None:
+            self.rule_equalizer_dialog.show()
+            self.rule_equalizer_dialog.raise_()
+            self.rule_equalizer_dialog.activateWindow()
+            return
+
+        dialog = QDialog(self.root)
+        dialog.setWindowTitle("Rewrite rule equalizer")
+        dialog.setMinimumSize(820, 430)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        layout = QVBoxLayout(dialog)
+
+        intro = QLabel(
+            "Tune optional rewrite behaviors independently. Higher sliders apply a rule "
+            "more firmly; zero turns that channel off. Explicit prompt facts and safety "
+            "remain strict."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #9aa6bd;")
+        layout.addWidget(intro)
+
+        channels = QHBoxLayout()
+        channel_specs = (
+            ("master", "Master", self.rule_strength_var),
+            ("fidelity", "Fidelity", self.rule_equalizer_vars["fidelity"]),
+            ("logic", "Logic", self.rule_equalizer_vars["logic"]),
+            ("actions", "Actions", self.rule_equalizer_vars["actions"]),
+            ("story", "Story", self.rule_equalizer_vars["story"]),
+            (
+                "detail_freedom",
+                "Detail\nfreedom",
+                self.rule_equalizer_vars["detail_freedom"],
+            ),
+            ("cleanup", "Cleanup", self.rule_equalizer_vars["cleanup"]),
+        )
+        for key, label_text, variable in channel_specs:
+            strip = QVBoxLayout()
+            value_label = QLabel(str(self._int_setting(variable.get(), 0, 100, 0)))
+            value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_label.setObjectName(f"ruleEqualizerValue_{key}")
+            strip.addWidget(value_label)
+            slider = QSlider(Qt.Orientation.Vertical)
+            slider.setObjectName(f"ruleEqualizer_{key}")
+            slider.setRange(0, 100)
+            slider.setTickPosition(QSlider.TickPosition.TicksBothSides)
+            slider.setTickInterval(10)
+            slider.setValue(self._int_setting(variable.get(), 0, 100, 0))
+            slider.setMinimumHeight(245)
+            self._set_help(
+                slider,
+                f"{label_text.replace(chr(10), ' ')} rule pressure from 0 to 100.",
+                "Use a lower value for a looser rewrite or a higher value for firmer enforcement.",
+            )
+            slider.valueChanged.connect(variable.set)
+            slider.valueChanged.connect(
+                lambda value, widget=value_label: widget.setText(str(value))
+            )
+            variable.subscribe(
+                lambda value, widget=slider: widget.setValue(
+                    self._int_setting(value, 0, 100, 0)
+                )
+            )
+            strip.addWidget(slider, 1, Qt.AlignmentFlag.AlignHCenter)
+            name_label = QLabel(label_text)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            strip.addWidget(name_label)
+            channels.addLayout(strip, 1)
+        layout.addLayout(channels, 1)
+
+        legend = QLabel("0 = off     1-35 = light     36-70 = moderate     71-100 = firm")
+        legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        legend.setStyleSheet("color: #8993a5;")
+        layout.addWidget(legend)
+
+        controls = QHBoxLayout()
+        for label, strength in (("Loose", 35), ("Balanced", 65), ("Firm", 100)):
+            button = QtButton(label)
+            button.clicked.connect(
+                lambda _checked=False, value=strength: self._apply_rule_equalizer_preset(
+                    value
+                )
+            )
+            controls.addWidget(button)
+        controls.addStretch()
+        close_button = QtButton("Close")
+        close_button.clicked.connect(dialog.close)
+        controls.addWidget(close_button)
+        layout.addLayout(controls)
+
+        dialog.finished.connect(
+            lambda _result: setattr(self, "rule_equalizer_dialog", None)
+        )
+        self.rule_equalizer_dialog = dialog
+        dialog.show()
+
+    def _apply_rule_equalizer_preset(self, strength: int) -> None:
+        strength = self._int_setting(strength, 0, 100, 100)
+        self.rule_strength_var.set(strength)
+        for channel, variable in self.rule_equalizer_vars.items():
+            if bool(self._rule_equalizer_toggles[channel].get()):
+                variable.set(strength)
+        self._save_settings()
 
     def _add_rule_strength_slider(self, layout: QGridLayout, row: int) -> None:
         label = QLabel("Rewrite rule strength")
@@ -8779,6 +9154,15 @@ class PromptCorrectorApp:
                 if effective_reference_image_analysis
                 else []
             )
+        research_private_model_instructions = effective_private_model_instructions
+        effective_private_model_instructions = "\n\n".join(
+            part
+            for part in (
+                effective_private_model_instructions.strip(),
+                self._rule_equalizer_instruction(),
+            )
+            if part
+        )
         adult_preset_compatibility: list[str] = []
         if destination == "prompt" and self.explicit_nsfw_var.get():
             selected_metadata: list[dict[str, object]] = []
@@ -8825,7 +9209,7 @@ class PromptCorrectorApp:
                 "story_elements": story_elements.strip(),
                 "weighted_terms": effective_weighted_terms.strip(),
                 "model_instructions": self.model_instructions_var.get().strip(),
-                "concept_mix_guidance": effective_private_model_instructions.strip(),
+                "concept_mix_guidance": research_private_model_instructions.strip(),
                 "generation_feedback": effective_generation_feedback,
                 "visual_direction": self.visual_direction_var.get().strip(),
                 "camera_direction": self._camera_direction(),
@@ -9109,6 +9493,11 @@ class PromptCorrectorApp:
             self.correct_button.configure(state="disabled" if running else "normal")
         if self.stop_button is not None:
             self.stop_button.configure(state="normal" if running else "disabled")
+            self.stop_button.setVisible(running or not bool(self.simple_mode_var.get()))
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.setVisible(running or not bool(self.simple_mode_var.get()))
+        if hasattr(self, "progress_label"):
+            self.progress_label.setVisible(running or not bool(self.simple_mode_var.get()))
         if self.iterate_button is not None:
             has_result = hasattr(self, "corrected_text") and bool(
                 self.corrected_text.toPlainText().strip()
@@ -9134,6 +9523,7 @@ class PromptCorrectorApp:
             self.chat_send_button.configure(state="disabled" if running else "normal")
         if self.chat_stop_button is not None:
             self.chat_stop_button.configure(state="normal" if running else "disabled")
+        self._update_result_action_visibility()
         self._refresh_invent_recall_buttons()
 
     def _request_cancelled(self, request_id: int) -> bool:
@@ -10758,7 +11148,7 @@ class PromptCorrectorApp:
             if target == "FLUX.2 Klein 9B"
             else "Krea creativity raw."
         )
-        summaries = {
+        advanced_summaries = {
             "Exact": f"Fidelity first: no invented content; {format_note}; {setup}",
             "Krea Official": (
                 f"Published Krea expansion contract; {format_note}; "
@@ -10767,7 +11157,64 @@ class PromptCorrectorApp:
             "Improve": f"Faithful polish; {format_note}; target is {target}.",
             "Explore": f"Creative exploration; {format_note}; target is {target}.",
         }
-        self.profile_summary_label.setText(summaries.get(str(self.workflow_profile_var.get()), ""))
+        simple_summaries = {
+            "Exact": "Keeps the original idea and stated details as closely as possible.",
+            "Krea Official": "Faithfully expands the prompt using Krea's recommended structure.",
+            "Improve": "Polishes clarity, lighting, composition, and useful visual detail.",
+            "Explore": "Develops the idea with more atmosphere, action, and creative detail.",
+        }
+        summaries = (
+            simple_summaries
+            if bool(self.simple_mode_var.get())
+            else advanced_summaries
+        )
+        self.profile_summary_label.setText(
+            summaries.get(str(self.workflow_profile_var.get()), "")
+        )
+
+    def _update_beginner_intent_buttons(self) -> None:
+        selected = str(self.workflow_profile_var.get())
+        for profile, button in self.beginner_intent_buttons.items():
+            button.setChecked(profile == selected)
+
+    def _apply_simple_mode(self, enabled: object) -> None:
+        simple = bool(enabled)
+        for widget in self.advanced_top_widgets:
+            widget.setVisible(not simple)
+        if self.advanced_prompt_options_widget is not None:
+            self.advanced_prompt_options_widget.setVisible(not simple)
+        if self.beginner_intent_group is not None:
+            self.beginner_intent_group.setVisible(simple)
+        if self.beginner_options_button is not None:
+            self.beginner_options_button.setVisible(simple)
+        if self.advanced_view_button is not None:
+            self.advanced_view_button.setText(
+                "Advanced view" if simple else "Simple view"
+            )
+        if self.correct_button is not None:
+            self.correct_button.setText(
+                "Create improved prompt" if simple else "Correct prompt"
+            )
+        if hasattr(self, "progress_bar"):
+            self.progress_bar.setVisible(not simple or self.request_in_progress)
+        if hasattr(self, "progress_label"):
+            self.progress_label.setVisible(not simple or self.request_in_progress)
+        if hasattr(self, "setup_tabs") and simple:
+            self.setup_tabs.setVisible(False)
+            if self.setup_action is not None:
+                self.setup_action.setChecked(False)
+        if hasattr(self, "mode_tabs"):
+            for index in (3, 4):
+                self.mode_tabs.setTabVisible(index, not simple)
+            if simple and self.mode_tabs.currentIndex() in {3, 4}:
+                self.mode_tabs.setCurrentIndex(0)
+        if self.library_dock is not None:
+            self.library_dock.setVisible(not simple)
+        self._on_workspace_changed(
+            self.mode_tabs.currentIndex() if hasattr(self, "mode_tabs") else 0
+        )
+        self._update_profile_summary()
+        self._update_result_action_visibility()
 
     def _apply_content_format(self, _content_format: object) -> None:
         self._update_profile_summary()
@@ -10808,7 +11255,12 @@ class PromptCorrectorApp:
     def _update_krea_recommendation(self) -> None:
         if self.krea_recommendation_label is None:
             return
-        visible = bool(self.include_settings_var.get())
+        has_result = hasattr(self, "corrected_text") and bool(
+            self.corrected_text.toPlainText().strip()
+        )
+        visible = bool(self.include_settings_var.get()) and (
+            not bool(self.simple_mode_var.get()) or has_result
+        )
         self.krea_recommendation_label.setVisible(visible)
         self.krea_recommendation_label.setText(
             self._krea_recommendation_text() if visible else ""

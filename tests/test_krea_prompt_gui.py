@@ -38,11 +38,21 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertIn("File", menus)
         self.assertIn("Edit", menus)
         self.assertIn("Create", menus)
-        self.assertIn("ComfyUI", menus)
-        self.assertIn("Model", menus)
-        self.assertIn("Research", menus)
+        self.assertIn("Options", menus)
         self.assertIn("Library", menus)
         self.assertIn("View", menus)
+        self.assertNotIn("ComfyUI", menus)
+        self.assertNotIn("Model", menus)
+        self.assertNotIn("Research", menus)
+
+        option_submenus = {
+            action.text(): action.menu()
+            for action in menus["Options"].actions()
+            if action.menu() is not None
+        }
+        self.assertIn("ComfyUI", option_submenus)
+        self.assertIn("Model and processing", option_submenus)
+        self.assertIn("Research", option_submenus)
 
         def descendant_actions(menu):
             actions = []
@@ -62,7 +72,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(shortcuts["Copy corrected prompt"], "Ctrl+Shift+C")
         self.assertEqual(shortcuts["Iterate corrected prompt"], "Ctrl+Shift+R")
         self.assertIsNotNone(self.controller.library_dock)
-        self.assertTrue(self.controller.library_dock.isVisible())
+        self.assertFalse(self.controller.library_dock.isVisible())
 
     def test_ollama_provider_switches_default_port_and_persists(self):
         self.controller.model_provider_var.set("Ollama")
@@ -1072,7 +1082,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(self.controller.mode_tabs.tabText(4), "Workbench")
         self.assertIsNotNone(self.controller.workbench_widget)
         self.assertEqual(self.controller.setup_tabs.count(), 4)
-        self.assertEqual(self.controller.setup_tabs.tabText(0), "Generation")
+        self.assertEqual(self.controller.setup_tabs.tabText(0), "Sampling and presets")
         self.assertEqual(self.controller.setup_tabs.tabText(2), "Processing")
         self.assertEqual(self.controller.setup_tabs.tabText(3), "Connection")
         self.assertIsNotNone(self.controller.chat_transcript)
@@ -1089,13 +1099,93 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         settings_button = next(
             button
             for button in self.root.findChildren(gui.QPushButton)
-            if button.text() == "Settings"
+            if button.text() == "Advanced settings"
         )
         settings_button.setChecked(True)
         self.application.processEvents()
         self.assertTrue(self.controller.setup_tabs.isVisible())
         self.assertFalse(self.controller.develop_story_var.get())
         self.assertFalse(self.controller._settings_snapshot()["develop_story"])
+
+    def test_everyday_prompt_options_are_visible_without_opening_settings(self):
+        visible_labels = {
+            label.text()
+            for label in self.root.findChildren(gui.QLabel)
+            if label.isVisible()
+        }
+        self.assertIn("How much may the prompt change?", self.controller.beginner_intent_group.title())
+        self.assertNotIn("Mode", visible_labels)
+        self.assertFalse(self.controller.setup_tabs.isVisible())
+        self.assertEqual(self.controller.prompt_options_button.text(), "More prompt options")
+        self.controller.simple_mode_var.set(False)
+        self.application.processEvents()
+        visible_labels = {
+            label.text()
+            for label in self.root.findChildren(gui.QLabel)
+            if label.isVisible()
+        }
+        self.assertTrue({"Mode", "Detail", "Length", "Camera", "Preset"}.issubset(visible_labels))
+        weight_buttons = {
+            button.text(): button
+            for button in self.root.findChildren(gui.QPushButton)
+            if button.text() in {"Weight −", "Weight +"}
+        }
+        self.assertFalse(weight_buttons["Weight −"].isVisible())
+        self.assertFalse(weight_buttons["Weight +"].isVisible())
+        self.controller.prompt_options_button.setChecked(True)
+        self.application.processEvents()
+        self.assertTrue(weight_buttons["Weight −"].isVisible())
+        self.assertTrue(weight_buttons["Weight +"].isVisible())
+
+    def test_simple_mode_guides_intent_and_advanced_view_restores_full_ui(self):
+        self.assertTrue(self.controller.simple_mode_var.get())
+        self.assertTrue(self.controller.beginner_intent_group.isVisible())
+        self.assertEqual(self.controller.correct_button.text(), "Create improved prompt")
+        self.assertFalse(self.controller.mode_tabs.isTabVisible(3))
+        self.assertFalse(self.controller.mode_tabs.isTabVisible(4))
+
+        self.controller.beginner_intent_buttons["Improve"].click()
+        self.assertEqual(self.controller.workflow_profile_var.get(), "Improve")
+        self.assertTrue(self.controller.beginner_intent_buttons["Improve"].isChecked())
+
+        self.controller.advanced_view_button.click()
+        self.application.processEvents()
+        self.assertFalse(self.controller.simple_mode_var.get())
+        self.assertFalse(self.controller.beginner_intent_group.isVisible())
+        self.assertEqual(self.controller.correct_button.text(), "Correct prompt")
+        self.assertTrue(self.controller.mode_tabs.isTabVisible(3))
+        self.assertTrue(self.controller.mode_tabs.isTabVisible(4))
+        self.assertTrue(self.controller.library_dock.isVisible())
+        self.controller._save_settings()
+        self.controller.simple_mode_var.set(True)
+        self.controller._load_settings()
+        self.assertFalse(self.controller.simple_mode_var.get())
+
+    def test_simple_mode_result_actions_and_quick_refinement_are_contextual(self):
+        self.assertFalse(self.controller.stop_button.isVisible())
+        self.assertFalse(self.controller.copy_button.isVisible())
+        self.assertTrue(
+            all(not button.isVisible() for button in self.controller.quick_refine_buttons)
+        )
+
+        result = "A red knight stands at an ancient gate under moonlight."
+        self.controller.corrected_text.setPlainText(result)
+        self.application.processEvents()
+        self.assertTrue(self.controller.copy_button.isVisible())
+        self.assertTrue(
+            all(button.isVisible() for button in self.controller.quick_refine_buttons)
+        )
+
+        cinematic = next(
+            button
+            for button in self.controller.quick_refine_buttons
+            if button.text() == "More cinematic"
+        )
+        with mock.patch.object(self.controller, "correct_prompt") as correct_prompt:
+            cinematic.click()
+        self.assertEqual(self.controller.draft_text.toPlainText(), result)
+        self.assertIn("cinematic composition", self.controller.generation_feedback_var.get())
+        correct_prompt.assert_called_once_with()
 
     def test_workflow_profiles_apply_safe_coherent_defaults(self):
         self.assertEqual(self.controller.risk_level_var.get(), "Strict cleanup")
@@ -1308,6 +1398,62 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertTrue(self.controller._apply_custom_preset("Loose rules"))
         self.assertEqual(self.controller.rule_strength_var.get(), 65)
 
+    def test_rule_equalizer_opens_vertical_controls_and_syncs_rule_toggles(self):
+        self.controller.show_rule_equalizer()
+        self.application.processEvents()
+
+        dialog = self.controller.rule_equalizer_dialog
+        self.assertIsNotNone(dialog)
+        self.assertTrue(dialog.isVisible())
+        sliders = {
+            slider.objectName(): slider
+            for slider in dialog.findChildren(gui.QSlider)
+            if slider.objectName().startswith("ruleEqualizer_")
+        }
+        self.assertEqual(len(sliders), 7)
+        self.assertTrue(
+            all(
+                slider.orientation() == gui.Qt.Orientation.Vertical
+                for slider in sliders.values()
+            )
+        )
+
+        sliders["ruleEqualizer_story"].setValue(72)
+        self.assertTrue(self.controller.develop_story_var.get())
+        self.assertEqual(self.controller.rule_equalizer_vars["story"].get(), 72)
+        sliders["ruleEqualizer_story"].setValue(0)
+        self.assertFalse(self.controller.develop_story_var.get())
+
+        self.controller._apply_rule_equalizer_preset(65)
+        self.assertEqual(self.controller.rule_strength_var.get(), 65)
+        self.assertEqual(self.controller.rule_equalizer_vars["logic"].get(), 65)
+        self.assertEqual(self.controller.rule_equalizer_vars["story"].get(), 0)
+        dialog.close()
+
+    def test_rule_equalizer_persists_and_adds_private_degree_guidance(self):
+        self.controller.rule_strength_var.set(50)
+        self.controller.rule_equalizer_vars["story"].set(70)
+        self.controller.rule_equalizer_vars["actions"].set(0)
+        self.controller._save_settings()
+        snapshot = self.controller._settings_snapshot()
+        self.assertEqual(snapshot["rule_equalizer"]["story"], 70)
+        self.assertTrue(snapshot["develop_story"])
+
+        self.controller.rule_equalizer_vars["story"].set(0)
+        self.controller._load_settings()
+        self.assertEqual(self.controller.rule_equalizer_vars["story"].get(), 70)
+        self.assertTrue(self.controller.develop_story_var.get())
+
+        self.controller.draft_text.setPlainText("A knight at a gate.")
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.correct_prompt()
+        worker_args = thread_class.call_args.kwargs["args"]
+        bound = inspect.signature(self.controller._correct_prompt_worker).bind(*worker_args)
+        private_guidance = bound.arguments["private_model_instructions"]
+        self.assertIn("story development=50/100", private_guidance)
+        self.assertIn("action enhancement=0/100", private_guidance)
+        self.assertNotIn("Private optional-rule equalizer", self.controller.model_instructions_var.get())
+
     def test_explicit_adult_mode_is_persistent_mutually_exclusive_and_worker_bound(self):
         self.controller.explicit_nsfw_var.set(True)
         self.assertFalse(self.controller.safe_for_work_var.get())
@@ -1507,6 +1653,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
 
     def test_format_switch_is_independent_and_persisted(self):
+        self.controller.simple_mode_var.set(False)
         self.assertEqual(self.controller.content_format_var.get(), "Single Image")
         self.controller.generator_target_var.set("FLUX.2 Klein 9B")
         self.controller.mode_tabs.setCurrentIndex(1)
@@ -1523,6 +1670,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(self.controller.content_format_var.get(), "Single Image")
 
     def test_camera_control_applies_to_all_three_image_workspaces(self):
+        self.controller.simple_mode_var.set(False)
         direction = "Low-angle medium-wide shot, 35mm lens"
         self.controller.camera_control_var.set(direction)
 
