@@ -294,6 +294,9 @@ model-updated field has **Recall** for restoring its exact previous value, and
 each field has an explicit **Clear** control. Reference images have a separate
 **Clear all** action. A text-only model cannot perform these image-aware
 actions; select a vision model in the main window first.
+When **Options > Model and processing > Unload model after request** is
+enabled, every successful FLUX analysis, correction, or Invent request unloads
+the exact selected LM Studio or Ollama model after its result is secured.
 
 For iterative editing, choose the ComfyUI output folder on **References &
 Mask**, then click **Reload latest output as base**. PromptCorrector searches

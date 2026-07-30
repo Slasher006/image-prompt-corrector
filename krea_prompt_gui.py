@@ -1053,7 +1053,7 @@ UI_HELP: dict[str, tuple[str, str]] = {
     "Include Krea settings": ("Show recommended Krea controls separately from the image prompt.", "Use creativity raw without adding it to the prompt text."),
     "Show Krea setup recommendation": ("Show recommended Krea controls separately from the image prompt.", "Use creativity raw without adding it to the prompt text."),
     "Show generator setup recommendation": ("Show controls for the selected generator separately from its prompt.", "Show four steps and guidance 1.0 for FLUX.2 Klein 9B."),
-    "Unload model after correction": ("Ask the selected provider to unload the model when work finishes.", "Enable to free GPU memory after one correction."),
+    "Unload model after request": ("Ask the selected provider to unload the model when work finishes.", "Enable to free GPU memory after one correction or FLUX image-edit request."),
     "Grounded web verification": ("Compare model knowledge with web evidence before rewriting.", "Verify a historical object or martial-arts action."),
     "Search engine": ("Choose the source used for grounded text research.", "Use Auto to try available providers."),
     "Analyze reference images": ("Analyze local references, or use web images only as concept glossaries for explicit Concepts.", "Add a costume photo, or enter Art Nouveau in Concepts for concept-only image research."),
@@ -5197,7 +5197,7 @@ class PromptCorrectorApp:
         connection.addSeparator()
         self._menu_check(
             connection,
-            "Unload model after correction",
+            "Unload model after request",
             self.unload_after_generation_var,
         )
         processing = model_menu.addMenu("Rewrite and safety")
@@ -5793,7 +5793,7 @@ class PromptCorrectorApp:
             ("Thinking mode", self.thinking_mode_var),
             ("Audit and repair", self.audit_repair_var),
             ("Show generator setup recommendation", self.include_settings_var),
-            ("Unload model after correction", self.unload_after_generation_var),
+            ("Unload model after request", self.unload_after_generation_var),
         )
         for row, (label, variable) in enumerate(quality_vars):
             control = self._bind_check(label, variable)
@@ -9517,7 +9517,7 @@ class PromptCorrectorApp:
                 ("reference image analysis", effective_reference_image_analysis),
                 ("audit and repair", self.audit_repair_var.get()),
                 ("show generator setup recommendation", self.include_settings_var.get()),
-                ("unload model after correction", self.unload_after_generation_var.get()),
+                ("unload model after request", self.unload_after_generation_var.get()),
             )
             if enabled_flag
         ]
@@ -11190,6 +11190,13 @@ class PromptCorrectorApp:
         state: dict[str, object],
     ) -> None:
         try:
+            provider = self.model_provider_var.get()
+            base_url = self._current_base_url()
+            model = self.model_var.get()
+            api_key = self._model_api_key()
+            unload_after_request = bool(
+                self.unload_after_generation_var.get()
+            )
             references = state.get("references", [])
             image_data_urls: list[str] = []
             for index, reference in enumerate(references, start=1):
@@ -11217,17 +11224,45 @@ class PromptCorrectorApp:
             )
             self._set_progress_threadsafe(55, "Running local vision model")
             response = chat_completion(
-                base_url=self._current_base_url(),
-                model=self.model_var.get(),
+                base_url=base_url,
+                model=model,
                 messages=messages,
                 temperature=0.65 if action.startswith("invent_") else 0.1,
                 max_tokens=900 if action in {"analyze", "correct"} else 350,
                 timeout=self._lm_timeout_seconds(),
-                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                api_key=api_key,
                 seed=self._configured_seed(),
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
             )
             result = clean_flux_image_edit_llm_result(action, response)
+            self._raise_if_cancelled(request_id)
+            if unload_after_request:
+                self._set_progress_threadsafe(
+                    90,
+                    f"Unloading {provider} model",
+                )
+                self._log_activity_threadsafe(
+                    f"Unloading {provider} model after FLUX Image Edit request..."
+                )
+                try:
+                    unloaded = unload_local_model(
+                        provider=provider,
+                        base_url=base_url,
+                        model=model,
+                        timeout=30.0,
+                        api_key=api_key,
+                    )
+                    self._raise_if_cancelled(request_id)
+                    self._log_activity_threadsafe(
+                        f"Unloaded {provider} model instance(s): "
+                        + ", ".join(unloaded)
+                    )
+                except CorrectionCancelled:
+                    raise
+                except Exception as unload_error:
+                    self._log_activity_threadsafe(
+                        f"Model unload failed after FLUX Image Edit: {unload_error}"
+                    )
         except CorrectionCancelled:
             return
         except (OSError, ValueError, RuntimeError) as exc:

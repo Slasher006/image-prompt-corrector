@@ -464,6 +464,147 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             self.controller._finish_flux_image_edit_llm,
         )
 
+    def test_flux_image_edit_worker_unloads_selected_model_when_enabled(self):
+        path = Path(self.temp_dir.name) / "flux-unload-reference.png"
+        path.write_bytes(b"test image placeholder")
+        state = {
+            "instruction": "Adjust the lighting.",
+            "references": [{"path": str(path), "role": "base"}],
+        }
+        self.controller.active_request_id = 42
+        self.controller.cancel_event.clear()
+        self.controller.unload_after_generation_var.set(True)
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                return_value="data:image/png;base64,image",
+            ),
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value="Use Image 1 as the base.",
+            ),
+            mock.patch(
+                "krea_prompt_gui.unload_local_model",
+                return_value=[self.controller.model_var.get()],
+            ) as unload,
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity,
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(42, "correct", state)
+
+        unload.assert_called_once_with(
+            provider=self.controller.model_provider_var.get(),
+            base_url=self.controller._current_base_url(),
+            model=self.controller.model_var.get(),
+            timeout=30.0,
+            api_key=self.controller._model_api_key(),
+        )
+        self.assertTrue(
+            any(
+                "Unloaded LM Studio model" in str(call.args[0])
+                for call in activity.call_args_list
+            )
+        )
+        self.assertEqual(
+            after.call_args.args[1],
+            self.controller._finish_flux_image_edit_llm,
+        )
+
+    def test_flux_image_edit_unload_failure_keeps_successful_result(self):
+        path = Path(self.temp_dir.name) / "flux-unload-failure.png"
+        path.write_bytes(b"test image placeholder")
+        state = {
+            "instruction": "Adjust the lighting.",
+            "references": [{"path": str(path), "role": "base"}],
+        }
+        self.controller.active_request_id = 43
+        self.controller.cancel_event.clear()
+        self.controller.unload_after_generation_var.set(True)
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                return_value="data:image/png;base64,image",
+            ),
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value="Use Image 1 as the base.",
+            ),
+            mock.patch(
+                "krea_prompt_gui.unload_local_model",
+                side_effect=RuntimeError("unload unavailable"),
+            ),
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity,
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(43, "correct", state)
+
+        self.assertTrue(
+            any(
+                "Model unload failed after FLUX Image Edit" in str(call.args[0])
+                for call in activity.call_args_list
+            )
+        )
+        self.assertEqual(
+            after.call_args.args[1],
+            self.controller._finish_flux_image_edit_llm,
+        )
+
+    def test_cancelled_flux_image_edit_does_not_start_unload(self):
+        path = Path(self.temp_dir.name) / "flux-cancelled.png"
+        path.write_bytes(b"test image placeholder")
+        state = {
+            "instruction": "Adjust the lighting.",
+            "references": [{"path": str(path), "role": "base"}],
+        }
+        self.controller.active_request_id = 44
+        self.controller.cancel_event.clear()
+        self.controller.unload_after_generation_var.set(True)
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                return_value="data:image/png;base64,image",
+            ),
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                side_effect=gui.CorrectionCancelled(),
+            ),
+            mock.patch(
+                "krea_prompt_gui.unload_local_model",
+            ) as unload,
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(44, "correct", state)
+
+        unload.assert_not_called()
+        after.assert_not_called()
+
     def test_clean_flux_llm_result_removes_wrapper_but_keeps_prompt(self):
         result = gui.clean_flux_image_edit_llm_result(
             "correct",
