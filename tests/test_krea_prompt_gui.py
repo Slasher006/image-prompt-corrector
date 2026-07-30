@@ -1,3 +1,4 @@
+import base64
 import os
 import inspect
 import json
@@ -27,6 +28,8 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.application.processEvents()
 
     def tearDown(self):
+        if self.controller.flux_image_edit_window is not None:
+            self.controller.flux_image_edit_window.close()
         self.root.close()
         gui.SETTINGS_PATH = self.original_settings_path
         self.temp_dir.cleanup()
@@ -71,6 +74,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(shortcuts["Correct prompt"], "Ctrl+Return")
         self.assertEqual(shortcuts["Copy corrected prompt"], "Ctrl+Shift+C")
         self.assertEqual(shortcuts["Iterate corrected prompt"], "Ctrl+Shift+R")
+        self.assertEqual(shortcuts["FLUX Image Edit tab"], "Ctrl+Shift+I")
         self.assertIsNotNone(self.controller.library_dock)
         self.assertFalse(self.controller.library_dock.isVisible())
 
@@ -276,6 +280,196 @@ class PromptCorrectorGuiTests(unittest.TestCase):
                 "queue_after_send": True,
             },
         )
+
+    def test_flux_image_edit_push_uploads_and_sends_three_references(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok": true, "reference_images": 3}'
+        )
+        with (
+            mock.patch(
+                "krea_prompt_gui.upload_comfyui_image",
+                side_effect=["one.png", "two.png", "three.png"],
+            ) as upload,
+            mock.patch(
+                "krea_prompt_gui.urllib.request.urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            result = gui.push_prompt_to_comfyui_bridge(
+                server_url="http://127.0.0.1:8188",
+                prompt="Combine Image 1, Image 2, and Image 3.",
+                workspace="FLUX Image Edit",
+                reference_image_paths=["/tmp/one.png", "/tmp/two.png", "/tmp/three.png"],
+            )
+
+        self.assertEqual(upload.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["upload_name"] for call in upload.call_args_list],
+            [
+                "promptcorrector_flux_ref_1_one.png",
+                "promptcorrector_flux_ref_2_two.png",
+                "promptcorrector_flux_ref_3_three.png",
+            ],
+        )
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(
+            payload["reference_images"],
+            ["one.png", "two.png", "three.png"],
+        )
+        self.assertEqual(result["reference_images"], 3)
+
+    def test_flux_image_edit_is_embedded_tab_and_sends_three_references(self):
+        self.controller.show_flux_image_edit_window()
+        widget = self.controller.flux_image_edit_window
+        self.assertIsNotNone(widget)
+        self.assertEqual(self.controller.mode_tabs.indexOf(widget), 4)
+        self.assertEqual(
+            self.controller.mode_tabs.currentWidget(),
+            widget,
+        )
+        paths = [f"/tmp/reference-{index}.png" for index in range(1, 4)]
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.send_flux_image_edit_to_comfyui(
+                "http://127.0.0.1:8188",
+                "Prepared FLUX edit prompt",
+                paths,
+            )
+        self.assertEqual(
+            thread_class.call_args.kwargs["args"],
+            (
+                "http://127.0.0.1:8188",
+                "Prepared FLUX edit prompt",
+                "FLUX Image Edit",
+                False,
+                paths,
+            ),
+        )
+
+    def test_flux_image_edit_llm_messages_attach_all_three_images_and_roles(self):
+        messages = gui.build_flux_image_edit_llm_messages(
+            action="correct",
+            state={
+                "instruction": "Put the subject in the supplied jacket.",
+                "preserve": "face and pose",
+                "prepared_prompt": "Draft edit prompt",
+                "analysis": "The jacket is yellow wool.",
+                "references": [
+                    {"path": "/tmp/one.png", "role": "base composition"},
+                    {"path": "/tmp/two.png", "role": "subject identity"},
+                    {"path": "/tmp/three.png", "role": "outfit"},
+                ],
+            },
+            image_data_urls=["data:image/png;base64,one", "data:image/png;base64,two", "data:image/png;base64,three"],
+        )
+        content = messages[1]["content"]
+        image_items = [item for item in content if item["type"] == "image_url"]
+        self.assertEqual(len(image_items), 3)
+        joined_text = "\n".join(
+            item["text"] for item in content if item["type"] == "text"
+        )
+        self.assertIn("Image 3: outfit", joined_text)
+        self.assertIn("The jacket is yellow wool", joined_text)
+
+    def test_flux_image_edit_llm_start_uses_shared_cancellable_worker(self):
+        state = {
+            "references": [
+                {"path": "/tmp/one.png", "role": "base"},
+                {"path": "/tmp/two.png", "role": "identity"},
+                {"path": "/tmp/three.png", "role": "style"},
+            ]
+        }
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.start_flux_image_edit_llm("analyze", state)
+        self.assertTrue(self.controller.request_in_progress)
+        self.assertEqual(
+            thread_class.call_args.kwargs["args"],
+            (self.controller.active_request_id, "analyze", state),
+        )
+        thread_class.return_value.start.assert_called_once_with()
+        self.controller.cancel_event.set()
+        self.controller.request_in_progress = False
+        self.controller._finish_progress(False)
+
+    def test_flux_image_edit_converts_webp_to_png_for_lm_studio(self):
+        path = Path(self.temp_dir.name) / "flux-reference.webp"
+        image = gui.QImage(8, 6, gui.QImage.Format.Format_RGB32)
+        image.fill(gui.QColor("#5b84d7"))
+        self.assertTrue(image.save(str(path), "WEBP"))
+
+        data_url = gui.fetch_local_vision_image_data_url(
+            path,
+            timeout=1.0,
+        )
+
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        encoded = data_url.split(",", 1)[1]
+        converted = gui.QImage.fromData(base64.b64decode(encoded), "PNG")
+        self.assertFalse(converted.isNull())
+        self.assertEqual((converted.width(), converted.height()), (8, 6))
+
+    def test_flux_image_edit_worker_sends_three_local_images_to_selected_model(self):
+        paths = []
+        for index in range(1, 4):
+            path = Path(self.temp_dir.name) / f"flux-reference-{index}.png"
+            path.write_bytes(b"test image placeholder")
+            paths.append(path)
+        state = {
+            "instruction": "Combine the references.",
+            "references": [
+                {"path": str(path), "role": f"role {index}"}
+                for index, path in enumerate(paths, start=1)
+            ],
+        }
+        self.controller.active_request_id = 41
+        self.controller.cancel_event.clear()
+        data_urls = [
+            f"data:image/png;base64,image-{index}"
+            for index in range(1, 4)
+        ]
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                side_effect=data_urls,
+            ) as fetch,
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value="Use Image 1 as the base.",
+            ) as completion,
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(41, "correct", state)
+        self.assertEqual(fetch.call_count, 3)
+        sent_content = completion.call_args.kwargs["messages"][1]["content"]
+        sent_images = [
+            item["image_url"]["url"]
+            for item in sent_content
+            if item["type"] == "image_url"
+        ]
+        self.assertEqual(sent_images, data_urls)
+        self.assertEqual(
+            completion.call_args.kwargs["model"],
+            self.controller.model_var.get(),
+        )
+        self.assertEqual(
+            after.call_args.args[1],
+            self.controller._finish_flux_image_edit_llm,
+        )
+
+    def test_clean_flux_llm_result_removes_wrapper_but_keeps_prompt(self):
+        result = gui.clean_flux_image_edit_llm_result(
+            "correct",
+            "```text\nCorrected FLUX image-edit prompt: Use Image 1 as the base.\n```",
+        )
+        self.assertEqual(result, "Use Image 1 as the base.")
 
     def test_iteration_feedback_stays_separate_from_persistent_model_instructions(self):
         self.controller.draft_text.setPlainText("A red knight at a castle gate.")
@@ -1074,12 +1268,14 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(self.controller.active_request_id, 9)
 
     def test_ui_groups_prompt_workflow_and_direct_model_chat(self):
-        self.assertEqual(self.controller.mode_tabs.count(), 5)
+        self.assertEqual(self.controller.mode_tabs.count(), 6)
         self.assertEqual(self.controller.mode_tabs.tabText(0), "Prompt Corrector")
         self.assertEqual(self.controller.mode_tabs.tabText(1), "Comic Story")
         self.assertEqual(self.controller.mode_tabs.tabText(2), "Meme Creator")
         self.assertEqual(self.controller.mode_tabs.tabText(3), "Model Chat")
-        self.assertEqual(self.controller.mode_tabs.tabText(4), "Workbench")
+        self.assertEqual(self.controller.mode_tabs.tabText(4), "FLUX Image Edit")
+        self.assertEqual(self.controller.mode_tabs.tabText(5), "Workbench")
+        self.assertIsNotNone(self.controller.flux_image_edit_window)
         self.assertIsNotNone(self.controller.workbench_widget)
         self.assertEqual(self.controller.setup_tabs.count(), 4)
         self.assertEqual(self.controller.setup_tabs.tabText(0), "Sampling and presets")

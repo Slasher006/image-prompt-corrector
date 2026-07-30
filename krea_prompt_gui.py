@@ -17,8 +17,8 @@ import urllib.request
 from datetime import datetime
 import time
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QIcon, QPixmap, QTextCursor
+from PySide6.QtCore import QBuffer, QIODevice, QObject, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QIcon, QImage, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -179,6 +179,11 @@ from visual_direction_presets import (
     visual_preset_key,
 )
 from nsfw_scene_contract import nsfw_preset_compatibility_issues
+from flux_image_edit_gui import (
+    FluxImageEditWidget,
+    normalize_flux_image_edit_state,
+)
+from prompt_workbench import upload_comfyui_image
 from workbench_gui import PromptWorkbench
 
 WORKFLOW_PROFILES = ("Exact", "Krea Official", "Improve", "Explore")
@@ -187,6 +192,7 @@ COMFYUI_BRIDGE_WORKSPACES = (
     "Prompt Corrector",
     "Comic Story",
     "Meme Creator",
+    "FLUX Image Edit",
 )
 
 
@@ -196,6 +202,7 @@ def push_prompt_to_comfyui_bridge(
     prompt: str,
     workspace: str,
     queue_after_send: bool = False,
+    reference_image_paths: list[str] | tuple[str, ...] = (),
     timeout: float = 5.0,
 ) -> dict[str, object]:
     """Push one visible result to the installed ComfyUI bridge."""
@@ -216,6 +223,17 @@ def push_prompt_to_comfyui_bridge(
         "prompt": cleaned_prompt,
         "workspace": workspace,
     }
+    uploaded_references = [
+        upload_comfyui_image(
+            server_url=server_url,
+            path=path,
+            upload_name=f"promptcorrector_flux_ref_{index}_{Path(path).name}",
+            timeout=max(timeout, 30.0),
+        )
+        for index, path in enumerate(reference_image_paths, start=1)
+    ]
+    if uploaded_references:
+        payload_data["reference_images"] = uploaded_references
     if queue_after_send:
         payload_data["queue_after_send"] = True
     payload = json.dumps(payload_data).encode("utf-8")
@@ -244,6 +262,157 @@ def push_prompt_to_comfyui_bridge(
     if not isinstance(result, dict) or not result.get("ok"):
         raise RuntimeError("ComfyUI bridge returned an unexpected response.")
     return result
+
+
+def build_flux_image_edit_llm_messages(
+    *,
+    action: str,
+    state: dict[str, object],
+    image_data_urls: list[str],
+) -> list[dict[str, object]]:
+    """Build one grounded FLUX edit request for a vision-capable local model."""
+
+    references = state.get("references", [])
+    valid_references = [
+        reference
+        for reference in references
+        if isinstance(reference, dict)
+    ]
+    roles = [
+        str(reference.get("role", "")).strip()
+        for reference in valid_references
+    ]
+    role_lines = "\n".join(
+        (
+            f"- Image {index}: {role or 'intentional visual reference'}"
+            + (
+                " (has an explicit edit mask; preserve outside it)"
+                if str(valid_references[index - 1].get("mask_png", ""))
+                else ""
+            )
+        )
+        for index, role in enumerate(roles, start=1)
+    )
+    instruction = str(state.get("instruction", "")).strip()
+    preserve = str(state.get("preserve", "")).strip()
+    analysis = str(state.get("analysis", "")).strip()[:8000]
+    prepared = str(state.get("prepared_prompt", "")).strip()
+    task_instructions = {
+        "analyze": (
+            "Inspect every supplied image according to its assigned role. For each "
+            "image, report concrete visible facts useful to the edit, then give a "
+            "short cross-image integration plan. Do not identify real people and "
+            "do not invent details that are not visible."
+        ),
+        "correct": (
+            "Return only the final FLUX.2 Klein multi-reference edit prompt. Correct "
+            "language and ambiguity, explicitly refer to Image 1, Image 2, and later "
+            "images by their assigned roles, describe the desired final image, and "
+            "preserve all requested constraints. Use visible image evidence; do not "
+            "copy unrelated details."
+        ),
+        "invent_instruction": (
+            "Invent one coherent, visually specific image-edit request that makes "
+            "purposeful use of the assigned reference roles. Return only the edit "
+            "request, not commentary or a full technical workflow."
+        ),
+        "invent_preserve": (
+            "Based on the images and requested edit, return only a concise comma-"
+            "separated list of visible details that should remain unchanged."
+        ),
+    }
+    if action not in task_instructions:
+        raise ValueError(f"Unsupported FLUX image-edit LLM action: {action}")
+    text = (
+        f"Task:\n{task_instructions[action]}\n\n"
+        f"Reference roles:\n{role_lines or '- No roles supplied'}\n\n"
+        f"Requested edit:\n{instruction or '(not supplied yet)'}\n\n"
+        f"Preserve:\n{preserve or '(infer only when the task asks for it)'}\n\n"
+        f"Current prepared prompt:\n{prepared or '(none)'}\n\n"
+        f"Prior reference analysis:\n{analysis or '(none)'}"
+    )
+    content: list[dict[str, object]] = [{"type": "text", "text": text}]
+    for index, data_url in enumerate(image_data_urls, start=1):
+        role = roles[index - 1] if index - 1 < len(roles) else ""
+        content.append({
+            "type": "text",
+            "text": f"Image {index} role: {role or 'intentional visual reference'}",
+        })
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a precise FLUX.2 Klein multi-reference image-edit prompt "
+                "editor with vision. Follow the requested output format exactly. "
+                "Ground visual claims in the supplied images."
+            ),
+        },
+        {"role": "user", "content": content},
+    ]
+
+
+def clean_flux_image_edit_llm_result(action: str, text: str) -> str:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:text|markdown)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    if action != "analyze":
+        cleaned = re.sub(
+            r"^(?:final\s+)?(?:corrected\s+)?(?:flux(?:\.2)?\s+)?"
+            r"(?:image[- ]edit\s+)?(?:prompt|edit request|preserve)\s*:\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+    if not cleaned:
+        raise RuntimeError("The selected model returned an empty image-edit result.")
+    return cleaned
+
+
+def fetch_local_vision_image_data_url(
+    path: Path,
+    *,
+    timeout: float,
+    max_bytes: int = 12_000_000,
+) -> str:
+    """Return a local image as a PNG/JPEG data URL accepted by LM Studio."""
+
+    data_url = fetch_image_data_url(
+        path.resolve().as_uri(),
+        timeout=timeout,
+        max_bytes=max_bytes,
+    )
+    if data_url.startswith(("data:image/png;base64,", "data:image/jpeg;base64,")):
+        return data_url
+
+    image = QImage(str(path))
+    if image.isNull():
+        raise RuntimeError(
+            f"Could not decode {path.name} for the selected vision model."
+        )
+    buffer = QBuffer()
+    if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+        raise RuntimeError(
+            f"Could not prepare {path.name} for the selected vision model."
+        )
+    try:
+        if not image.save(buffer, "PNG"):
+            raise RuntimeError(
+                f"Could not convert {path.name} to PNG for the selected vision model."
+            )
+        converted = bytes(buffer.data())
+    finally:
+        buffer.close()
+    if not converted:
+        raise RuntimeError(
+            f"PNG conversion produced no data for {path.name}."
+        )
+    if len(converted) > max_bytes:
+        raise RuntimeError(
+            f"The PNG conversion of {path.name} exceeds "
+            f"{max_bytes // 1_000_000} MB."
+        )
+    return "data:image/png;base64," + base64.b64encode(converted).decode("ascii")
 
 
 CAMERA_CONTROL_AUTO = "Auto (use prompt)"
@@ -1313,6 +1482,8 @@ class PromptCorrectorWindow(QMainWindow):
             self.controller.cancel_event.set()
             self.controller.active_request_id += 1
             self.controller._save_settings()
+            if self.controller.flux_image_edit_window is not None:
+                self.controller.flux_image_edit_window.close()
         event.accept()
 
 
@@ -1509,6 +1680,7 @@ class PromptCorrectorApp:
         self.recovered_meme_result = ""
         self.recovered_workbench_project: dict[str, object] | None = None
         self.recovered_generator_profiles: dict[str, dict[str, object]] | None = None
+        self.recovered_flux_image_edit_state = normalize_flux_image_edit_state(None)
         self.local_reference_paths: list[str] = []
         self.comic_reference_paths: list[str] = []
         self.meme_reference_paths: list[str] = []
@@ -1589,6 +1761,8 @@ class PromptCorrectorApp:
         self.chat_transcript: QTextEdit | None = None
         self.chat_input: ChatInputEdit | None = None
         self.workbench_widget: PromptWorkbench | None = None
+        self.flux_image_edit_window: FluxImageEditWidget | None = None
+        self.flux_image_edit_tab_index: int | None = None
         self.rule_equalizer_dialog: QDialog | None = None
         self.request_in_progress = False
         self.dispatcher = UiDispatcher()
@@ -1744,6 +1918,11 @@ class PromptCorrectorApp:
             "remember_window_size": self.remember_window_size_var.get(),
             "comfyui_auto_send": self.comfyui_auto_send_var.get(),
             "comfyui_queue_after_send": self.comfyui_queue_after_send_var.get(),
+            "flux_image_edit": (
+                self.flux_image_edit_window.snapshot()
+                if self.flux_image_edit_window is not None
+                else self.recovered_flux_image_edit_state
+            ),
             "simple_mode": self.simple_mode_var.get(),
             "workbench": workbench_state,
         }
@@ -1983,6 +2162,9 @@ class PromptCorrectorApp:
                 self.recovered_workbench_project = project
             if isinstance(profiles, dict):
                 self.recovered_generator_profiles = profiles
+        self.recovered_flux_image_edit_state = normalize_flux_image_edit_state(
+            settings.get("flux_image_edit")
+        )
         stored_workspace_paths = settings.get("workspace_reference_paths", {})
         if not isinstance(stored_workspace_paths, dict):
             stored_workspace_paths = {}
@@ -4973,6 +5155,11 @@ class PromptCorrectorApp:
         focus_action = prompt.addAction("Focus prompt editor")
         focus_action.setShortcut("Ctrl+L")
         focus_action.triggered.connect(lambda: self.draft_text.setFocus())
+        create.addSeparator()
+        flux_edit_action = create.addAction("FLUX Image Edit tab")
+        flux_edit_action.setShortcut("Ctrl+Shift+I")
+        flux_edit_action.triggered.connect(self.show_flux_image_edit_window)
+        create.addSeparator()
         comic = create.addMenu("Comic Story")
         comic.addAction("Generate comic prompt", self.correct_comic_story)
         comic.addAction("Invent all comic panels", self.invent_all_comic_panels)
@@ -5992,6 +6179,18 @@ class PromptCorrectorApp:
         self.mode_tabs.addTab(self._build_comic_story_page(), "Comic Story")
         self.mode_tabs.addTab(self._build_meme_creator_page(), "Meme Creator")
         self.mode_tabs.addTab(self._build_chat_page(), "Model Chat")
+        self.flux_image_edit_window = FluxImageEditWidget(
+            state=self.recovered_flux_image_edit_state,
+            current_prompt=lambda: self.corrected_text.toPlainText(),
+            send_to_comfyui=self.send_flux_image_edit_to_comfyui,
+            run_llm=self.start_flux_image_edit_llm,
+            stop_llm=self.stop_current_request,
+            save_state=self._save_settings,
+        )
+        self.flux_image_edit_tab_index = self.mode_tabs.addTab(
+            self.flux_image_edit_window,
+            "FLUX Image Edit",
+        )
         self.workbench_widget = PromptWorkbench(self)
         self.mode_tabs.addTab(self.workbench_widget, "Workbench")
         self.mode_tabs.currentChanged.connect(self._on_workspace_changed)
@@ -9484,6 +9683,11 @@ class PromptCorrectorApp:
         self._set_request_controls(False)
         if self.workbench_widget is not None:
             self.workbench_widget.on_request_stopped()
+        if self.flux_image_edit_window is not None:
+            self.flux_image_edit_window.set_model_running(False)
+            self.flux_image_edit_window.status_label.setText(
+                "Stopped - ready for a new image-edit request"
+            )
         self._log_activity(
             "Stopped. The old model stream is being closed, its partial result will be discarded, and a new request can start now."
         )
@@ -9523,6 +9727,8 @@ class PromptCorrectorApp:
             self.chat_send_button.configure(state="disabled" if running else "normal")
         if self.chat_stop_button is not None:
             self.chat_stop_button.configure(state="normal" if running else "disabled")
+        if self.flux_image_edit_window is not None:
+            self.flux_image_edit_window.set_model_running(running)
         self._update_result_action_visibility()
         self._refresh_invent_recall_buttons()
 
@@ -10936,6 +11142,175 @@ class PromptCorrectorApp:
             return self.meme_result_text.toPlainText().strip()
         return ""
 
+    def show_flux_image_edit_window(self) -> None:
+        if (
+            self.flux_image_edit_window is not None
+            and self.flux_image_edit_tab_index is not None
+        ):
+            self.mode_tabs.setCurrentIndex(self.flux_image_edit_tab_index)
+            self.flux_image_edit_window.edit_instruction.setFocus()
+
+    def start_flux_image_edit_llm(
+        self,
+        action: str,
+        state: dict[str, object],
+    ) -> None:
+        if self.request_in_progress:
+            if self.flux_image_edit_window is not None:
+                self.flux_image_edit_window.set_model_error(
+                    "Stop the current model request before starting this action."
+                )
+            return
+        references = state.get("references", [])
+        if not isinstance(references, list) or not references:
+            if self.flux_image_edit_window is not None:
+                self.flux_image_edit_window.set_model_error(
+                    "Add at least one reference image first."
+                )
+            return
+        self.active_request_id += 1
+        request_id = self.active_request_id
+        self.cancel_event.clear()
+        self.request_in_progress = True
+        self.active_request_workspace = "prompt"
+        self._set_request_controls(True)
+        self._start_progress_timer()
+        self._set_progress(10, "Preparing FLUX edit references")
+        thread = threading.Thread(
+            target=self._flux_image_edit_llm_worker,
+            args=(request_id, action, state),
+            daemon=True,
+        )
+        thread.start()
+
+    def _flux_image_edit_llm_worker(
+        self,
+        request_id: int,
+        action: str,
+        state: dict[str, object],
+    ) -> None:
+        try:
+            references = state.get("references", [])
+            image_data_urls: list[str] = []
+            for index, reference in enumerate(references, start=1):
+                self._raise_if_cancelled(request_id)
+                if not isinstance(reference, dict):
+                    raise ValueError(f"Reference Image {index} is invalid.")
+                path = Path(str(reference.get("path", "")))
+                if not path.is_file():
+                    raise ValueError(f"Reference Image {index} is unavailable: {path}")
+                self._set_progress_threadsafe(
+                    10 + (35 * index / max(1, len(references))),
+                    f"Loading reference Image {index}",
+                )
+                image_data_urls.append(
+                    fetch_local_vision_image_data_url(
+                        path,
+                        timeout=min(30.0, self._lm_timeout_seconds()),
+                        max_bytes=12_000_000,
+                    )
+                )
+            messages = build_flux_image_edit_llm_messages(
+                action=action,
+                state=state,
+                image_data_urls=image_data_urls,
+            )
+            self._set_progress_threadsafe(55, "Running local vision model")
+            response = chat_completion(
+                base_url=self._current_base_url(),
+                model=self.model_var.get(),
+                messages=messages,
+                temperature=0.65 if action.startswith("invent_") else 0.1,
+                max_tokens=900 if action in {"analyze", "correct"} else 350,
+                timeout=self._lm_timeout_seconds(),
+                api_key=os.getenv("LM_STUDIO_API_KEY", "lm-studio"),
+                seed=self._configured_seed(),
+                cancel_check=lambda: self._raise_if_cancelled(request_id),
+            )
+            result = clean_flux_image_edit_llm_result(action, response)
+        except CorrectionCancelled:
+            return
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._after_threadsafe(
+                0,
+                self._finish_flux_image_edit_llm_error,
+                request_id,
+                str(exc),
+            )
+            return
+        self._after_threadsafe(
+            0,
+            self._finish_flux_image_edit_llm,
+            request_id,
+            action,
+            result,
+        )
+
+    def _finish_flux_image_edit_llm(
+        self,
+        request_id: int,
+        action: str,
+        result: str,
+    ) -> None:
+        if self._request_cancelled(request_id):
+            return
+        self.request_in_progress = False
+        self._finish_progress(True)
+        self._set_request_controls(False)
+        if self.flux_image_edit_window is not None:
+            self.flux_image_edit_window.apply_llm_result(action, result)
+        self.status_var.set("FLUX Image Edit local-model request complete")
+        self._save_settings()
+
+    def _finish_flux_image_edit_llm_error(
+        self,
+        request_id: int,
+        error: str,
+    ) -> None:
+        if self._request_cancelled(request_id):
+            return
+        self.request_in_progress = False
+        self._finish_progress(False)
+        self._set_request_controls(False)
+        message = (
+            "FLUX Image Edit model request failed. Confirm that the selected "
+            f"LM Studio model supports vision.\n\n{error}"
+        )
+        if self.flux_image_edit_window is not None:
+            self.flux_image_edit_window.set_model_error(message)
+        self.status_var.set("FLUX Image Edit model request failed")
+        messagebox.showerror("FLUX Image Edit model request failed", message)
+
+    def send_flux_image_edit_to_comfyui(
+        self,
+        server_url: str,
+        prompt: str,
+        reference_image_paths: list[str],
+    ) -> None:
+        if not reference_image_paths:
+            messagebox.showwarning(
+                "No reference images",
+                "Add at least one FLUX edit reference image first.",
+            )
+            return
+        self._save_settings()
+        queue_after_send = bool(self.comfyui_queue_after_send_var.get())
+        self.status_var.set(
+            f"Sending FLUX edit and {len(reference_image_paths)} reference image(s) to ComfyUI..."
+        )
+        thread = threading.Thread(
+            target=self._push_result_to_comfyui_worker,
+            args=(
+                server_url,
+                prompt,
+                "FLUX Image Edit",
+                queue_after_send,
+                list(reference_image_paths),
+            ),
+            daemon=True,
+        )
+        thread.start()
+
     def send_result_to_comfyui(
         self,
         workspace: str = "Prompt Corrector",
@@ -10973,6 +11348,7 @@ class PromptCorrectorApp:
         prompt: str,
         workspace: str,
         queue_after_send: bool = False,
+        reference_image_paths: list[str] | None = None,
     ) -> None:
         try:
             result = push_prompt_to_comfyui_bridge(
@@ -10980,6 +11356,7 @@ class PromptCorrectorApp:
                 prompt=prompt,
                 workspace=workspace,
                 queue_after_send=queue_after_send,
+                reference_image_paths=reference_image_paths or (),
             )
         except (ValueError, RuntimeError) as exc:
             self._after_threadsafe(
@@ -10989,22 +11366,42 @@ class PromptCorrectorApp:
             )
             return
         characters = int(result.get("characters", len(prompt)))
+        reference_count = int(
+            result.get("reference_images", len(reference_image_paths or ()))
+        )
         self._log_activity_threadsafe(
             f"Sent {workspace} result to ComfyUI ({characters} characters)"
+            + (
+                f" with {reference_count} reference image(s)"
+                if reference_count
+                else ""
+            )
             + (" and requested a workflow queue." if queue_after_send else "."),
             {
                 "Prompt Corrector": "prompt",
                 "Comic Story": "comic",
                 "Meme Creator": "meme",
+                "FLUX Image Edit": "prompt",
             }.get(workspace, "system"),
         )
         self._set_status_threadsafe(
             f"Sent {workspace} result to ComfyUI"
             + (" and requested queue" if queue_after_send else "")
         )
+        if workspace == "FLUX Image Edit" and self.flux_image_edit_window is not None:
+            self._after_threadsafe(
+                0,
+                self.flux_image_edit_window.set_send_result,
+                f"Sent prompt and {reference_count} reference image(s) to ComfyUI",
+            )
 
     def _show_comfyui_push_error(self, error: str) -> None:
         self.status_var.set("ComfyUI push failed")
+        if self.flux_image_edit_window is not None:
+            self.flux_image_edit_window.set_send_result(
+                f"ComfyUI push failed: {error}",
+                error=True,
+            )
         messagebox.showerror(
             "ComfyUI push failed",
             f"{error}\n\nStart ComfyUI with the PromptCorrector Bridge installed, then try again.",

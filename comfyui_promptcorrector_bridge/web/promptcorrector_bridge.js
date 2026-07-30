@@ -5,6 +5,9 @@ const QUEUE_AFTER_UPDATE_DELAY_MS = 500;
 
 function matchingBridgeNodes(workspace) {
     return (app.graph?._nodes || []).filter((node) => {
+        if (workspace === "FLUX Image Edit") {
+            return node.type === "PromptCorrectorFluxImageEditBridge";
+        }
         if (node.type !== "PromptCorrectorBridge") {
             return false;
         }
@@ -25,12 +28,28 @@ async function updateBridgeNode(node, payload, status) {
     }
     promptWidget.value = payload.prompt;
     await promptWidget.callback?.(payload.prompt);
+    const referenceImages = Array.isArray(payload.reference_images)
+        ? payload.reference_images
+        : [];
+    for (let index = 1; index <= 8; index += 1) {
+        const referenceWidget = node.widgets?.find(
+            (widget) => widget.name === `reference_image_${index}`,
+        );
+        if (!referenceWidget) {
+            continue;
+        }
+        const filename = referenceImages[index - 1] || "";
+        referenceWidget.value = filename;
+        await referenceWidget.callback?.(filename);
+    }
     if (node.promptCorrectorBridgeButton) {
         node.promptCorrectorBridgeButton.name = status;
         window.setTimeout(() => {
             if (node.promptCorrectorBridgeButton) {
                 node.promptCorrectorBridgeButton.name =
-                    "Pull latest corrected prompt";
+                    node.type === "PromptCorrectorFluxImageEditBridge"
+                        ? "Waiting for FLUX Image Edit"
+                        : "Pull latest corrected prompt";
                 node.setDirtyCanvas(true, true);
             }
         }, 2500);
@@ -95,7 +114,10 @@ api.addEventListener("promptcorrector_bridge_prompt", async ({ detail }) => {
 app.registerExtension({
     name: "promptcorrector.bridge",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "PromptCorrectorBridge") {
+        const isTextBridge = nodeData.name === "PromptCorrectorBridge";
+        const isFluxEditBridge =
+            nodeData.name === "PromptCorrectorFluxImageEditBridge";
+        if (!isTextBridge && !isFluxEditBridge) {
             return;
         }
 
@@ -104,6 +126,20 @@ app.registerExtension({
             const result = onNodeCreated
                 ? onNodeCreated.apply(this, arguments)
                 : undefined;
+            if (isFluxEditBridge) {
+                const statusButton = this.addWidget(
+                    "button",
+                    "Waiting for FLUX Image Edit",
+                    null,
+                    () => {},
+                );
+                this.promptCorrectorBridgeButton = statusButton;
+                this.size = [
+                    Math.max(this.size[0], 420),
+                    Math.max(this.size[1], 520),
+                ];
+                return result;
+            }
             const button = this.addWidget(
                 "button",
                 "Pull latest corrected prompt",

@@ -1,7 +1,8 @@
 # ComfyUI PromptCorrector Bridge
 
 This bundled custom node transfers finished text from Image Prompt Corrector
-into ComfyUI without using the clipboard.
+into ComfyUI without using the clipboard. Its dedicated FLUX Image Edit node
+also receives the selected reference images.
 
 ## Install
 
@@ -38,6 +39,27 @@ visible result and immediately updates every open bridge node set to either
 changed: **Refresh on queue** remains available and continues to load the newest
 saved result whenever the workflow runs.
 
+### FLUX.2 Klein image editing
+
+1. Add **PromptCorrector FLUX Image Edit Bridge** from
+   `image > PromptCorrector`.
+2. Connect its `prompt` output to the FLUX.2 Klein text encoder.
+3. Connect `reference_1`, `reference_2`, and `reference_3` to three VAE Encode
+   and **Set Reference Latent** paths. Chain those reference-latent nodes into
+   the model conditioning. Additional outputs are available through
+   `reference_8`.
+4. Open the main **FLUX Image Edit** tab in PromptCorrector, add and role-label
+   the reference images, optionally paint masks, prepare the prompt, and send
+   it.
+
+PromptCorrector uploads the images to ComfyUI first. The connector event then
+updates the FLUX bridge node with the uploaded filenames and waits for all
+prompt/reference widget callbacks before an optional automatic queue. Each
+reference is exposed separately as `IMAGE` plus its alpha-derived `MASK`.
+PromptCorrector embeds painted masks into temporary RGBA transport copies, so
+the original reference files remain unchanged. Unused outputs receive an empty
+placeholder.
+
 In PromptCorrector, enable **ComfyUI > Auto-send completed results** to push each
 successful Prompt Corrector, Comic Story, or Meme Creator result automatically.
 Enable **Queue workflow after sending** to queue the currently open ComfyUI
@@ -50,6 +72,7 @@ queueing is enabled.
 
 ## Privacy
 
-The node definition keeps its default prompt empty so ComfyUI's global node
-metadata does not expose saved text. The bridge endpoint returns only the
-selected corrected result, its workspace label, and timestamp.
+The node definitions keep their default prompt and reference filenames empty,
+so ComfyUI's global node metadata does not expose saved content. FLUX reference
+files are uploaded to ComfyUI's normal input directory; the push event carries
+only their ComfyUI filenames, not local filesystem paths.

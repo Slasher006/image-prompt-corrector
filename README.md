@@ -54,6 +54,9 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 - Resumable CSV batch correction with JSON result export.
 - Loaded-model fidelity and vision benchmarking.
 - Editable generator profiles and optional ComfyUI API-workflow handoff.
+- An embedded FLUX.2 Klein Image Edit tab with explicit edit/preservation
+  instructions, editable role presets, vision-model analysis, output-folder
+  reload, mask painting, and direct ComfyUI transport for up to eight images.
 - Mutually exclusive persistent **Safe for work** and **Explicit adult (NSFW)** modes for prompt correction, comics, memes, batches, A/B variants, and generated-image review.
 
 ## Requirements
@@ -269,6 +272,42 @@ Generator profiles are editable JSON objects containing prompt style, negative-p
 
 For ComfyUI, export a workflow in API format, choose its JSON file, enter the positive CLIP text node ID, and click **Enqueue current prompt**. PromptCorrector copies the corrected prompt into that node and posts the workflow to the configured `/prompt` endpoint. No ComfyUI dependency is required inside PromptCorrector.
 
+For a FLUX.2 Klein 9B image edit, select the main **FLUX Image Edit** workspace
+tab or use **Create > FLUX Image Edit tab** (`Ctrl+Shift+I`). Its compact
+**Edit** and **References & Mask** pages keep the workflow inside the main
+window. Add one to eight references, including at least three when the edit
+needs separate composition, identity, and style sources. Give every reference
+a role, enter the requested change and preservation constraints, then prepare
+the explicit multi-reference prompt. Roles can be chosen from presets such as base
+composition, subject identity, pose, outfit, prop, environment, style,
+lighting, material, and text/layout, or typed as a custom role.
+
+**Analyze images with LLM** sends every actual reference image and its role to
+the currently selected vision-capable LM Studio or Ollama model. **Correct with
+LLM + images** uses that visual evidence to improve the prepared edit prompt.
+WebP, GIF, and BMP references are converted to PNG in memory for local vision
+models that accept only PNG/JPEG data URLs; the source files remain unchanged.
+Unmasked references are sent to ComfyUI in their original format, while a
+painted mask uses a temporary RGBA PNG transport copy.
+The instruction and preservation fields also have **Invent** buttons. Every
+model-updated field has **Recall** for restoring its exact previous value, and
+each field has an explicit **Clear** control. Reference images have a separate
+**Clear all** action. A text-only model cannot perform these image-aware
+actions; select a vision model in the main window first.
+
+For iterative editing, choose the ComfyUI output folder on **References &
+Mask**, then click **Reload latest output as base**. PromptCorrector searches
+that folder and its subfolders for the newest supported image and replaces
+Image 1 while retaining the other role references. Use **Paint**, **Erase**,
+brush size, **Invert**, and **Clear mask** to define the editable region of the
+selected reference. Painted pixels become the bridge node's mask; pixels
+outside the mask remain protected. Masks and the output-folder choice persist
+with the edit workspace.
+
+**Send prompt + references to ComfyUI** uploads every image to ComfyUI and
+pushes their returned input filenames together with the prompt through the
+connector bridge.
+
 For a pull-based workflow, install the bundled
 `comfyui_promptcorrector_bridge` custom node. It exposes the newest saved
 Prompt Corrector, Comic Story, or Meme Creator result as a normal ComfyUI
@@ -281,6 +320,11 @@ open ComfyUI workflow after its matching bridge node has been updated. Queueing
 is skipped when no matching bridge node is open.
 See [`comfyui_promptcorrector_bridge/README.md`](comfyui_promptcorrector_bridge/README.md)
 for installation and usage.
+
+FLUX.2 officially supports multi-reference image editing. The Image Edit
+window's eight-reference limit matches the documented API limit:
+[FLUX.2 Image Editing](https://docs.bfl.ai/flux_2/flux2_image_editing) and
+[FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
 
 The draft and latest result are autosaved while you work and restored after the next launch. The counters below both editors show word totals and approximate token usage. Use the **Changes** tab to inspect additions, removals, and replacements. Concise, Balanced, and Detailed remain qualitative length preferences. **Expanded** is a concrete 140–280-word contract; if a local model returns less than 140 words, the correction pipeline performs one targeted expansion repair. With **Creative enhancement**, Expanded must add prompt-specific visual development rather than paraphrasing or adjective padding.
 

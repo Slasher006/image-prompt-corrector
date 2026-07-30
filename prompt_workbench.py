@@ -711,3 +711,106 @@ def enqueue_comfyui(
     if not isinstance(result, dict):
         raise RuntimeError("ComfyUI returned an unexpected response")
     return result
+
+
+def build_image_edit_prompt(
+    *,
+    instruction: str,
+    preserve: str = "",
+    target_prompt: str = "",
+    image_analysis: str = "",
+    reference_roles: Iterable[str] = (),
+    masked_reference_indices: Iterable[int] = (),
+) -> str:
+    """Build an explicit edit command while keeping preservation constraints visible."""
+    instruction = instruction.strip()
+    preserve = preserve.strip()
+    target_prompt = target_prompt.strip()
+    image_analysis = image_analysis.strip()
+    if not instruction and not target_prompt:
+        raise ValueError("Enter an edit request or create a corrected target prompt first.")
+    parts = ["Edit the supplied reference image or images."]
+    if instruction:
+        parts.append(f"Requested change: {instruction}")
+    if preserve:
+        parts.append(f"Preserve unchanged: {preserve}")
+    else:
+        parts.append("Preserve all visible content that the requested change does not require altering.")
+    role_lines = [
+        f"Image {index}: {str(role).strip() or 'use as an intentional visual reference'}."
+        for index, role in enumerate(reference_roles, start=1)
+    ]
+    if role_lines:
+        parts.append("Reference roles: " + " ".join(role_lines))
+    masked_values: set[int] = set()
+    for index in masked_reference_indices:
+        try:
+            normalized_index = int(index)
+        except (TypeError, ValueError):
+            continue
+        if normalized_index > 0:
+            masked_values.add(normalized_index)
+    masked = sorted(masked_values)
+    if masked:
+        labels = ", ".join(f"Image {index}" for index in masked)
+        parts.append(
+            f"Edit only inside the supplied mask for {labels}; preserve "
+            "everything outside each mask."
+        )
+    if image_analysis:
+        parts.append(f"Verified image observations: {image_analysis}")
+    if target_prompt:
+        parts.append(f"Target result: {target_prompt}")
+    return " ".join(parts)
+
+
+def upload_comfyui_image(
+    *,
+    server_url: str,
+    path: str | Path,
+    upload_name: str = "",
+    timeout: float = 30,
+) -> str:
+    """Upload one local image to ComfyUI's input directory."""
+    source = Path(path)
+    if not source.is_file():
+        raise ValueError(f"Image file is unavailable: {source}")
+    boundary = f"----PromptCorrector{uuid.uuid4().hex}"
+    content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+    requested_name = upload_name.strip() or source.name
+    safe_name = requested_name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+    body = bytearray()
+
+    def add_field(name: str, value: str) -> None:
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.extend(value.encode())
+        body.extend(b"\r\n")
+
+    add_field("type", "input")
+    add_field("overwrite", "true")
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="image"; filename="{safe_name}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+    )
+    body.extend(source.read_bytes())
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        server_url.rstrip("/") + "/upload/image",
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"ComfyUI image upload failed: {exc}") from exc
+    if not isinstance(result, dict) or not str(result.get("name", "")).strip():
+        raise RuntimeError("ComfyUI returned an unexpected image-upload response")
+    name = str(result["name"])
+    subfolder = str(result.get("subfolder", "")).strip().strip("/\\")
+    return f"{subfolder}/{name}" if subfolder else name

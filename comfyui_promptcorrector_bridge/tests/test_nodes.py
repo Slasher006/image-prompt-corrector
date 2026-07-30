@@ -48,6 +48,10 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
         queue_index = script.index("await app.queuePrompt();")
         self.assertLess(wait_index, queue_index)
         self.assertIn("await promptWidget.callback?.(payload.prompt);", script)
+        self.assertIn("reference_image_${index}", script)
+        self.assertIn("await referenceWidget.callback?.(filename);", script)
+        reference_index = script.index("await referenceWidget.callback?.(filename);")
+        self.assertLess(reference_index, wait_index)
 
     def test_latest_result_uses_first_valid_history_entry(self):
         self.write_settings(
@@ -172,6 +176,87 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
                     "queue_after_send": "yes",
                 }
             )
+
+    def test_flux_push_payload_accepts_three_uploaded_reference_images(self):
+        result = nodes.validate_bridge_push_payload(
+            {
+                "prompt": "Use Image 1 for composition and Image 3 for style.",
+                "workspace": "FLUX Image Edit",
+                "reference_images": [
+                    "promptcorrector/base.png",
+                    "face.png",
+                    "style.webp",
+                ],
+            }
+        )
+        self.assertEqual(len(result["reference_images"]), 3)
+        self.assertEqual(result["source"], "FLUX Image Edit")
+
+    def test_flux_push_payload_rejects_missing_too_many_or_unsafe_references(self):
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "at least one",
+        ):
+            nodes.validate_bridge_push_payload(
+                {"prompt": "Edit", "workspace": "FLUX Image Edit"}
+            )
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "up to 8",
+        ):
+            nodes.validate_bridge_push_payload(
+                {
+                    "prompt": "Edit",
+                    "workspace": "FLUX Image Edit",
+                    "reference_images": [f"{index}.png" for index in range(9)],
+                }
+            )
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "unsafe",
+        ):
+            nodes.validate_bridge_push_payload(
+                {
+                    "prompt": "Edit",
+                    "workspace": "FLUX Image Edit",
+                    "reference_images": ["../outside.png"],
+                }
+            )
+
+    def test_flux_bridge_exposes_eight_separate_image_and_mask_outputs(self):
+        input_types = nodes.PromptCorrectorFluxImageEditBridge.INPUT_TYPES()
+        required = input_types["required"]
+        self.assertIn("reference_image_1", required)
+        self.assertIn("reference_image_3", required)
+        self.assertIn("reference_image_8", required)
+        self.assertEqual(
+            nodes.PromptCorrectorFluxImageEditBridge.RETURN_NAMES[:4],
+            ("prompt", "source", "reference_1", "reference_1_mask"),
+        )
+        self.assertEqual(
+            len(nodes.PromptCorrectorFluxImageEditBridge.RETURN_TYPES),
+            18,
+        )
+
+    def test_flux_bridge_loads_each_received_reference_in_order(self):
+        sentinel = object()
+        with patch.object(
+            nodes,
+            "load_comfyui_reference_image",
+            return_value=(sentinel, sentinel),
+        ) as load_image:
+            result = nodes.PromptCorrectorFluxImageEditBridge().transfer(
+                "Edit prompt",
+                "one.png",
+                "two.png",
+                "three.png",
+            )
+        self.assertEqual(result[:2], ("Edit prompt", "FLUX Image Edit"))
+        self.assertEqual(
+            [call.args[0] for call in load_image.call_args_list[:3]],
+            ["one.png", "two.png", "three.png"],
+        )
+        self.assertEqual(len(result), 18)
 
     @unittest.skipIf(
         bridge_package is None,
