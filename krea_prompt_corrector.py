@@ -25,10 +25,16 @@ import urllib.parse
 import urllib.request
 
 from nsfw_scene_contract import (
+    cross_subject_genital_binding_instruction,
+    cross_subject_genital_binding_issues,
     dildo_direction_instruction,
+    enforce_cross_subject_genital_binding,
+    enforce_penis_ventral_orientation_contract,
     extract_nsfw_scene_contract,
     format_nsfw_scene_contract,
     nsfw_scene_contract_issues,
+    penis_ventral_orientation_instruction,
+    penis_ventral_orientation_issues,
     strip_nsfw_catalog_labels,
 )
 
@@ -1680,6 +1686,63 @@ ACTION_POSE_KEYWORDS = (
     "throwing",
     "walking",
 )
+NON_PERSON_ACTION_SUBJECTS = (
+    "clouds?",
+    "curtains?",
+    "dust\\s+motes?",
+    "embers?",
+    "fire",
+    "flames?",
+    "fog",
+    "leaves",
+    "light",
+    "mist",
+    "moonlight",
+    "motes?",
+    "rain",
+    "shadows?",
+    "smoke",
+    "snow",
+    "sparks?",
+    "sunlight",
+    "water",
+    "waves?",
+    "wind",
+)
+ACTION_ROLE_BINDING_PATTERN = re.compile(
+    r"\b(?:aim(?:s|ed|ing)?|bend(?:s|ing)?|bent|"
+    r"carr(?:y|ies|ied|ying)|climb(?:s|ed|ing)?|crouch(?:es|ed|ing)?|"
+    r"danc(?:e|es|ed|ing)|draw(?:s|ing)?|drew|drawn|"
+    r"fall(?:s|ing)?|fell|fallen|fight(?:s|ing)?|fought|"
+    r"grab(?:s|bed|bing)|hold(?:s|ing)?|held|jump(?:s|ed|ing)?|"
+    r"kick(?:s|ed|ing)?|kneel(?:s|ed|ing)?|lean(?:s|ed|ing)?|"
+    r"lift(?:s|ed|ing)?|l(?:ie|ies|ying|ay|ain)|punch(?:es|ed|ing)?|"
+    r"reach(?:es|ed|ing)?|run(?:s|ning)?|ran|sit(?:s|ting)?|sat|"
+    r"skateboard(?:s|ed|ing)?|stand(?:s|ing)?|stood|"
+    r"swing(?:s|ing)?|swung|throw(?:s|ing)?|threw|thrown|"
+    r"walk(?:s|ed|ing)?|grip(?:s|ped|ping)?|strok(?:e|es|ed|ing)|"
+    r"rub(?:s|bed|bing)?|touch(?:es|ed|ing)?|"
+    r"stimulat(?:e|es|ed|ing|ion))\b",
+    flags=re.IGNORECASE,
+)
+NON_PERSON_ACTION_SUBJECT_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(NON_PERSON_ACTION_SUBJECTS)})\s+"
+    r"(?:(?:is|are|was|were|has\s+been|have\s+been)\s+)?$",
+    flags=re.IGNORECASE,
+)
+ACTION_SUBJECT_PHRASE_PATTERN = re.compile(
+    r"\b(?P<subject>(?:[A-Za-z][A-Za-z'-]*\s+){0,5}[A-Za-z][A-Za-z'-]*)\s+"
+    r"(?:(?:is|are|was|were|has\s+been|have\s+been)\s+)?$",
+    flags=re.IGNORECASE,
+)
+PERSON_ACTION_EFFECTOR_HEADS = {
+    "arm", "arms", "body", "finger", "fingers", "foot", "feet",
+    "hand", "hands", "leg", "legs", "mouth", "torso",
+}
+PERSON_ACTION_SUBJECT_WORDS = {
+    "he", "her", "hers", "him", "his", "i", "me", "she", "someone",
+    "somebody", "they", "them", "their", "we", "you",
+}
 POSE_CONTACT_ACTIONS = (
     "aiming",
     "carrying",
@@ -2441,6 +2504,33 @@ def translate_explicit_adult_language(text: str) -> str:
             part = part.replace(token, rendered)
         translated_parts.append(part)
     translated = re.sub(r"\s{2,}", " ", "".join(translated_parts)).strip()
+    if re.search(
+        r"\b(?:penis|precum|semen|manual\s+stimulation|oral\s+stimulation|"
+        r"handjobs?|blowjobs?)\b",
+        translated,
+        flags=re.IGNORECASE,
+    ):
+        translated = re.sub(
+            r"\b(?P<owner>his|her|their)\s+(?P<state>erect\s+)?shaft\b",
+            lambda match: (
+                f"{match.group('owner')} {match.group('state') or ''}penis"
+            ),
+            translated,
+            flags=re.IGNORECASE,
+        )
+    translated = re.sub(
+        r"\b(?P<act>(?:manual|oral)\s+stimulation\s+of\s+(?:the\s+)?penis)"
+        r"\s*,\s*penis\b",
+        lambda match: match.group("act"),
+        translated,
+        flags=re.IGNORECASE,
+    )
+    translated = re.sub(
+        r"\b(penis)\s*,\s*\1\b",
+        r"\1",
+        translated,
+        flags=re.IGNORECASE,
+    )
     translated = re.sub(
         r"(\b(?:mature\s+)?adult\s+woman\b[^.!?]{0,100}\b"
         r"(?:perform(?:s|ing)?|performed)\s+self-stimulation\s+of)\s+"
@@ -3119,11 +3209,6 @@ def camera_viewpoint_conflict_issues(
     for pair in CAMERA_VIEWPOINT_CONFLICTS:
         if not pair <= combined:
             continue
-        # When a separate camera control is supplied, only reject conflicts
-        # that cross that control boundary. A prompt-internal conflict is still
-        # rejected when no separate direction was supplied.
-        if imposed_labels and not (pair & imposed_labels and pair & prompt_labels):
-            continue
         labels = sorted(pair)
         conflicts.append(f"{labels[0]} conflicts with {labels[1]}")
     return conflicts
@@ -3207,6 +3292,78 @@ def _collective_person_scene(prompt: str) -> bool:
 def _role_pattern() -> str:
     roles = sorted(PERSON_ROLE_WORDS, key=len, reverse=True)
     return rf"\b(?:{'|'.join(re.escape(word) for word in roles)})\b"
+
+
+def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
+    """Return sentence bounds around a source position without changing offsets."""
+
+    start = max(text.rfind(separator, 0, position) for separator in ".!?") + 1
+    end_candidates = [
+        found
+        for separator in ".!?"
+        if (found := text.find(separator, position)) >= 0
+    ]
+    return start, min(end_candidates) if end_candidates else len(text)
+
+
+def _person_action_matches(text: str) -> list[re.Match[str]]:
+    """Find pose/action words whose grammatical subject may be a person.
+
+    Image prompts often animate environmental details (for example, ``dust
+    motes dancing``). Those phrases do not need person-role binding and must not
+    stop a multi-person prompt before inference.
+    """
+
+    matches: list[re.Match[str]] = []
+    role_pattern = re.compile(_role_pattern(), re.IGNORECASE)
+    plural_role_pattern = re.compile(
+        rf"\b(?:{'|'.join(re.escape(word) for word in PLURAL_PERSON_ROLE_WORDS)})\b",
+        re.IGNORECASE,
+    )
+    for match in ACTION_ROLE_BINDING_PATTERN.finditer(text):
+        sentence_start, _sentence_end = _sentence_bounds(text, match.start())
+        before_action = text[sentence_start:match.start()]
+        if NON_PERSON_ACTION_SUBJECT_PATTERN.search(before_action):
+            continue
+        subject_match = ACTION_SUBJECT_PHRASE_PATTERN.search(before_action)
+        if subject_match:
+            subject = subject_match.group("subject")
+            subject_words = re.findall(r"[A-Za-z]+", subject.casefold())
+            subject_head = subject_words[-1] if subject_words else ""
+            subject_is_person = bool(
+                role_pattern.search(subject)
+                or plural_role_pattern.search(subject)
+                or set(subject_words).intersection(PERSON_ACTION_SUBJECT_WORDS)
+                or subject_head in PERSON_ACTION_EFFECTOR_HEADS
+            )
+            if not subject_is_person:
+                continue
+        matches.append(match)
+    return matches
+
+
+def _unbound_person_action_matches(
+    text: str,
+    *,
+    allowed_references: set[str],
+) -> list[re.Match[str]]:
+    """Return each person action whose own sentence lacks a clear actor."""
+
+    role_pattern = re.compile(_role_pattern(), re.IGNORECASE)
+    unbound: list[re.Match[str]] = []
+    for match in _person_action_matches(text):
+        start, end = _sentence_bounds(text, match.start())
+        sentence = text[start:end]
+        if role_pattern.search(sentence):
+            continue
+        before_action = text[start:match.start()]
+        if any(
+            re.search(rf"\b{re.escape(reference)}\b", before_action)
+            for reference in allowed_references
+        ):
+            continue
+        unbound.append(match)
+    return unbound
 
 
 def _relational_role_binding(searchable: str) -> bool:
@@ -3382,7 +3539,6 @@ def multi_person_role_issues(prompt: str) -> list[str]:
         for role in role_mentions
         if role not in {"adult", "character", "person"}
     }
-    role_pattern = _role_pattern()
     reciprocal_is_unambiguous = (
         len(distinct_roles) >= 2 and "each other" in searchable
     )
@@ -3445,21 +3601,11 @@ def multi_person_role_issues(prompt: str) -> list[str]:
     if ambiguous:
         issues.append("ambiguous person references: " + ", ".join(ambiguous[:6]))
 
-    action_count = sum(
-        1
-        for word in ACTION_POSE_KEYWORDS
-        if re.search(rf"\b{re.escape(word)}\b", searchable)
+    unbound_actions = _unbound_person_action_matches(
+        searchable,
+        allowed_references=allowed_references,
     )
-    action_pattern = rf"\b(?:{'|'.join(re.escape(word) for word in ACTION_POSE_KEYWORDS)})\b"
-    action_sentences = [
-        sentence
-        for sentence in re.split(r"[.!?]+", searchable)
-        if re.search(action_pattern, sentence)
-    ]
-    has_role_bound_action = any(
-        re.search(role_pattern, sentence) for sentence in action_sentences
-    )
-    if action_count and not has_role_bound_action:
+    if unbound_actions:
         issues.append("action verbs are not clearly bound to a named person")
 
     return issues
@@ -3485,8 +3631,6 @@ def multi_person_ambiguity_spans(
             highlight_actions = True
 
     searchable_terms = list(reference_terms)
-    if highlight_actions:
-        searchable_terms.extend(ACTION_POSE_KEYWORDS)
     spans: set[tuple[int, int]] = set()
     for term in sorted(set(searchable_terms), key=len, reverse=True):
         for match in re.finditer(
@@ -3495,6 +3639,36 @@ def multi_person_ambiguity_spans(
             flags=re.IGNORECASE,
         ):
             spans.add(match.span())
+    if highlight_actions:
+        searchable = _person_scene_searchable(prompt)
+        role_mentions = person_role_mentions(searchable)
+        distinct_roles = {
+            role for role in role_mentions if role not in {"adult", "character", "person"}
+        }
+        allowed_references: set[str] = set()
+        if _unambiguous_gender_label(
+            searchable,
+            singular_terms=("woman", "female", "lady", "girl", "wife", "bride"),
+            plural_terms=("women", "females", "ladies", "girls", "wives", "brides"),
+            fallback_label="the female subject",
+        ):
+            allowed_references.update(("she", "her", "hers"))
+        if _unambiguous_gender_label(
+            searchable,
+            singular_terms=("man", "male", "boy", "husband", "groom"),
+            plural_terms=("men", "males", "boys", "husbands", "grooms"),
+            fallback_label="the male subject",
+        ):
+            allowed_references.update(("he", "him", "his"))
+        if len(distinct_roles) >= 2:
+            allowed_references.update(("both", "they", "their", "them"))
+        spans.update(
+            match.span()
+            for match in _unbound_person_action_matches(
+                str(prompt or ""),
+                allowed_references=allowed_references,
+            )
+        )
     return sorted(spans)
 
 
@@ -3730,7 +3904,10 @@ def flux_multi_person_schema_instruction() -> str:
         "action, owned body parts, and role in the interaction. Bind gender, anatomy, "
         "clothing, pose, and contact to the correct person. Describe shared contact "
         "once and do not invent left/right placement when the relationship is "
-        "depth-based or overlapping. Return one cohesive natural-language image "
+        "depth-based or overlapping. For cross-person contact involving intimate "
+        "anatomy, put explicit role nouns beside both the acting body part and the "
+        "other person's owned anatomy instead of relying only on her/his pronouns. "
+        "Return one cohesive natural-language image "
         "prompt only. Never expose JSON, a schema, field names, Markdown, or analysis."
     )
 
@@ -3917,7 +4094,7 @@ def explicit_body_part_ownership(text: str) -> set[tuple[str, str]]:
     ownership: set[tuple[str, str]] = set()
     for category, owner in BODY_OWNERSHIP_OWNER_PATTERNS.items():
         pattern = re.compile(
-            rf"(?i)\b{owner}\s+(?:[A-Za-z-]+\s+){{0,3}}(?P<part>{parts})\b"
+            rf"(?i)\b{owner}\s+(?:[A-Za-z-]+\s+){{0,3}}?(?P<part>{parts})\b"
         )
         for match in pattern.finditer(searchable):
             part = match.group("part").lower()
@@ -5385,6 +5562,120 @@ def exclusion_contract_issues(final_prompt: str, original_prompt: str) -> list[s
     ]
 
 
+def naturalize_flux_positive_framing(text: str) -> str:
+    """Convert common FLUX exclusions into concrete desired visual states."""
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    cleaned_parts: list[str] = []
+    for index, part in enumerate(parts):
+        if index % 2:
+            cleaned_parts.append(part)
+            continue
+        part = re.sub(
+            r"(?i)\bNo\s+adornments?\s+distract\s*,\s*"
+            r"(?:the\s+)?focus\s+is\s+on\s+([^.!?]+)",
+            lambda match: (
+                "An uncluttered setting keeps visual attention on "
+                + match.group(1).strip()
+            ),
+            part,
+        )
+        part = re.sub(
+            r"(?i)\bNo\s+adornments?\s*,\s*no\s+distractions?\s*,\s*"
+            r"just\s+([^.!?]+)",
+            lambda match: (
+                "An uncluttered setting directs all visual attention to "
+                + match.group(1).strip()
+            ),
+            part,
+        )
+        part = re.sub(
+            r"(?i)\bnot\s+from\s+[^,.!?;]{1,60}?\s+but\s+([^,.!?;]+)",
+            lambda match: "driven by " + match.group(1).strip(),
+            part,
+        )
+        replacements = (
+            (r"(?i)\bNo\s+adornments?\s+distract\b", "The setting is visually uncluttered"),
+            (r"(?i)\b(?:No|without)\s+(?:background\s+)?clutter\b", "an uncluttered background"),
+            (r"(?i)\b(?:No|without)\s+blur\b", "sharp focus throughout"),
+            (r"(?i)\b(?:No|without)\s+(?:visible\s+)?(?:text|lettering)\b", "clean unmarked surfaces"),
+            (r"(?i)\b(?:No|without)\s+(?:logos?|watermarks?)\b", "clean unbranded surfaces"),
+        )
+        for pattern, replacement in replacements:
+            part = re.sub(pattern, replacement, part)
+        cleaned_parts.append(part)
+    return normalize_final_prompt_text("".join(cleaned_parts))
+
+
+def deduplicate_flux_camera_phrasing(text: str) -> str:
+    """Keep one camera/lens statement for a single FLUX image."""
+
+    cleaned = str(text or "")
+    wide_lens = re.search(
+        r"(?i)\bwide\s+full[- ]scene\s+shot\s*,\s*(\d+)\s*mm\s+lens\b",
+        cleaned,
+    )
+    if not wide_lens:
+        return normalize_final_prompt_text(cleaned)
+    millimeters = re.escape(wide_lens.group(1))
+    cleaned = re.sub(
+        rf"(?i)\bShot\s+wide\s+at\s+{millimeters}\s*mm\s*,\s*"
+        r"the\s+scene\s+is\s+framed\b",
+        "The scene is framed",
+        cleaned,
+    )
+    return normalize_final_prompt_text(cleaned)
+
+
+def flux_klein_prompt_rule_issues(text: str) -> list[str]:
+    """Report visible wording that conflicts with FLUX.2 Klein best practices."""
+
+    searchable = unquoted_text(str(text or ""))
+    issues: list[str] = []
+    negative = NEGATIVE_CONSTRAINT_PATTERN.search(searchable)
+    if not negative:
+        negative = re.search(r"(?i)\bnot\b[^,.!?;\n]*", searchable)
+    if negative:
+        issues.append(
+            "negative phrasing remains instead of a positive desired visual state: "
+            + " ".join(negative.group(0).split())
+        )
+    lens_counts: dict[str, int] = {}
+    for value in re.findall(r"(?i)\b(\d+)\s*mm\b", searchable):
+        lens_counts[value] = lens_counts.get(value, 0) + 1
+    repeated_lenses = sorted(value for value, count in lens_counts.items() if count > 1)
+    if repeated_lenses:
+        issues.append("repeated camera lens wording: " + ", ".join(repeated_lenses) + "mm")
+    distinct_lenses = sorted(lens_counts, key=int)
+    if len(distinct_lenses) > 1:
+        issues.append(
+            "conflicting camera lens wording: "
+            + ", ".join(value + "mm" for value in distinct_lenses)
+        )
+    action_sentences = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", searchable)
+        if re.search(r"\b(?:woman|female|she|her)\b", sentence, re.IGNORECASE)
+        and re.search(
+            r"\b(?:man|male|he|him|his|penis|cock|phallus)\b",
+            sentence,
+            re.IGNORECASE,
+        )
+        and re.search(
+            r"\b(?:grip(?:s|ped|ping)?|strok(?:e|es|ed|ing)|rub(?:s|bed|bing)?|"
+            r"manually\s+stimulat(?:e|es|ed|ing)|"
+            r"(?:perform(?:s|ed|ing)?|provid(?:e|es|ed|ing)|giv(?:e|es|ing)|"
+            r"depict(?:s|ed|ing)?|show(?:s|ed|ing)?|visibly\s+includes?)\s+"
+            r"manual\s+stimulation)\b",
+            sentence,
+            re.IGNORECASE,
+        )
+    ]
+    if len(action_sentences) > 1:
+        issues.append("the same cross-subject action is stated more than once")
+    return issues
+
+
 def unexpected_script_issues(final_prompt: str, original_prompt: str = "") -> list[str]:
     issues: list[str] = []
     for label, pattern in SCRIPT_PATTERNS.items():
@@ -6450,6 +6741,16 @@ def final_compliance_issues(
         issues.append("Camera viewpoint conflict: " + ", ".join(camera_issues))
     issues.extend(internal_prompt_guidance_issues(cleaned))
     issues.extend(forbidden_syntax_issues(cleaned))
+    if (
+        normalize_generator_target(generator_target) == "FLUX.2 Klein 9B"
+        and normalized_format == "Single Image"
+    ):
+        flux_rule_issues = flux_klein_prompt_rule_issues(cleaned)
+        if flux_rule_issues:
+            issues.append(
+                "FLUX.2 Klein positive-prompt contract: "
+                + ", ".join(flux_rule_issues)
+            )
     issues.extend(contradiction_issues(cleaned, original_prompt))
     issues.extend(hand_use_contradiction_issues(cleaned))
     issues.extend(intent_lock_issues(original_prompt, cleaned, goal_headline))
@@ -6602,6 +6903,54 @@ def final_compliance_issues(
             issues.append(
                 "Inserted object/body contact contract: "
                 + ", ".join(inserted_object_issues)
+            )
+        if (
+            normalize_generator_target(generator_target) == "FLUX.2 Klein 9B"
+            and normalized_format == "Single Image"
+        ):
+            cross_subject_issues = cross_subject_genital_binding_issues(
+                cleaned,
+                "\n".join(
+                    value
+                    for value in (
+                        original_prompt,
+                        story_elements,
+                        concept_keywords,
+                        weighted_terms,
+                        focus,
+                        goal_headline,
+                        model_instructions,
+                        additional_script_context,
+                    )
+                    if value.strip()
+                ),
+            )
+            if cross_subject_issues:
+                issues.append(
+                    "FLUX cross-subject anatomy binding contract: "
+                    + ", ".join(cross_subject_issues)
+                )
+        penile_orientation_issues = penis_ventral_orientation_issues(
+            cleaned,
+            "\n".join(
+                value
+                for value in (
+                    original_prompt,
+                    story_elements,
+                    concept_keywords,
+                    weighted_terms,
+                    focus,
+                    goal_headline,
+                    model_instructions,
+                    additional_script_context,
+                )
+                if value.strip()
+            ),
+        )
+        if penile_orientation_issues:
+            issues.append(
+                "Penile ventral orientation contract: "
+                + ", ".join(penile_orientation_issues)
             )
         trait_issues = unrequested_gender_trait_issues(
             cleaned,
@@ -6923,8 +7272,9 @@ EXPLICIT_ADULT_MODE_INSTRUCTION = (
 
 EXPLICIT_ADULT_DISALLOWED_PATTERNS = (
     (
-        r"\b(?:child(?:ren)?|kids?|minors?|underage|teens?|teenagers?|adolescents?|"
-        r"schoolgirls?|schoolboys?|young-looking)\b",
+        r"\b(?:child(?:ren)?|kids?|minors?|underage|pre[- ]?teens?|teens?|"
+        r"teenage(?:rs?)?|adolescents?|juveniles?|youths?|girls?|boys?|"
+        r"schoolgirls?|schoolboys?|young-looking|barely\s+legal)\b",
         "underage or ambiguous-age subject",
     ),
     (
@@ -7002,6 +7352,7 @@ HARD_COMPLIANCE_PREFIXES = (
     "Camera viewpoint conflict",
     "Internal prompt guidance leaked",
     "Forbidden syntax matched",
+    "FLUX.2 Klein positive-prompt contract",
     "Contradictory terms",
     "Hand-use contradiction",
     "Selected visual mode missing or changed",
@@ -7026,10 +7377,13 @@ HARD_COMPLIANCE_PREFIXES = (
     "Content format",
     "Safe-for-work contract violated",
     "Multi-person role ambiguity",
+    "Source multi-person ambiguity preserved",
     "Gender identity contract",
     "Person/body ownership contract",
     "Adult toy object contract",
     "Inserted object/body contact contract",
+    "FLUX cross-subject anatomy binding contract",
+    "Penile ventral orientation contract",
     "Unrequested gender/anatomy traits",
     "Explicit support participant contract",
     "Untranslated explicit adult slang",
@@ -7172,6 +7526,18 @@ def deterministic_fidelity_fallback(
             semantic_term_present(concept, prominent)
             or semantic_term_present(prominent, concept)
             for prominent in prominent_terms
+        )
+    ]
+    required_only = [
+        concept
+        for concept in required_only
+        if not any(
+            other != concept
+            and semantic_term_present(
+                canonical_validation_text(concept),
+                canonical_validation_text(other),
+            )
+            for other in required_only
         )
     ]
     page_prefix = (
@@ -9311,6 +9677,17 @@ PRIVATE_PROMPT_GUIDANCE_PATTERNS: tuple[tuple[str, str], ...] = (
         r"(?is)\bPrivate\s+revision\s+guidance\s+for\s+this\s+correction\s+pass\s+only\s*:"
         r".*?\bApply\s+its\s+meaning\s+through\s+concrete\s+visual\s+changes\s*\.\s*"
         r"Do\s+not\s+quote,\s*label,\s*mention,\s*or\s+append\s+this\s+guidance\s+in\s+the\s+final\s+prompt\s*\.\s*",
+        "",
+    ),
+    (
+        r"(?is)\bPrivate\s+viewpoint-aware\s+penile\s+anatomy\s+contract\s*:"
+        r".*?\b(?:without\s+clinical\s+explanation|visually\s+supported)\s*\.\s*",
+        "",
+    ),
+    (
+        r"(?is)\bPrivate\s+cross-subject\s+body-binding\s+contract\s*:"
+        r".*?\bDo\s+not\s+quote\s+or\s+label\s+this\s+private\s+contract\s+"
+        r"in\s+the\s+final\s+prompt\s*\.\s*",
         "",
     ),
     (re.escape(ARTISTIC_DETAIL_FREEDOM_INSTRUCTION), ""),
@@ -14134,6 +14511,24 @@ def post_chat_completion(
             correction_model_instructions = (
                 f"{correction_model_instructions.strip()}\n{adult_scene_contract}"
             )
+        if normalized_format == "Single Image":
+            if normalize_generator_target(generator_target) == "FLUX.2 Klein 9B":
+                cross_subject_instruction = cross_subject_genital_binding_instruction(
+                    source_request
+                )
+                if cross_subject_instruction:
+                    correction_model_instructions = (
+                        f"{correction_model_instructions.strip()}\n"
+                        f"{cross_subject_instruction}"
+                    )
+            penile_orientation_instruction = penis_ventral_orientation_instruction(
+                source_request
+            )
+            if penile_orientation_instruction:
+                correction_model_instructions = (
+                    f"{correction_model_instructions.strip()}\n"
+                    f"{penile_orientation_instruction}"
+                )
     if official_contract_active:
         correction_model_instructions = (
             f"{correction_model_instructions.strip()}\n"
@@ -14417,6 +14812,22 @@ def post_chat_completion(
         if explicit_nsfw:
             candidate = enforce_adult_toy_object_contract(candidate, prompt)
             candidate = enforce_inserted_object_contract(candidate, prompt)
+            if normalized_format == "Single Image":
+                if normalize_generator_target(generator_target) == "FLUX.2 Klein 9B":
+                    candidate = enforce_cross_subject_genital_binding(
+                        candidate,
+                        source_request,
+                    )
+                candidate = enforce_penis_ventral_orientation_contract(
+                    candidate,
+                    source_request,
+                )
+        if (
+            normalize_generator_target(generator_target) == "FLUX.2 Klein 9B"
+            and normalized_format == "Single Image"
+        ):
+            candidate = naturalize_flux_positive_framing(candidate)
+            candidate = deduplicate_flux_camera_phrasing(candidate)
         candidate = enforce_generator_settings_contract(candidate)
         candidate = make_prompt_safe_for_work(candidate) if safe_for_work else candidate
         candidate = strip_weighted_term_syntax(candidate, weighted_terms)

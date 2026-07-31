@@ -98,6 +98,9 @@ class PromptWorkbenchTests(unittest.TestCase):
         self.assertIn("act families", review_text)
         self.assertIn("contact targets", review_text)
         self.assertIn("object/body separation", review_text)
+        self.assertIn("body_ownership", messages[0]["content"])
+        self.assertIn("anatomical_attachment", messages[0]["content"])
+        self.assertIn("anatomical_orientation", messages[0]["content"])
 
     def test_review_response_parses_json_and_targeted_repair(self):
         parsed = workbench.parse_review_response(
@@ -110,14 +113,22 @@ class PromptWorkbenchTests(unittest.TestCase):
         parsed = workbench.parse_review_response(
             '{"score":61,"summary":"Wrong contact","passed":[],"failed":[],'
             '"warnings":[],"repair_prompt":"","nsfw_fidelity":{'
-            '"participant_count":"pass","action_roles":"fail","contact_targets":"fail",'
+            '"participant_count":"pass","action_roles":"fail","body_ownership":"fail",'
+            '"anatomical_attachment":"fail","anatomical_orientation":"fail",'
+            '"contact_targets":"fail",'
             '"object_separation":"fail","visible_phase":"pass","reactions":"fail",'
             '"discrepancies":["receiver role is reversed","toy merged with anatomy"]}}'
         )
 
         self.assertEqual(parsed["nsfw_fidelity"]["action_roles"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["body_ownership"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["anatomical_attachment"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["anatomical_orientation"], "fail")
         self.assertEqual(parsed["nsfw_fidelity"]["object_separation"], "fail")
         repair = workbench.targeted_repair_prompt(parsed, "Current prompt.")
+        self.assertIn("NSFW fidelity: failed body ownership", repair)
+        self.assertIn("NSFW fidelity: failed anatomical attachment", repair)
+        self.assertIn("NSFW fidelity: failed anatomical orientation", repair)
         self.assertIn("NSFW fidelity: receiver role is reversed", repair)
         self.assertIn("NSFW fidelity: toy merged with anatomy", repair)
         self.assertIn("Current prompt.", repair)
@@ -240,6 +251,41 @@ class PromptWorkbenchTests(unittest.TestCase):
             "Edit only inside the supplied mask for Image 1, Image 3",
             prompt,
         )
+
+    def test_image_edit_prompt_adds_requested_ventral_frenulum_orientation(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction=(
+                "Correct the penis underside so the frenulum is visible to the camera."
+            ),
+            preserve="identity, framing, lighting, and everything outside the mask",
+            reference_roles=["base composition", "anatomical orientation"],
+            masked_reference_indices=[1],
+        )
+
+        self.assertIn("ventral underside facing the camera", prompt)
+        self.assertIn("frenulum visibly centered", prompt)
+        self.assertIn("dorsal surface facing away", prompt)
+
+    def test_image_edit_prompt_does_not_add_anatomy_to_unrelated_edit(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction="Change the coat to yellow.",
+            preserve="face, pose, and background",
+        )
+
+        self.assertNotIn("frenulum", prompt.lower())
+
+    def test_image_edit_prompt_infers_underside_from_verified_viewpoint(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction="Correct the visible anatomical orientation.",
+            preserve="identity and lighting",
+            image_analysis=(
+                "The clearly adult subject's visible penis is photographed in a "
+                "low-angle view from below."
+            ),
+        )
+
+        self.assertIn("ventral underside facing the camera", prompt)
+        self.assertIn("frenulum visibly centered", prompt)
 
     @mock.patch("prompt_workbench.urllib.request.urlopen")
     def test_upload_comfyui_image_posts_multipart_and_returns_subfolder_name(self, urlopen):

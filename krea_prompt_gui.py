@@ -120,6 +120,7 @@ from krea_prompt_corrector import (
     parse_concept_mix,
     normalize_concept_mix_groups,
     parse_weighted_terms,
+    penis_ventral_orientation_instruction,
     post_chat_completion,
     probe_model_visual_knowledge,
     prompt_research_targets,
@@ -302,6 +303,13 @@ def build_flux_image_edit_llm_messages(
     preserve = str(state.get("preserve", "")).strip()
     analysis = str(state.get("analysis", "")).strip()[:8000]
     prepared = str(state.get("prepared_prompt", "")).strip()
+    orientation_guidance = penis_ventral_orientation_instruction(
+        "\n".join(
+            value
+            for value in (instruction, prepared, analysis)
+            if value.strip()
+        )
+    )
     task_instructions = {
         "analyze": (
             "Inspect every supplied image according to its assigned role. For each "
@@ -335,6 +343,12 @@ def build_flux_image_edit_llm_messages(
         f"Preserve:\n{preserve or '(infer only when the task asks for it)'}\n\n"
         f"Current prepared prompt:\n{prepared or '(none)'}\n\n"
         f"Prior reference analysis:\n{analysis or '(none)'}"
+        + (
+            "\n\nRequired anatomical orientation:\n"
+            + orientation_guidance
+            if orientation_guidance
+            else ""
+        )
     )
     content: list[dict[str, object]] = [{"type": "text", "text": text}]
     for index, data_url in enumerate(image_data_urls, start=1):
@@ -350,7 +364,11 @@ def build_flux_image_edit_llm_messages(
             "content": (
                 "You are a precise FLUX.2 Klein multi-reference image-edit prompt "
                 "editor with vision. Follow the requested output format exactly. "
-                "Ground visual claims in the supplied images."
+                "Ground visual claims in the supplied images. Treat penile "
+                "orientation as a dorsal/ventral relationship rather than image-left "
+                "or image-right. When the underside is visibly relevant, the frenulum "
+                "belongs on the ventral midline beneath the glans, never on the dorsal "
+                "or top surface. Mention this only when requested or visibly relevant."
             ),
         },
         {"role": "user", "content": content},

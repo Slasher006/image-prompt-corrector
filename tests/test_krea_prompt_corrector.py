@@ -1443,6 +1443,10 @@ class PromptCorrectorTests(unittest.TestCase):
     def test_explicit_adult_mode_rejects_underage_and_ambiguous_age_terms(self):
         for prompt in (
             "an explicit portrait of a teen",
+            "a nude girl",
+            "a nude boy",
+            "a nude teenage girl",
+            "a nude barely legal girl",
             "a nude schoolgirl",
             "a sexualized young-looking character",
             "an explicit portrait of a young woman",
@@ -2385,6 +2389,55 @@ class PromptCorrectorTests(unittest.TestCase):
             [],
         )
 
+    def test_invented_environmental_motion_does_not_trigger_role_ambiguity(self):
+        prompt = (
+            "2 people. A woman stands behind a seated man, her fingers gripping "
+            "his shaft with deliberate force as warm light spills from a fixture. "
+            "The room is a vintage study: leather-bound books, dust motes dancing "
+            "in shafts of amber light, and a cracked mirror reflecting their forms."
+        )
+
+        self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+        self.assertEqual(corrector.multi_person_ambiguity_spans(prompt), [])
+
+    def test_environmental_motion_is_not_highlighted_as_an_unbound_person_action(self):
+        prompt = "Two people wait nearby. Dust motes dancing in warm light."
+        issues = ["action verbs are not clearly bound to a named person"]
+
+        self.assertEqual(
+            corrector.multi_person_ambiguity_spans(prompt, issues),
+            [],
+        )
+
+    def test_each_person_action_requires_its_own_actor_binding(self):
+        prompt = (
+            "A woman stands beside a man. The woman is holding a torch. "
+            "Reaching toward his belt."
+        )
+
+        issues = corrector.multi_person_role_issues(prompt)
+        highlighted = {
+            prompt[start:end].casefold()
+            for start, end in corrector.multi_person_ambiguity_spans(prompt, issues)
+        }
+
+        self.assertIn("action verbs are not clearly bound to a named person", issues)
+        self.assertEqual(highlighted, {"reaching"})
+
+    def test_inflected_unbound_action_is_detected(self):
+        prompt = "A woman stands beside a man. Strokes the penis."
+
+        self.assertIn(
+            "action verbs are not clearly bound to a named person",
+            corrector.multi_person_role_issues(prompt),
+        )
+
+    def test_non_person_swinging_subjects_do_not_trigger_role_ambiguity(self):
+        for subject in ("Long hair", "Her dress", "The chandelier"):
+            prompt = f"A woman and a man wait. {subject} swinging in the wind."
+            with self.subTest(subject=subject):
+                self.assertEqual(corrector.multi_person_role_issues(prompt), [])
+
     def test_both_hands_is_not_treated_as_a_person_reference(self):
         prompt = (
             "A woman and a doctor stand in a park while the woman grips "
@@ -2545,6 +2598,16 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertTrue(any("wrist ownership changed" in issue for issue in issues))
         self.assertTrue(any("hand ownership changed" in issue for issue in issues))
 
+    def test_body_ownership_binds_each_possessive_to_nearest_body_part(self):
+        ownership = corrector.explicit_body_part_ownership(
+            "Her hands grip his penis while the man's body trembles."
+        )
+
+        self.assertIn(("female", "hand"), ownership)
+        self.assertIn(("male", "penis"), ownership)
+        self.assertIn(("male", "body"), ownership)
+        self.assertNotIn(("female", "penis"), ownership)
+
     def test_flux_structured_model_response_is_flattened_to_natural_prose(self):
         structured = json.dumps(
             {
@@ -2663,6 +2726,22 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(
             issues,
             ["over-the-shoulder conflicts with point-of-view"],
+        )
+
+    def test_camera_viewpoint_conflict_detects_each_input_independently(self):
+        self.assertEqual(
+            corrector.camera_viewpoint_conflict_issues(
+                "A woman waits.",
+                "Top-down and low-angle view, 28mm lens",
+            ),
+            ["low-angle conflicts with top-down"],
+        )
+        self.assertIn(
+            "front view conflicts with rear view",
+            corrector.camera_viewpoint_conflict_issues(
+                "Front view and rear view of a woman.",
+                "Low-angle view, 28mm lens",
+            ),
         )
 
     def test_mixed_gender_position_binding_leaves_ambiguous_groups_unchanged(self):
@@ -3743,7 +3822,7 @@ class PromptCorrectorTests(unittest.TestCase):
         hard, _soft = corrector.split_compliance_issues(issues)
         self.assertTrue(any("Multi-person role ambiguity" in issue for issue in hard))
 
-    def test_source_ambiguity_is_advisory_instead_of_a_terminal_contract(self):
+    def test_source_ambiguity_is_a_terminal_hard_contract(self):
         source = (
             "Two people stand in a cave; he holds a torch while she helps them."
         )
@@ -3754,12 +3833,14 @@ class PromptCorrectorTests(unittest.TestCase):
         )
 
         hard, soft = corrector.split_compliance_issues(issues)
-        self.assertFalse(any("Multi-person role ambiguity" in issue for issue in hard))
         self.assertTrue(
+            any("Source multi-person ambiguity preserved" in issue for issue in hard)
+        )
+        self.assertFalse(
             any("Source multi-person ambiguity preserved" in issue for issue in soft)
         )
 
-    def test_post_completion_returns_preserved_source_ambiguity_without_failing(self):
+    def test_post_completion_rejects_preserved_source_ambiguity(self):
         source = (
             "Two people stand in a cave; he holds a torch while she helps them."
         )
@@ -3767,21 +3848,24 @@ class PromptCorrectorTests(unittest.TestCase):
             "krea_prompt_corrector.chat_completion",
             return_value=source,
         ) as completion:
-            result = corrector.post_chat_completion(
-                base_url="http://127.0.0.1:1234/v1",
-                model="test-4b",
-                prompt=source,
-                temperature=0.2,
-                max_tokens=400,
-                timeout=30,
-                api_key="test",
-                output_length="Concise",
-                audit_repair=False,
-                altered_text_encoder=False,
-            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "could not preserve the prompt's hard fidelity contract",
+            ):
+                corrector.post_chat_completion(
+                    base_url="http://127.0.0.1:1234/v1",
+                    model="test-4b",
+                    prompt=source,
+                    temperature=0.2,
+                    max_tokens=400,
+                    timeout=30,
+                    api_key="test",
+                    output_length="Concise",
+                    audit_repair=False,
+                    altered_text_encoder=False,
+                )
 
-        self.assertEqual(completion.call_count, 1)
-        self.assertEqual(result, corrector.normalize_final_prompt_text(source))
+        self.assertGreaterEqual(completion.call_count, 1)
 
     def test_final_compliance_issues_reports_dropped_gender_identity(self):
         issues = corrector.final_compliance_issues(
@@ -5275,6 +5359,267 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertTrue(any("limb chain" in issue for issue in weak))
         self.assertTrue(any("viewpoint" in issue for issue in weak))
         self.assertEqual(strong, [])
+
+    def test_flux_pipeline_automatically_binds_cross_subject_intimate_anatomy(self):
+        source = (
+            "Photoreal. A woman stands behind a seated man, her hands firmly "
+            "gripping his erect shaft as she strokes it with rhythmic motion. "
+            "Wide full-scene shot, 28mm lens. The scene visibly includes manual "
+            "stimulation of the penis."
+        )
+        weak_model_result = (
+            "Photoreal wide shot of a woman behind a seated man, her hands gripping "
+            "his erect shaft as she strokes it, soft window light, 28mm lens. "
+            "The scene visibly includes manual stimulation of the penis, penis. "
+            "The scene visually emphasizes raw sexual energy."
+        )
+        raw_issues = corrector.final_compliance_issues(
+            weak_model_result,
+            generator_target="FLUX.2 Klein 9B",
+            content_format="Single Image",
+            original_prompt=source,
+            explicit_nsfw=True,
+        )
+        binding_issues = [
+            issue
+            for issue in raw_issues
+            if issue.startswith("FLUX cross-subject anatomy binding contract")
+        ]
+        self.assertTrue(binding_issues)
+        self.assertTrue(corrector.is_hard_compliance_issue(binding_issues[0]))
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=weak_model_result,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                generator_target="FLUX.2 Klein 9B",
+                content_format="Single Image",
+                temperature=0.2,
+                max_tokens=300,
+                timeout=5,
+                api_key="test",
+                output_length="Concise",
+                context_token_budget=1_000,
+                final_gate_repair=False,
+                explicit_nsfw=True,
+                concept_keywords="handjob, penis",
+                goal_headline="raw sexual energy",
+            )
+
+        sent_user_message = completion.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Private cross-subject body-binding contract", sent_user_message)
+        self.assertTrue(result.startswith("Exactly two distinct adults"))
+        self.assertIn("adult woman is positioned directly behind", result)
+        self.assertIn("reaches forward with her hands", result)
+        self.assertIn("seated adult man's erect penis", result)
+        self.assertIn("base is visibly attached to the man's pelvis", result)
+        self.assertIn("continuous base-to-tip direction", result)
+        self.assertNotIn("shaft", result.lower())
+        self.assertNotIn("penis, penis", result.lower())
+        self.assertEqual(
+            len(re.findall(r"(?i)manual(?:ly)?\s+stimulat", result)),
+            1,
+        )
+        self.assertTrue(corrector.concept_is_represented("handjob", result))
+        self.assertEqual(corrector.flux_klein_prompt_rule_issues(result), [])
+        self.assertFalse(
+            any(
+                issue.startswith("FLUX cross-subject anatomy binding contract")
+                for issue in corrector.final_compliance_issues(
+                    result,
+                    generator_target="FLUX.2 Klein 9B",
+                    content_format="Single Image",
+                    original_prompt=source,
+                    explicit_nsfw=True,
+                )
+            )
+        )
+
+    def test_explicit_flux_cleanup_removes_ambiguous_shaft_and_nested_concept_duplicate(self):
+        cleaned = corrector.translate_explicit_adult_language(
+            "Her hands stroke his shaft as precum glistens. The scene visibly "
+            "includes manual stimulation of the penis, penis."
+        )
+
+        self.assertIn("his penis", cleaned)
+        self.assertNotIn("his shaft", cleaned)
+        self.assertIn("manual stimulation of the penis", cleaned)
+        self.assertNotIn("penis, penis", cleaned)
+
+    def test_flux_positive_framing_and_camera_cleanup_are_enforced(self):
+        prompt = (
+            "Wide full-scene shot, 28mm lens. No adornments distract, the focus "
+            "is on the two adults. Shot wide at 28mm, the scene is framed in a "
+            "dim room."
+        )
+
+        cleaned = corrector.naturalize_flux_positive_framing(prompt)
+        cleaned = corrector.deduplicate_flux_camera_phrasing(cleaned)
+
+        self.assertIn("An uncluttered setting keeps visual attention", cleaned)
+        self.assertNotRegex(cleaned, r"(?i)\bno\s+adornments\b")
+        self.assertEqual(len(re.findall(r"(?i)\b28\s*mm\b", cleaned)), 1)
+        self.assertEqual(corrector.flux_klein_prompt_rule_issues(cleaned), [])
+
+        current_variant = corrector.naturalize_flux_positive_framing(
+            "No adornments, no distractions, just primal energy between them."
+        )
+        self.assertEqual(
+            current_variant,
+            "An uncluttered setting directs all visual attention to primal energy between them.",
+        )
+        self.assertEqual(
+            corrector.flux_klein_prompt_rule_issues(current_variant),
+            [],
+        )
+
+    def test_flux_rules_detect_conflicting_lenses_pronoun_duplicates_and_not(self):
+        self.assertIn(
+            "conflicting camera lens wording: 28mm, 50mm",
+            corrector.flux_klein_prompt_rule_issues(
+                "A wide 28mm view and a 50mm portrait composition."
+            ),
+        )
+        self.assertIn(
+            "the same cross-subject action is stated more than once",
+            corrector.flux_klein_prompt_rule_issues(
+                "The woman strokes the man's penis. She continues stroking him."
+            ),
+        )
+        self.assertNotIn(
+            "the same cross-subject action is stated more than once",
+            corrector.flux_klein_prompt_rule_issues(
+                "The woman manually stimulates the man's penis. The man's body "
+                "trembles in response to her manual stimulation."
+            ),
+        )
+        self.assertTrue(
+            any(
+                "negative phrasing" in issue
+                for issue in corrector.flux_klein_prompt_rule_issues(
+                    "The man trembles, not from fear but surrender."
+                )
+            )
+        )
+        positive = corrector.naturalize_flux_positive_framing(
+            "The man trembles, not from fear but surrender."
+        )
+        self.assertIn("driven by surrender", positive)
+        self.assertEqual(corrector.flux_klein_prompt_rule_issues(positive), [])
+
+    def test_final_gate_rejects_invented_explicit_scene_facts(self):
+        source = (
+            "A woman manually stimulates a man's penis while precum remains "
+            "visible at the tip."
+        )
+        candidate = (
+            source
+            + " The woman also performs oral sex. The man ejaculates. "
+            "A second woman watches."
+        )
+
+        issues = corrector.final_compliance_issues(
+            candidate,
+            generator_target="FLUX.2 Klein 9B",
+            original_prompt=source,
+            content_format="Single Image",
+            explicit_nsfw=True,
+            altered_text_encoder=False,
+        )
+        fidelity = next(
+            issue for issue in issues if issue.startswith("NSFW scene fidelity contract")
+        )
+
+        self.assertIn("unrequested sexual act family added: oral sex", fidelity)
+        self.assertIn("unrequested sexual fluid or outcome added: ejaculation", fidelity)
+        self.assertIn("unrequested additional adult participant", fidelity)
+        self.assertTrue(corrector.is_hard_compliance_issue(fidelity))
+
+    def test_preserved_source_ambiguity_remains_a_hard_issue(self):
+        issue = (
+            "Source multi-person ambiguity preserved: action verbs are not "
+            "clearly bound to a named person"
+        )
+
+        self.assertTrue(corrector.is_hard_compliance_issue(issue))
+
+    def test_single_image_penile_ventral_orientation_is_a_hard_contract(self):
+        source = (
+            "A photoreal close-up of a clearly adult man with the penis underside "
+            "and frenulum visible to the camera."
+        )
+        weak_issues = corrector.final_compliance_issues(
+            "A photoreal close-up of a clearly adult man with visible genital anatomy.",
+            generator_target="FLUX.2 Klein 9B",
+            content_format="Single Image",
+            original_prompt=source,
+            explicit_nsfw=True,
+        )
+        strong_prompt = (
+            source.rstrip(".")
+            + ". The penis is oriented with its ventral underside facing the camera, "
+            "the frenulum visibly centered on the ventral midline directly beneath "
+            "the glans, and the dorsal surface facing away from the camera."
+        )
+        strong_issues = corrector.final_compliance_issues(
+            strong_prompt,
+            generator_target="FLUX.2 Klein 9B",
+            content_format="Single Image",
+            original_prompt=source,
+            explicit_nsfw=True,
+        )
+
+        orientation_issues = [
+            issue
+            for issue in weak_issues
+            if issue.startswith("Penile ventral orientation contract")
+        ]
+        self.assertTrue(orientation_issues)
+        self.assertTrue(corrector.is_hard_compliance_issue(orientation_issues[0]))
+        self.assertFalse(
+            any(
+                issue.startswith("Penile ventral orientation contract")
+                for issue in strong_issues
+            )
+        )
+
+    def test_single_image_pipeline_infers_ventral_orientation_from_camera(self):
+        source = (
+            "Low-angle medium-wide shot from below of a clearly adult man with a "
+            "visible penis."
+        )
+        weak_model_result = (
+            "A photoreal close-up of a clearly adult man with visible genital anatomy."
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=weak_model_result,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                generator_target="FLUX.2 Klein 9B",
+                content_format="Single Image",
+                temperature=0.2,
+                max_tokens=300,
+                timeout=5,
+                api_key="test",
+                output_length="Concise",
+                context_token_budget=1_000,
+                final_gate_repair=False,
+                explicit_nsfw=True,
+            )
+
+        sent_user_message = completion.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("Private viewpoint-aware penile anatomy contract", sent_user_message)
+        self.assertIn("ventral underside facing the camera", result)
+        self.assertIn("ventral midline directly beneath the glans", result)
+        self.assertIn("dorsal surface facing away from the camera", result)
 
     def test_comic_contract_preserves_geometry_continuity_and_avoids_panel_duplication(self):
         source = (
@@ -7541,6 +7886,25 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertNotIn("every nonzero ingredient", cleaned)
         self.assertNotIn("additional person", cleaned)
         self.assertNotIn("numeric weights", cleaned)
+        self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
+
+    def test_private_penile_orientation_guidance_is_removed_from_visible_output(self):
+        visible = (
+            "The penis is oriented with its ventral underside facing the camera, "
+            "with the frenulum visible beneath the glans."
+        )
+        leaked = (
+            visible
+            + " "
+            + corrector.penis_ventral_orientation_instruction(
+                "The penis underside and frenulum are visible."
+            )
+        )
+
+        cleaned = corrector.strip_private_prompt_guidance(leaked)
+
+        self.assertEqual(cleaned, visible)
+        self.assertNotIn("Private viewpoint-aware", cleaned)
         self.assertFalse(corrector.internal_prompt_guidance_issues(cleaned))
 
     def test_adult_fidelity_audit_summary_is_removed_from_visible_output(self):

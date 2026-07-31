@@ -631,6 +631,9 @@ class PromptWorkbench(QWidget):
             checks = (
                 ("participant_count", "Participant count"),
                 ("action_roles", "Action roles"),
+                ("body_ownership", "Body ownership"),
+                ("anatomical_attachment", "Anatomical attachment"),
+                ("anatomical_orientation", "Anatomical orientation"),
                 ("contact_targets", "Contact targets"),
                 ("object_separation", "Object separation"),
                 ("visible_phase", "Visible phase"),

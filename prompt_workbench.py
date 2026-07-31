@@ -29,7 +29,11 @@ from krea_prompt_corrector import (
     final_compliance_issues,
     validate_explicit_adult_mode,
 )
-from nsfw_scene_contract import nsfw_image_audit_contract
+from nsfw_scene_contract import (
+    PENIS_VENTRAL_ORIENTATION_PROMPT,
+    nsfw_image_audit_contract,
+    requests_visible_penis_ventral_orientation,
+)
 
 
 PROJECT_SCHEMA_VERSION = 1
@@ -408,7 +412,8 @@ def build_result_review_messages(
         "generator prompt, and intentional reference roles. Do not reward beauty when a requirement is wrong. "
         "Return JSON only with keys score (0-100), summary, passed (array), failed (array), warnings (array), "
         "and repair_prompt. When explicit adult mode is enabled, also return nsfw_fidelity as an object "
-        "with participant_count, action_roles, contact_targets, object_separation, visible_phase, reactions, "
+        "with participant_count, action_roles, body_ownership, anatomical_attachment, anatomical_orientation, contact_targets, "
+        "object_separation, visible_phase, reactions, "
         "and discrepancies; each check value must be pass, fail, or not_applicable, and discrepancies must "
         "be an array. The repair_prompt must preserve successful content and change only failed items. "
         "Check counts, identity, pose and viewpoint, spatial side, props, exact text, exclusions, composition, "
@@ -475,6 +480,9 @@ def parse_review_response(text: str) -> dict[str, object]:
         for key in (
             "participant_count",
             "action_roles",
+            "body_ownership",
+            "anatomical_attachment",
+            "anatomical_orientation",
             "contact_targets",
             "object_separation",
             "visible_phase",
@@ -566,6 +574,22 @@ def targeted_repair_prompt(review: dict[str, object], current_prompt: str) -> st
     )
     nsfw_fidelity = review.get("nsfw_fidelity", {})
     if isinstance(nsfw_fidelity, dict):
+        fidelity_labels = {
+            "participant_count": "participant count",
+            "action_roles": "action roles",
+            "body_ownership": "body ownership",
+            "anatomical_attachment": "anatomical attachment",
+            "anatomical_orientation": "anatomical orientation",
+            "contact_targets": "contact targets",
+            "object_separation": "object separation",
+            "visible_phase": "visible phase",
+            "reactions": "participant reactions",
+        }
+        failures.extend(
+            "NSFW fidelity: failed " + fidelity_labels.get(key, key.replace("_", " "))
+            for key, value in nsfw_fidelity.items()
+            if key in fidelity_labels and str(value).strip().lower() == "fail"
+        )
         discrepancies = nsfw_fidelity.get("discrepancies", [])
         if isinstance(discrepancies, list):
             failures.extend(
@@ -856,6 +880,13 @@ def build_image_edit_prompt(
         parts.append(f"Verified image observations: {image_analysis}")
     if target_prompt:
         parts.append(f"Target result: {target_prompt}")
+    orientation_source = "\n".join(
+        value
+        for value in (instruction, target_prompt, image_analysis)
+        if value.strip()
+    )
+    if requests_visible_penis_ventral_orientation(orientation_source):
+        parts.append(PENIS_VENTRAL_ORIENTATION_PROMPT)
     return " ".join(parts)
 
 

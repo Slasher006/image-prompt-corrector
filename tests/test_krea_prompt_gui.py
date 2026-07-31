@@ -125,6 +125,34 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             showwarning.call_args.args[1],
         )
 
+    @mock.patch("krea_prompt_gui.messagebox.showwarning")
+    def test_invented_environmental_motion_passes_ambiguity_preflight(
+        self,
+        showwarning,
+    ):
+        self.controller.content_format_var.set("Single Image")
+        self.controller.camera_control_var.set("Wide full-scene shot, 28mm lens")
+        prompt = (
+            "2 people. A woman stands behind a seated man, her fingers gripping "
+            "his shaft with deliberate force. The room is a vintage study: "
+            "leather-bound books, dust motes dancing in shafts of amber light, "
+            "and a cracked mirror reflecting their forms."
+        )
+
+        allowed = self.controller._prompt_ambiguity_preflight(
+            requested_prompt=prompt,
+            effective_prompt=self.controller._apply_camera_direction(
+                prompt,
+                "prompt",
+            ),
+            story_elements="",
+            destination="prompt",
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(self.controller.ambiguity_highlight_spans, [])
+        showwarning.assert_not_called()
+
     def test_ollama_provider_switches_default_port_and_persists(self):
         self.controller.model_provider_var.set("Ollama")
         self.assertEqual(self.controller.lm_port_var.get(), "11434")
@@ -418,6 +446,35 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         self.assertIn("Image 3: outfit", joined_text)
         self.assertIn("The jacket is yellow wool", joined_text)
+
+    def test_flux_image_edit_llm_messages_apply_ventral_frenulum_orientation(self):
+        messages = gui.build_flux_image_edit_llm_messages(
+            action="correct",
+            state={
+                "instruction": (
+                    "Correct the penis underside so the frenulum faces the camera."
+                ),
+                "prepared_prompt": "Draft edit prompt",
+                "references": [
+                    {"path": "/tmp/base.png", "role": "base composition"},
+                    {"path": "/tmp/anatomy.png", "role": "anatomical orientation"},
+                ],
+            },
+            image_data_urls=[
+                "data:image/png;base64,base",
+                "data:image/png;base64,anatomy",
+            ],
+        )
+
+        system = messages[0]["content"]
+        joined_text = "\n".join(
+            item["text"]
+            for item in messages[1]["content"]
+            if item["type"] == "text"
+        )
+        self.assertIn("dorsal/ventral relationship", system)
+        self.assertIn("ventral midline directly beneath", joined_text)
+        self.assertIn("never as image-left versus image-right", joined_text)
 
     def test_flux_image_edit_llm_start_uses_shared_cancellable_worker(self):
         state = {
