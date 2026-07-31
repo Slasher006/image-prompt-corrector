@@ -333,7 +333,9 @@ The draft and latest result are autosaved while you work and restored after the 
 
 The final corrected output contains only the image prompt. Krea generation controls are deliberately kept outside it. Krea Turbo is useful for fast iteration; Krea Medium or Large is the better final pass when prompt and style fidelity matter most.
 
-For **FLUX.2 Klein 9B**, the corrector follows Black Forest Labs' documented priority order: main subject, key action, critical style, essential context, then secondary details. Klein does not include prompt upsampling, so the corrected prompt explicitly contains the necessary visual information rather than relying on automatic expansion. The separate setup recommendation uses the official distilled-model defaults of four inference steps and guidance `1.0`. The 9B weights are distributed under the FLUX Non-Commercial License. See the [official FLUX.2 overview](https://docs.bfl.ai/flux_2/flux2_overview) and [FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
+For **FLUX.2 Klein 9B**, the corrector follows Black Forest Labs' documented priority order: main subject, key action, critical style, essential context, then secondary details. Klein does not include prompt upsampling, so the corrected prompt explicitly contains the necessary visual information rather than relying on automatic expansion. Multi-person Single Image prompts internally organize separate subject identities, positions, actions, body ownership, interaction, and camera details, but the visible result always remains one normal natural-language image prompt. If a local model returns JSON anyway, the final gate flattens it to prose before display. Contact poses retain relative staging instead of receiving invented image-left/image-right positions.
+
+The FLUX controls distinguish **Distilled (4-step)** at four inference steps and guidance `1.0` from **Base (50-step)** at 50 steps and guidance `4.0`. They also distinguish the official Qwen3 8B encoder from an abliterated Qwen3 8B compatibility profile. Abliteration is treated as changed language interpretation, not an anatomy repair; use the fixed-seed matrix below to compare it with the official encoder. The 9B weights are distributed under the FLUX Non-Commercial License. See the [official FLUX.2 overview](https://docs.bfl.ai/flux_2/flux2_overview) and [FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
 
 Models whose names advertise 4B parameters or fewer automatically use a streamlined correction path. Their main instruction is reduced to a compact contract, and **Audit and repair** uses a short concrete audit instead of the large-model free-form audit. The path stays capped at two calls unless a hard contract still requires one targeted final repair. Missing counts, changed positions, violated exclusions, lost quoted text, panel errors, or other hard contracts still trigger repair or a conservative deterministic fallback.
 
@@ -472,7 +474,7 @@ The three sliders use Krea-style values from `-100` to `100`. `0` is neutral. Ex
 
 This behavior follows Krea's own guidance: [Krea 2 API controls](https://www.krea.ai/blog/krea-2-api-launch) documents raw creativity as no prompt expansion, while [Krea 2 Turbo](https://www.krea.ai/blog/krea-2-turbo) positions Turbo for rapid ideation and Medium/Large for higher-quality final generation.
 
-When FLUX.2 Klein 9B is selected, the Krea sliders are disabled because they do not apply. The result instead shows the fixed FLUX setup recommendation separately.
+When FLUX.2 Klein 9B is selected, the Krea sliders are disabled because they do not apply. Select the matching FLUX variant and text encoder beside the Generator control; the result shows their setup recommendation separately.
 
 **Model instructions**
 
@@ -611,6 +613,21 @@ python3 krea_prompt_corrector.py \
   --prompt "a knight at a castle gate, torchlight, historically accurate armor"
 ```
 
+Create a repeatable four-case benchmark manifest using one corrected prompt and
+one seed across distilled/base and official/abliterated encoder profiles:
+
+```bash
+python3 tools/benchmark_flux_profiles.py \
+  --prompt-file corrected_flux_prompt.txt \
+  --seed 42 \
+  --output flux_benchmark_manifest.json
+```
+
+Run each manifest case through its matching ComfyUI workflow without changing
+resolution, sampler, scheduler, prompt, or seed. Record subject count, subject
+separation, limb count, gender/body ownership, and camera-contract results in
+the included review fields.
+
 Comic Story with FLUX.2 Klein:
 
 ```bash
@@ -666,6 +683,8 @@ printf "a cinematic knight at a castle gate" | python3 krea_prompt_corrector.py
 - `--base-url`
 - `--model`
 - `--target` (`Krea 2` or `FLUX.2 Klein 9B`)
+- `--flux-variant` (`Distilled (4-step)` or `Base (50-step)`)
+- `--flux-text-encoder` (`Official Qwen3 8B` or `Abliterated Qwen3 8B`)
 - `--format` (`Single Image` or `Comic Story`)
 - `--prompt`
 - `--file`

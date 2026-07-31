@@ -169,6 +169,36 @@ class PromptWorkbenchTests(unittest.TestCase):
         self.assertIn("Krea 2", profiles)
         self.assertTrue(profiles["My model"]["negative_prompt"])
 
+    def test_flux_fixed_seed_benchmark_crosses_variant_and_encoder(self):
+        manifest = workbench.build_flux_fixed_seed_benchmark(
+            '{"scene":"two people","subjects":[]}',
+            seed=31415,
+        )
+
+        self.assertEqual(len(manifest["cases"]), 4)
+        self.assertEqual(
+            {case["seed"] for case in manifest["cases"]},
+            {31415},
+        )
+        self.assertEqual(
+            {
+                (
+                    case["setup"]["variant"],
+                    case["setup"]["text_encoder"],
+                )
+                for case in manifest["cases"]
+            },
+            {
+                ("Distilled (4-step)", "Official Qwen3 8B"),
+                ("Distilled (4-step)", "Abliterated Qwen3 8B"),
+                ("Base (50-step)", "Official Qwen3 8B"),
+                ("Base (50-step)", "Abliterated Qwen3 8B"),
+            },
+        )
+        self.assertTrue(
+            all(case["prompt"] == manifest["cases"][0]["prompt"] for case in manifest["cases"])
+        )
+
     @mock.patch("prompt_workbench.urllib.request.urlopen")
     def test_comfyui_handoff_injects_prompt_into_selected_node(self, urlopen):
         response = mock.MagicMock()

@@ -55,7 +55,52 @@ GENERATOR_PROFILE_DEFAULTS = {
     "FLUX.2 Klein 9B": {
         "prompt_style": "priority ordered explicit description",
         "negative_prompt": False,
-        "setup": {"steps": 4, "guidance": 1.0},
+        "setup": {
+            "variant": "Distilled (4-step)",
+            "steps": 4,
+            "guidance": 1.0,
+            "text_encoder": "Official Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Distilled - Official Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Distilled (4-step)",
+            "steps": 4,
+            "guidance": 1.0,
+            "text_encoder": "Official Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Distilled - Abliterated Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Distilled (4-step)",
+            "steps": 4,
+            "guidance": 1.0,
+            "text_encoder": "Abliterated Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Base - Official Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Base (50-step)",
+            "steps": 50,
+            "guidance": 4.0,
+            "text_encoder": "Official Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Base - Abliterated Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Base (50-step)",
+            "steps": 50,
+            "guidance": 4.0,
+            "text_encoder": "Abliterated Qwen3 8B",
+        },
     },
     "ComfyUI custom": {
         "prompt_style": "workflow supplied",
@@ -63,6 +108,56 @@ GENERATOR_PROFILE_DEFAULTS = {
         "setup": {},
     },
 }
+FLUX_BENCHMARK_PROFILE_NAMES = tuple(
+    name
+    for name in GENERATOR_PROFILE_DEFAULTS
+    if name.startswith("FLUX.2 Klein 9B ")
+    and name != "FLUX.2 Klein 9B"
+)
+
+
+def build_flux_fixed_seed_benchmark(
+    prompt: str,
+    *,
+    seed: int = 42,
+) -> dict[str, object]:
+    """Build the four-case Klein variant/encoder comparison manifest."""
+
+    clean_prompt = str(prompt or "").strip()
+    if not clean_prompt:
+        raise ValueError("A non-empty corrected prompt is required.")
+    if not 0 <= int(seed) <= 2_147_483_647:
+        raise ValueError("Seed must be between 0 and 2147483647.")
+    cases = []
+    for profile_name in FLUX_BENCHMARK_PROFILE_NAMES:
+        profile = GENERATOR_PROFILE_DEFAULTS[profile_name]
+        setup = dict(profile["setup"])
+        cases.append(
+            {
+                "profile": profile_name,
+                "prompt": clean_prompt,
+                "seed": int(seed),
+                "setup": setup,
+                "review": {
+                    "subject_count_correct": None,
+                    "subjects_separate": None,
+                    "limb_count_correct": None,
+                    "gender_and_body_ownership_correct": None,
+                    "camera_contract_correct": None,
+                    "notes": "",
+                },
+            }
+        )
+    return {
+        "schema_version": 1,
+        "benchmark": "FLUX.2 Klein fixed-seed variant and encoder matrix",
+        "controls": {
+            "same_prompt": True,
+            "same_seed": True,
+            "change_only": ["model variant", "text encoder"],
+        },
+        "cases": cases,
+    }
 
 
 def utc_now() -> str:

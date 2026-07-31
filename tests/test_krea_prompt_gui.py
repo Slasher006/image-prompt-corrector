@@ -78,6 +78,53 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertIsNotNone(self.controller.library_dock)
         self.assertFalse(self.controller.library_dock.isVisible())
 
+    def test_flux_profiles_are_explicit_persisted_and_drive_encoder_mode(self):
+        self.controller.generator_target_var.set("FLUX.2 Klein 9B")
+        self.controller.flux_model_variant_var.set("Base (50-step)")
+        self.controller.flux_text_encoder_profile_var.set(
+            "Abliterated Qwen3 8B"
+        )
+        self.application.processEvents()
+
+        self.assertTrue(
+            all(widget.isVisible() for widget in self.controller.flux_profile_widgets)
+        )
+        self.assertTrue(self.controller.altered_encoder_var.get())
+        snapshot = self.controller._prompt_option_snapshot()
+        self.assertEqual(snapshot["flux_model_variant"], "Base (50-step)")
+        self.assertEqual(
+            snapshot["flux_text_encoder_profile"],
+            "Abliterated Qwen3 8B",
+        )
+        recommendation = self.controller._krea_recommendation_text()
+        self.assertIn("50 inference steps", recommendation)
+        self.assertIn("not an anatomy fix", recommendation)
+
+    @mock.patch("krea_prompt_gui.messagebox.showwarning")
+    def test_camera_control_conflict_stops_before_model_request(self, showwarning):
+        self.controller.content_format_var.set("Single Image")
+        self.controller.camera_control_var.set(
+            "Point-of-view shot, natural 35mm perspective"
+        )
+        prompt = "Over-the-shoulder view from behind her shoulder. An adult woman waits."
+
+        allowed = self.controller._prompt_ambiguity_preflight(
+            requested_prompt=prompt,
+            effective_prompt=self.controller._apply_camera_direction(
+                prompt,
+                "prompt",
+            ),
+            story_elements="",
+            destination="prompt",
+        )
+
+        self.assertFalse(allowed)
+        self.assertTrue(self.controller.ambiguity_highlight_spans)
+        self.assertIn(
+            "camera:",
+            showwarning.call_args.args[1],
+        )
+
     def test_ollama_provider_switches_default_port_and_persists(self):
         self.controller.model_provider_var.set("Ollama")
         self.assertEqual(self.controller.lm_port_var.get(), "11434")
@@ -1979,7 +2026,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             self.controller.setup_tabs.tabText(
                 self.controller.generator_controls_tab_index
             ),
-            "FLUX setup (fixed)",
+            "FLUX profile",
         )
         recommendation = self.controller._krea_recommendation_text()
         self.assertIn("4 inference steps", recommendation)

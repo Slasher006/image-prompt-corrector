@@ -62,6 +62,8 @@ from krea_prompt_corrector import (
     DEFAULT_MODEL,
     CREATIVE_SESSION_TTL_SECONDS,
     GENERATOR_TARGETS,
+    FLUX_MODEL_VARIANTS,
+    FLUX_TEXT_ENCODER_PROFILES,
     MODEL_PROVIDERS,
     CONTENT_FORMATS,
     CREATIVITY_LEVELS,
@@ -93,12 +95,15 @@ from krea_prompt_corrector import (
     build_single_image_field_suggestion_messages,
     chat_completion,
     canonical_validation_text,
+    camera_viewpoint_conflict_issues,
+    camera_viewpoint_mentions,
     estimate_audit_max_tokens,
     estimate_max_tokens,
     enforce_comic_speech_bubble_contract,
     extract_panel_descriptions,
     fetch_image_data_url,
     format_generator_recommendation,
+    flux_encoder_is_abliterated,
     list_local_models,
     is_small_model,
     krea_guideline_status,
@@ -1506,6 +1511,10 @@ class PromptCorrectorApp:
             )
         )
         self.generator_target_var = Value("Krea 2")
+        self.flux_model_variant_var = Value(FLUX_MODEL_VARIANTS[0])
+        self.flux_text_encoder_profile_var = Value(
+            FLUX_TEXT_ENCODER_PROFILES[0]
+        )
         self.content_format_var = Value("Single Image")
         self.camera_control_var = Value(CAMERA_CONTROL_AUTO)
         self.comic_panel_count_var = Value(4)
@@ -1622,7 +1631,7 @@ class PromptCorrectorApp:
                 else None
             )
         )
-        self.altered_encoder_var = Value(True)
+        self.altered_encoder_var = Value(False)
         self.thinking_mode_var = Value(False)
         self.live_research_var = Value(False)
         self.search_engine_var = Value("Auto (all engines)")
@@ -1769,7 +1778,14 @@ class PromptCorrectorApp:
         self.dispatcher.invoke.connect(lambda callback, args: callback(*args))
 
         self._load_settings()
+        self.altered_encoder_var.set(
+            flux_encoder_is_abliterated(
+                self.flux_text_encoder_profile_var.get()
+            )
+        )
         self.generator_target_var.subscribe(self._apply_generator_target)
+        self.flux_model_variant_var.subscribe(self._apply_flux_profile)
+        self.flux_text_encoder_profile_var.subscribe(self._apply_flux_profile)
         self.content_format_var.subscribe(self._apply_content_format)
         self.workflow_profile_var.subscribe(self._apply_workflow_profile)
         self.meme_preset_var.subscribe(self._apply_meme_preset)
@@ -1796,6 +1812,8 @@ class PromptCorrectorApp:
         }
         settings = {
             "generator_target": self.generator_target_var.get(),
+            "flux_model_variant": self.flux_model_variant_var.get(),
+            "flux_text_encoder_profile": self.flux_text_encoder_profile_var.get(),
             "content_format": self.content_format_var.get(),
             "camera_control": self.camera_control_var.get(),
             "comic_panel_count": self.comic_panel_count_var.get(),
@@ -1933,6 +1951,8 @@ class PromptCorrectorApp:
     def _prompt_option_snapshot(self) -> dict[str, object]:
         return {
             "generator_target": self.generator_target_var.get(),
+            "flux_model_variant": self.flux_model_variant_var.get(),
+            "flux_text_encoder_profile": self.flux_text_encoder_profile_var.get(),
             "content_format": self.content_format_var.get(),
             "workflow_profile": self.workflow_profile_var.get(),
             "camera_control": self.camera_control_var.get(),
@@ -1999,6 +2019,29 @@ class PromptCorrectorApp:
                 settings.get("generator_target"),
                 GENERATOR_TARGETS,
                 self.generator_target_var.get(),
+            )
+        )
+        self.flux_model_variant_var.set(
+            self._choice_setting(
+                settings.get("flux_model_variant"),
+                FLUX_MODEL_VARIANTS,
+                self.flux_model_variant_var.get(),
+            )
+        )
+        legacy_altered_encoder = self._bool_setting(
+            settings.get("altered_text_encoder"),
+            self.altered_encoder_var.get(),
+        )
+        legacy_encoder_profile = (
+            "Abliterated Qwen3 8B"
+            if legacy_altered_encoder
+            else "Official Qwen3 8B"
+        )
+        self.flux_text_encoder_profile_var.set(
+            self._choice_setting(
+                settings.get("flux_text_encoder_profile"),
+                FLUX_TEXT_ENCODER_PROFILES,
+                legacy_encoder_profile,
             )
         )
         self.content_format_var.set(
@@ -2315,7 +2358,11 @@ class PromptCorrectorApp:
         self.explicit_nsfw_var.set(
             self._bool_setting(settings.get("explicit_nsfw"), self.explicit_nsfw_var.get())
         )
-        self.altered_encoder_var.set(bool(settings.get("altered_text_encoder", self.altered_encoder_var.get())))
+        self.altered_encoder_var.set(
+            flux_encoder_is_abliterated(
+                self.flux_text_encoder_profile_var.get()
+            )
+        )
         self.thinking_mode_var.set(bool(settings.get("thinking_mode", self.thinking_mode_var.get())))
         self.live_research_var.set(bool(settings.get("live_research", self.live_research_var.get())))
         self.search_engine_var.set(
@@ -3084,6 +3131,33 @@ class PromptCorrectorApp:
                 self.generator_target_var.get(),
             )
         )
+        self.flux_model_variant_var.set(
+            self._choice_setting(
+                entry.get("flux_model_variant"),
+                FLUX_MODEL_VARIANTS,
+                self.flux_model_variant_var.get(),
+            )
+        )
+        legacy_altered_encoder = self._bool_setting(
+            entry.get("altered_text_encoder"),
+            self.altered_encoder_var.get(),
+        )
+        self.flux_text_encoder_profile_var.set(
+            self._choice_setting(
+                entry.get("flux_text_encoder_profile"),
+                FLUX_TEXT_ENCODER_PROFILES,
+                (
+                    "Abliterated Qwen3 8B"
+                    if legacy_altered_encoder
+                    else "Official Qwen3 8B"
+                ),
+            )
+        )
+        self.altered_encoder_var.set(
+            flux_encoder_is_abliterated(
+                self.flux_text_encoder_profile_var.get()
+            )
+        )
         self.content_format_var.set(
             self._choice_setting(
                 entry.get("content_format"),
@@ -3170,7 +3244,6 @@ class PromptCorrectorApp:
         self.explicit_nsfw_var.set(
             self._bool_setting(entry.get("explicit_nsfw"), self.explicit_nsfw_var.get())
         )
-        self.altered_encoder_var.set(self._bool_setting(entry.get("altered_text_encoder"), self.altered_encoder_var.get()))
         self.thinking_mode_var.set(self._bool_setting(entry.get("thinking_mode"), self.thinking_mode_var.get()))
         self.live_research_var.set(self._bool_setting(entry.get("live_research"), self.live_research_var.get()))
         self.search_engine_var.set(
@@ -5216,7 +5289,6 @@ class PromptCorrectorApp:
             ("Fix logic conflicts", self.fix_logic_var),
             ("Enhance actions", self.enhance_actions_var),
             ("Invent and extend story", self.develop_story_var),
-            ("Altered encoder safe", self.altered_encoder_var),
         ):
             self._menu_check(processing, label, variable)
 
@@ -5325,6 +5397,48 @@ class PromptCorrectorApp:
         )
         target_combo.setMaximumWidth(280)
         quick.addWidget(target_combo)
+        flux_variant_label = QLabel("FLUX variant")
+        self._set_help(
+            flux_variant_label,
+            "Selects the matching Klein inference profile; this setting stays outside the prompt.",
+            "Distilled uses 4 steps and guidance 1.0; Base uses 50 steps and guidance 4.0.",
+        )
+        flux_variant_combo = self._bind_combo(
+            self.flux_model_variant_var,
+            FLUX_MODEL_VARIANTS,
+        )
+        flux_variant_combo.setMaximumWidth(170)
+        self._set_help(
+            flux_variant_combo,
+            "Keeps distilled and base setup guidance separate.",
+            "Choose the variant that matches the loaded Klein checkpoint.",
+        )
+        flux_encoder_label = QLabel("Text encoder")
+        self._set_help(
+            flux_encoder_label,
+            "Selects the expected Qwen3 text-encoder behavior for prompt validation.",
+            "Use Official for the stock encoder; benchmark Abliterated at the same seed before relying on it.",
+        )
+        flux_encoder_combo = self._bind_combo(
+            self.flux_text_encoder_profile_var,
+            FLUX_TEXT_ENCODER_PROFILES,
+        )
+        flux_encoder_combo.setMaximumWidth(210)
+        self._set_help(
+            flux_encoder_combo,
+            "Abliterated mode uses more explicit modifier binding, but is not an anatomy repair.",
+            "Compare Official and Abliterated with identical prompt, seed, model variant, and sampling settings.",
+        )
+        flux_profile_bar = QWidget()
+        flux_profile_layout = QHBoxLayout(flux_profile_bar)
+        flux_profile_layout.setContentsMargins(0, 0, 0, 0)
+        flux_profile_layout.addWidget(flux_variant_label)
+        flux_profile_layout.addWidget(flux_variant_combo)
+        flux_profile_layout.addSpacing(16)
+        flux_profile_layout.addWidget(flux_encoder_label)
+        flux_profile_layout.addWidget(flux_encoder_combo)
+        flux_profile_layout.addStretch()
+        self.flux_profile_widgets = (flux_profile_bar,)
         workflow_label = QLabel("Workflow")
         self._set_help(
             workflow_label,
@@ -5398,6 +5512,7 @@ class PromptCorrectorApp:
         quick.addStretch()
         quick.addWidget(self.advanced_view_button)
         outer.addLayout(quick)
+        outer.addWidget(flux_profile_bar)
         self.profile_summary_label.setStyleSheet("color: #8993a5;")
         outer.addWidget(self.profile_summary_label)
 
@@ -5780,7 +5895,6 @@ class PromptCorrectorApp:
             ("Clean generator constraints", self.clean_constraints_var),
             ("Safe for work", self.safe_for_work_var),
             ("Explicit adult (NSFW)", self.explicit_nsfw_var),
-            ("Altered encoder safe", self.altered_encoder_var),
         )
         for index, (label, variable) in enumerate(rewrite_vars):
             rewrite_grid.addWidget(self._bind_check(label, variable), index // 2, index % 2)
@@ -9237,9 +9351,30 @@ class PromptCorrectorApp:
             if str(value or "").strip()
         )
         issues = multi_person_role_issues(canonical_validation_text(source))
-        self.ambiguity_highlight_spans = multi_person_ambiguity_spans(
+        role_spans = multi_person_ambiguity_spans(
             requested_prompt,
             issues,
+        )
+        camera_issues: list[str] = []
+        camera_spans: list[tuple[int, int]] = []
+        if str(self.content_format_var.get()) == "Single Image":
+            camera_issues = camera_viewpoint_conflict_issues(
+                requested_prompt,
+                self._camera_direction(),
+            )
+            if camera_issues:
+                camera_spans = [
+                    span
+                    for _label, span in camera_viewpoint_mentions(
+                        requested_prompt
+                    )
+                ]
+        issues.extend(
+            "camera: " + issue
+            for issue in camera_issues
+        )
+        self.ambiguity_highlight_spans = sorted(
+            set(role_spans + camera_spans)
         )
         self._highlight_weighted_terms()
         if not issues:
@@ -9260,11 +9395,11 @@ class PromptCorrectorApp:
         self.show_library_tab("Activity")
         messagebox.showwarning(
             "Clarify highlighted ambiguity",
-            "Prompt Corrector found ambiguous person references or actions before "
+            "Prompt Corrector found ambiguous person bindings or a conflicting camera viewpoint before "
             "contacting the model.\n\n"
             + detail
-            + "\n\nThe disputed words are marked in red in Your prompt. Name the "
-            "person performing each action or receiving each reference, then retry.",
+            + "\n\nThe disputed words are marked in red in Your prompt. Clarify who "
+            "performs each action, or make the prompt camera match the Camera control, then retry.",
         )
         return False
 
@@ -11576,7 +11711,11 @@ class PromptCorrectorApp:
             else "one still only"
         )
         setup = (
-            "FLUX prompt is explicit because Klein has no prompt upsampling."
+            "FLUX "
+            + str(self.flux_model_variant_var.get())
+            + " with "
+            + str(self.flux_text_encoder_profile_var.get())
+            + "; no prompt upsampling."
             if target == "FLUX.2 Klein 9B"
             else "Krea creativity raw."
         )
@@ -11654,6 +11793,8 @@ class PromptCorrectorApp:
     def _apply_generator_target(self, target: object) -> None:
         target = str(target)
         is_krea = target == "Krea 2"
+        for widget in getattr(self, "flux_profile_widgets", ()):
+            widget.setVisible(not is_krea)
         if self.generator_controls_page is not None:
             self.generator_controls_page.setEnabled(is_krea)
         if (
@@ -11662,22 +11803,35 @@ class PromptCorrectorApp:
         ):
             self.setup_tabs.setTabText(
                 self.generator_controls_tab_index,
-                "Krea controls" if is_krea else "FLUX setup (fixed)",
+                "Krea controls" if is_krea else "FLUX profile",
             )
             self.setup_tabs.setTabToolTip(
                 self.generator_controls_tab_index,
                 (
                     "Krea creativity and motion controls. Example: creativity raw for exact adherence."
                     if is_krea
-                    else "FLUX.2 Klein distilled setup is fixed guidance shown with the result. Example: 4 steps, guidance 1.0."
+                    else "FLUX.2 Klein setup guidance follows the selected distilled or base profile."
                 ),
             )
+        self._update_profile_summary()
+        self._update_krea_recommendation()
+
+    def _apply_flux_profile(self, _value: object) -> None:
+        self.altered_encoder_var.set(
+            flux_encoder_is_abliterated(
+                self.flux_text_encoder_profile_var.get()
+            )
+        )
         self._update_profile_summary()
         self._update_krea_recommendation()
 
     def _krea_recommendation_text(self) -> str:
         return format_generator_recommendation(
             str(self.generator_target_var.get()),
+            flux_model_variant=str(self.flux_model_variant_var.get()),
+            flux_text_encoder_profile=str(
+                self.flux_text_encoder_profile_var.get()
+            ),
             creativity=str(self.creativity_var.get()),
             intensity=slider_value(self.intensity_var.get()),
             complexity=slider_value(self.complexity_var.get()),

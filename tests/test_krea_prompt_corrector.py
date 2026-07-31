@@ -1534,6 +1534,28 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("FLUX.2 Klein 9B-ready prompt", user)
         self.assertNotIn("Krea creativity", exact)
 
+    def test_flux2_multi_person_structure_stays_internal_and_returns_prose(self):
+        system = corrector.build_system_prompt(
+            generator_target="FLUX.2 Klein 9B",
+            content_format="Single Image",
+            risk_level="Strict cleanup",
+            preserve_strictly=True,
+            enhance_actions=False,
+            develop_story=False,
+        )
+        user = corrector.build_user_message(
+            "An adult woman embraces an adult man in a studio.",
+            generator_target="FLUX.2 Klein 9B",
+            content_format="Single Image",
+            risk_level="Strict cleanup",
+            develop_story=False,
+        )
+
+        self.assertIn("internally organize the scene", system)
+        self.assertIn("one cohesive natural-language image prompt", system)
+        self.assertIn("Never expose JSON", system)
+        self.assertIn("FLUX.2 multi-person output contract", user)
+
     def test_flux2_klein_setup_is_external_and_fixed(self):
         recommendation = corrector.format_generator_recommendation(
             "FLUX.2 Klein 9B"
@@ -1542,6 +1564,15 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("guidance 1.0", recommendation)
         self.assertIn("Prompt upsampling is unavailable", recommendation)
         self.assertIn("Non-Commercial License", recommendation)
+
+        base_abliterated = corrector.format_generator_recommendation(
+            "FLUX.2 Klein 9B",
+            flux_model_variant="Base (50-step)",
+            flux_text_encoder_profile="Abliterated Qwen3 8B",
+        )
+        self.assertIn("50 inference steps", base_abliterated)
+        self.assertIn("guidance 4.0", base_abliterated)
+        self.assertIn("not an anatomy fix", base_abliterated)
 
         prompt = corrector.enforce_generator_settings_contract(
             "A red car on wet asphalt. FLUX.2 setup: steps=4, guidance=1.0"
@@ -1634,6 +1665,8 @@ class PromptCorrectorTests(unittest.TestCase):
         ):
             flux_args = corrector.parse_args()
         self.assertEqual(flux_args.target, "FLUX.2 Klein 9B")
+        self.assertEqual(flux_args.flux_variant, "Distilled (4-step)")
+        self.assertEqual(flux_args.flux_text_encoder, "Official Qwen3 8B")
 
     def test_single_image_and_comic_story_prompts_work_for_both_generators(self):
         for target in corrector.GENERATOR_TARGETS:
@@ -2480,6 +2513,158 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("their forms", resolved)
         self.assertEqual(corrector.multi_person_role_issues(resolved), [])
 
+    def test_contact_pose_does_not_invent_lateral_subject_positions(self):
+        prompt = (
+            "An adult woman embraces an adult man from behind while her hands "
+            "rest on his shoulders."
+        )
+
+        self.assertEqual(
+            corrector.bind_unpositioned_distinct_people(prompt),
+            prompt,
+        )
+
+    def test_person_binding_never_breaks_possessive_ownership(self):
+        prompt = (
+            "An adult woman's hand touches an adult man's shoulder. "
+            "The woman watches the man."
+        )
+
+        bound = corrector.bind_unpositioned_distinct_people(prompt)
+
+        self.assertNotIn("woman on image-left's", bound)
+        self.assertNotIn("man on image-right's", bound)
+        self.assertEqual(bound, prompt)
+
+    def test_body_ownership_contract_detects_gender_swap(self):
+        issues = corrector.body_part_ownership_contract_issues(
+            "An adult woman holds his wrist while an adult man raises her hand.",
+            "An adult woman holds her wrist while an adult man raises his hand.",
+        )
+
+        self.assertTrue(any("wrist ownership changed" in issue for issue in issues))
+        self.assertTrue(any("hand ownership changed" in issue for issue in issues))
+
+    def test_flux_structured_model_response_is_flattened_to_natural_prose(self):
+        structured = json.dumps(
+            {
+                "scene": "Over-the-shoulder studio photograph.",
+                "subjects": [
+                    {
+                        "id": "subject_1",
+                        "description": "an adult woman",
+                        "position": "in front of the man",
+                        "action": "grips the man's right hand with her left hand",
+                    },
+                    {
+                        "id": "subject_2",
+                        "description": "an adult man",
+                        "position": "behind the woman",
+                        "action": "holds her left wrist with his right hand",
+                    },
+                ],
+                "interaction": "Their hands remain distinct at one contact point.",
+                "camera": "Over-the-shoulder view from behind the woman.",
+            }
+        )
+
+        natural = corrector.flux_structured_to_natural_prompt(structured)
+
+        self.assertNotIn("{", natural)
+        self.assertNotIn('"subjects"', natural)
+        self.assertIn("an adult woman", natural)
+        self.assertIn("an adult man", natural)
+        self.assertIn("her left hand", natural)
+        self.assertIn("his right hand", natural)
+        hard, _soft = corrector.split_compliance_issues(
+            corrector.final_compliance_issues(
+                structured,
+                generator_target="FLUX.2 Klein 9B",
+                original_prompt="An adult woman and an adult man in a studio.",
+                content_format="Single Image",
+            )
+        )
+        self.assertTrue(any("Visible prompt format" in issue for issue in hard))
+
+    def test_flux_post_completion_never_displays_model_json(self):
+        source = (
+            "An adult woman embraces an adult man from behind in a studio while "
+            "her hands rest on his shoulders. Over-the-shoulder view."
+        )
+        model_json = json.dumps(
+            {
+                "scene": source,
+                "subjects": [
+                    {
+                        "id": "subject_1",
+                        "description": "adult woman",
+                        "position": "in front of the man",
+                        "action": "embraces the man",
+                    },
+                    {
+                        "id": "subject_2",
+                        "description": "adult man",
+                        "position": "behind the woman",
+                        "action": "receives her embrace",
+                    },
+                ],
+                "interaction": "Her hands rest on his shoulders.",
+                "camera": "Over-the-shoulder view.",
+            }
+        )
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            return_value=model_json,
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                generator_target="FLUX.2 Klein 9B",
+                content_format="Single Image",
+                temperature=0.1,
+                max_tokens=800,
+                timeout=30,
+                api_key="test",
+                output_length="Concise",
+                risk_level="Strict cleanup",
+                preserve_strictly=True,
+                develop_story=False,
+                audit_repair=False,
+                altered_text_encoder=False,
+            )
+
+        self.assertEqual(completion.call_count, 1)
+        self.assertNotIn("{", result)
+        self.assertNotIn('"subjects"', result)
+        self.assertIn("An adult woman", result)
+        self.assertIn("adult man", result)
+        self.assertIn("her hands rest on his shoulders", result.lower())
+        hard, _soft = corrector.split_compliance_issues(
+            corrector.final_compliance_issues(
+                result,
+                generator_target="FLUX.2 Klein 9B",
+                original_prompt=source,
+                content_format="Single Image",
+                output_length="Concise",
+                risk_level="Strict cleanup",
+                develop_story=False,
+                altered_text_encoder=False,
+            )
+        )
+        self.assertEqual(hard, [])
+
+    def test_camera_viewpoint_conflict_detects_control_vs_prompt(self):
+        issues = corrector.camera_viewpoint_conflict_issues(
+            "Frame the scene from behind her shoulder.",
+            "Point-of-view shot, natural 35mm perspective",
+        )
+
+        self.assertEqual(
+            issues,
+            ["over-the-shoulder conflicts with point-of-view"],
+        )
+
     def test_mixed_gender_position_binding_leaves_ambiguous_groups_unchanged(self):
         same_gender = "Two women stand together while one woman holds a lantern."
         already_bound = (
@@ -2651,7 +2836,7 @@ class PromptCorrectorTests(unittest.TestCase):
         bound = corrector.bind_unpositioned_distinct_people(prompt)
         resolved = corrector.resolve_unambiguous_multi_person_pronouns(bound)
 
-        self.assertIn("wife on image-left hugs her husband on image-right", resolved)
+        self.assertEqual(resolved, prompt)
         self.assertEqual(corrector.multi_person_role_issues(resolved), [])
 
     def test_nonbinary_identity_is_a_hard_source_fidelity_label(self):

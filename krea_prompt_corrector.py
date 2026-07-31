@@ -38,6 +38,11 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
 DEFAULT_MODEL = "qwen3-vl-4b-instruct"
 MODEL_PROVIDERS = ("LM Studio", "Ollama")
 GENERATOR_TARGETS = ("Krea 2", "FLUX.2 Klein 9B")
+FLUX_MODEL_VARIANTS = ("Distilled (4-step)", "Base (50-step)")
+FLUX_TEXT_ENCODER_PROFILES = (
+    "Official Qwen3 8B",
+    "Abliterated Qwen3 8B",
+)
 CONTENT_FORMATS = ("Single Image", "Comic Story", "Meme")
 CONTEXT_TOKEN_AUTO = 0
 CONTEXT_TOKEN_MIN = 512
@@ -286,6 +291,24 @@ TEXT_RESEARCH_ENGINES = (
 def normalize_generator_target(target: str | None) -> str:
     value = str(target or "Krea 2").strip()
     return value if value in GENERATOR_TARGETS else "Krea 2"
+
+
+def normalize_flux_model_variant(value: str | None) -> str:
+    selected = str(value or FLUX_MODEL_VARIANTS[0]).strip()
+    return selected if selected in FLUX_MODEL_VARIANTS else FLUX_MODEL_VARIANTS[0]
+
+
+def normalize_flux_text_encoder_profile(value: str | None) -> str:
+    selected = str(value or FLUX_TEXT_ENCODER_PROFILES[0]).strip()
+    return (
+        selected
+        if selected in FLUX_TEXT_ENCODER_PROFILES
+        else FLUX_TEXT_ENCODER_PROFILES[0]
+    )
+
+
+def flux_encoder_is_abliterated(value: str | None) -> bool:
+    return normalize_flux_text_encoder_profile(value).startswith("Abliterated")
 
 
 def normalize_content_format(content_format: str | None) -> str:
@@ -2502,6 +2525,59 @@ def polish_prompt_phrasing(text: str) -> str:
     return polished
 
 
+def parse_flux_structured_prompt(text: str) -> dict[str, object] | None:
+    """Return a FLUX structured prompt object without mistaking prose for JSON."""
+
+    candidate = re.sub(r"(?is)<think>.*?</think>", "", str(text or "")).strip()
+    candidate = re.sub(r"```(?:json)?", "", candidate, flags=re.IGNORECASE)
+    candidate = candidate.replace("```", "").strip()
+    marker = re.match(
+        r"(?is)^(?:final|corrected|repaired)\s+(?:FLUX\.2\s+Klein\s+)?prompt\s*:\s*",
+        candidate,
+    )
+    if marker:
+        candidate = candidate[marker.end() :].strip()
+    if not candidate.startswith("{") or not candidate.endswith("}"):
+        return None
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _structured_string_values(value: object) -> list[str]:
+    values: list[str] = []
+    if isinstance(value, str):
+        if value.strip():
+            values.append(value.strip())
+    elif isinstance(value, list):
+        for item in value:
+            values.extend(_structured_string_values(item))
+    elif isinstance(value, dict):
+        for item in value.values():
+            values.extend(_structured_string_values(item))
+    return values
+
+
+def flux_structured_semantic_text(text: str) -> str:
+    """Flatten structured FLUX values for the existing semantic validators."""
+
+    payload = parse_flux_structured_prompt(text)
+    if payload is None:
+        return str(text or "")
+    return ". ".join(_structured_string_values(payload))
+
+
+def normalize_flux_structured_prompt(text: str) -> str:
+    """Return stable one-line JSON when *text* is a structured FLUX prompt."""
+
+    payload = parse_flux_structured_prompt(text)
+    if payload is None:
+        return str(text or "").strip()
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 def canonical_validation_text(text: str) -> str:
     """Return the same visible meaning that final-output cleanup validates.
 
@@ -2510,7 +2586,7 @@ def canonical_validation_text(text: str) -> str:
     output pipeline. Exact quoted rendered text remains untouched.
     """
 
-    parts = re.split(r'("[^"]*")', str(text or ""))
+    parts = re.split(r'("[^"]*")', flux_structured_semantic_text(text))
     canonical: list[str] = []
     for index, part in enumerate(parts):
         if index % 2:
@@ -2790,6 +2866,15 @@ def normalize_dash_punctuation(text: str) -> str:
 
 
 def normalize_final_prompt_text(text: str) -> str:
+    extracted = extract_prompt_from_model_text(text)
+    structured = parse_flux_structured_prompt(extracted)
+    if structured is not None:
+        return json.dumps(
+            structured,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
     def sanitize_unquoted(segment: str) -> str:
         segment = re.sub(r"(?is)<think>.*?</think>", "", segment)
         segment = re.sub(r"(?im)^\s*</?think>\s*$", "", segment)
@@ -2838,7 +2923,7 @@ def normalize_final_prompt_text(text: str) -> str:
         "\u201d": '"',
         "\u00a0": " ",
     }
-    cleaned = normalize_dash_punctuation(extract_prompt_from_model_text(text))
+    cleaned = normalize_dash_punctuation(extracted)
     parts = re.split(r'("[^"]*")', cleaned)
     normalized_parts: list[str] = []
     for part in parts:
@@ -2949,9 +3034,10 @@ def bind_generic_prominence_sentences(
 
 
 def unquoted_text(text: str) -> str:
+    semantic_text = flux_structured_semantic_text(text)
     return " ".join(
         part
-        for index, part in enumerate(re.split(r'("[^"]*")', text))
+        for index, part in enumerate(re.split(r'("[^"]*")', semantic_text))
         if index % 2 == 0
     )
 
@@ -2974,11 +3060,79 @@ def text_without_negative_constraints(text: str) -> str:
 
 
 def quoted_phrases(text: str) -> list[str]:
+    searchable = flux_structured_semantic_text(text)
     return [
         match.group(1).strip()
-        for match in re.finditer(r'"([^"]+)"', text)
+        for match in re.finditer(r'"([^"]+)"', searchable)
         if match.group(1).strip()
     ]
+
+
+CAMERA_VIEWPOINT_PATTERNS: dict[str, re.Pattern[str]] = {
+    "point-of-view": re.compile(
+        r"(?i)\b(?:point[- ]of[- ]view|first[- ]person|POV)\b"
+    ),
+    "over-the-shoulder": re.compile(
+        r"(?i)\b(?:over[- ]the[- ]shoulder|from\s+behind\s+(?:her|his|their|the)\s+shoulder)\b"
+    ),
+    "front view": re.compile(
+        r"(?i)\b(?:front[- ]facing|front\s+view|viewed\s+from\s+the\s+front)\b"
+    ),
+    "rear view": re.compile(
+        r"(?i)\b(?:rear\s+view|back\s+view|viewed\s+from\s+behind)\b"
+    ),
+    "top-down": re.compile(
+        r"(?i)\b(?:top[- ]down|bird['’]?s[- ]eye|directly\s+overhead)\b"
+    ),
+    "low-angle": re.compile(
+        r"(?i)\b(?:worm['’]?s[- ]eye|low[- ]angle|ground[- ]level\s+looking\s+up)\b"
+    ),
+}
+CAMERA_VIEWPOINT_CONFLICTS = {
+    frozenset(("point-of-view", "over-the-shoulder")),
+    frozenset(("point-of-view", "front view")),
+    frozenset(("point-of-view", "rear view")),
+    frozenset(("front view", "rear view")),
+    frozenset(("top-down", "low-angle")),
+}
+
+
+def camera_viewpoint_mentions(text: str) -> list[tuple[str, tuple[int, int]]]:
+    mentions: list[tuple[str, tuple[int, int]]] = []
+    for label, pattern in CAMERA_VIEWPOINT_PATTERNS.items():
+        mentions.extend((label, match.span()) for match in pattern.finditer(str(text or "")))
+    return sorted(mentions, key=lambda item: item[1])
+
+
+def camera_viewpoint_conflict_issues(
+    prompt: str,
+    imposed_direction: str = "",
+) -> list[str]:
+    """Report mutually exclusive camera viewpoints in one still-image request."""
+
+    prompt_labels = {label for label, _span in camera_viewpoint_mentions(prompt)}
+    imposed_labels = {
+        label for label, _span in camera_viewpoint_mentions(imposed_direction)
+    }
+    combined = prompt_labels | imposed_labels
+    conflicts: list[str] = []
+    for pair in CAMERA_VIEWPOINT_CONFLICTS:
+        if not pair <= combined:
+            continue
+        # When a separate camera control is supplied, only reject conflicts
+        # that cross that control boundary. A prompt-internal conflict is still
+        # rejected when no separate direction was supplied.
+        if imposed_labels and not (pair & imposed_labels and pair & prompt_labels):
+            continue
+        labels = sorted(pair)
+        conflicts.append(f"{labels[0]} conflicts with {labels[1]}")
+    return conflicts
+
+
+def camera_viewpoint_conflict_spans(text: str) -> list[tuple[int, int]]:
+    if not camera_viewpoint_conflict_issues(text):
+        return []
+    return [span for _label, span in camera_viewpoint_mentions(text)]
 
 
 def significant_words(text: str) -> list[str]:
@@ -3066,6 +3220,27 @@ def _relational_role_binding(searchable: str) -> bool:
             rf"\b[^,.!?;]{{0,48}}{role_pattern}",
             searchable,
         )
+    )
+
+
+INTERPERSON_CONTACT_PATTERN = re.compile(
+    r"(?i)\b(?:"
+    r"embrac(?:e|es|ed|ing)|hug(?:s|ged|ging)?|kiss(?:es|ed|ing)?|"
+    r"touch(?:es|ed|ing)?|grip(?:s|ped|ping)?|hold(?:s|ing)?|"
+    r"guid(?:e|es|ed|ing)\s+(?:her|his|their|the)\s+(?:hand|arm)|"
+    r"lean(?:s|ed|ing)?\s+(?:over|against)|straddl(?:e|es|ed|ing)|"
+    r"oral\s+(?:sex|stimulation)|manual\s+stimulation|"
+    r"sexual\s+(?:contact|intercourse)|anal\s+sex|vaginal\s+intercourse"
+    r")\b"
+)
+
+
+def interpersonal_contact_scene(prompt: str) -> bool:
+    searchable = canonical_validation_text(
+        text_without_negative_constraints(prompt)
+    )
+    return appears_multi_person_scene(searchable) and bool(
+        INTERPERSON_CONTACT_PATTERN.search(searchable)
     )
 
 
@@ -3458,7 +3633,10 @@ def bind_unpositioned_distinct_people(prompt: str) -> str:
     searchable = text_without_negative_constraints(
         normalize_concept_text(prompt)
     ).lower()
-    if _relational_role_binding(searchable):
+    # Contact and overlapping poses need relative depth/pose staging. Guessing
+    # left/right here can contradict the interaction and stretch or merge the
+    # participants merely to satisfy an invented lateral layout.
+    if _relational_role_binding(searchable) or interpersonal_contact_scene(searchable):
         return prompt
     descriptors = _unique_person_descriptors(prompt)
     if not 2 <= len(descriptors) <= 4:
@@ -3518,15 +3696,21 @@ def bind_unpositioned_distinct_people(prompt: str) -> str:
             continue
         pattern = re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
         for part_index in range(0, len(parts), 2):
-            if pattern.search(parts[part_index]):
-                parts[part_index] = pattern.sub(
-                    lambda match, suffix=suffixes[assigned[descriptor_index]]: (
-                        match.group(0) + suffix
-                    ),
-                    parts[part_index],
-                    count=1,
+            for match in pattern.finditer(parts[part_index]):
+                tail = parts[part_index][match.end() :]
+                # Inserting a position between an owner and possessive suffix
+                # creates malformed phrases such as "man on image-right's".
+                if re.match(r"^[’']s\b", tail):
+                    continue
+                parts[part_index] = (
+                    parts[part_index][:match.end()]
+                    + suffixes[assigned[descriptor_index]]
+                    + parts[part_index][match.end():]
                 )
                 break
+            else:
+                continue
+            break
     return "".join(parts)
 
 
@@ -3534,6 +3718,114 @@ def bind_unpositioned_mixed_gender_pair(prompt: str) -> str:
     """Backward-compatible wrapper for generalized distinct-person binding."""
 
     return bind_unpositioned_distinct_people(prompt)
+
+
+def flux_multi_person_schema_instruction() -> str:
+    """Return the FLUX.2 contract used for individually tracked people."""
+
+    return (
+        "For a Single Image with two or more individually tracked people, internally "
+        "organize the scene as separate subject records before writing: give each "
+        "person a stable identity, description, position or relative placement, "
+        "action, owned body parts, and role in the interaction. Bind gender, anatomy, "
+        "clothing, pose, and contact to the correct person. Describe shared contact "
+        "once and do not invent left/right placement when the relationship is "
+        "depth-based or overlapping. Return one cohesive natural-language image "
+        "prompt only. Never expose JSON, a schema, field names, Markdown, or analysis."
+    )
+
+
+def flux_structured_to_natural_prompt(prompt: str) -> str:
+    """Flatten an accidental model JSON response into paste-ready prompt prose."""
+
+    payload = parse_flux_structured_prompt(prompt)
+    if payload is None:
+        return str(prompt or "").strip()
+
+    scene = payload.get("scene")
+    clauses: list[str] = [
+        scene.strip()
+        if isinstance(scene, str) and scene.strip()
+        else ""
+    ]
+    base_scene = " ".join(clauses)
+    placeholders = (
+        "use the ",
+        "maintains the subject-specific ",
+        "relative placement is defined ",
+        "subjects remain visually distinct ",
+    )
+
+    def represented(
+        value: str,
+        reference: str | None = None,
+        *,
+        allow_short_word_coverage: bool = False,
+    ) -> bool:
+        candidate = normalize_concept_text(value).casefold()
+        current = normalize_concept_text(
+            " ".join(clauses) if reference is None else reference
+        ).casefold()
+        if not candidate or candidate.startswith(placeholders):
+            return True
+        if candidate in current:
+            return True
+        words = set(significant_words(candidate))
+        if len(words) <= 4 and not allow_short_word_coverage:
+            return False
+        current_words = set(significant_words(current))
+        return bool(words) and words <= current_words
+
+    subjects = payload.get("subjects")
+    if isinstance(subjects, list):
+        for subject in subjects:
+            if not isinstance(subject, dict):
+                continue
+            details = [
+                (field, str(subject.get(field, "")).strip())
+                for field in ("description", "position", "action")
+                if isinstance(subject.get(field), str)
+                and str(subject.get(field, "")).strip()
+            ]
+            missing = [
+                value
+                for field, value in details
+                if not represented(
+                    value,
+                    base_scene,
+                    allow_short_word_coverage=field != "description",
+                )
+            ]
+            if missing:
+                description = str(subject.get("description", "")).strip()
+                subject_clause = (
+                    [description]
+                    if description and description not in missing
+                    else []
+                )
+                subject_clause.extend(missing)
+                clauses.append(", ".join(subject_clause))
+
+    for field in (
+        "interaction",
+        "style",
+        "lighting",
+        "background",
+        "composition",
+        "camera",
+    ):
+        for value in _structured_string_values(payload.get(field)):
+            if not represented(value):
+                clauses.append(value)
+
+    natural = ". ".join(
+        clause.strip(" ,.;:")
+        for clause in clauses
+        if clause.strip(" ,.;:")
+    )
+    natural = re.sub(r"\s{2,}", " ", natural)
+    natural = re.sub(r"\.{2,}", ".", natural)
+    return natural.strip(" ,.;:") + ("." if natural.strip(" ,.;:") else "")
 
 
 def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
@@ -3567,6 +3859,110 @@ def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> 
         )
         if source_has_identity and not candidate_has_identity:
             issues.append(f"missing explicit {label} identity label from the source")
+    return issues
+
+
+BODY_OWNERSHIP_PARTS = (
+    "arm",
+    "arms",
+    "body",
+    "breast",
+    "breasts",
+    "chest",
+    "elbow",
+    "elbows",
+    "face",
+    "feet",
+    "fingers",
+    "foot",
+    "genitals",
+    "hand",
+    "hands",
+    "head",
+    "hip",
+    "hips",
+    "knee",
+    "knees",
+    "leg",
+    "legs",
+    "penis",
+    "shoulder",
+    "shoulders",
+    "torso",
+    "vagina",
+    "vulva",
+    "waist",
+    "wrist",
+    "wrists",
+)
+BODY_OWNERSHIP_OWNER_PATTERNS = {
+    "female": r"(?:her|(?:the\s+)?(?:adult\s+)?(?:woman|female|lady|wife|bride)['’]s)",
+    "male": r"(?:his|(?:the\s+)?(?:adult\s+)?(?:man|male|husband|groom)['’]s)",
+    "nonbinary": (
+        r"(?:(?:the\s+)?(?:adult\s+)?(?:non[- ]?binary|agender|genderqueer)"
+        r"(?:\s+(?:person|subject))?['’]s)"
+    ),
+    "neutral": r"(?:their)",
+}
+
+
+def explicit_body_part_ownership(text: str) -> set[tuple[str, str]]:
+    """Extract only body ownership that the wording states explicitly."""
+
+    searchable = canonical_validation_text(text)
+    parts = "|".join(
+        re.escape(part)
+        for part in sorted(BODY_OWNERSHIP_PARTS, key=len, reverse=True)
+    )
+    ownership: set[tuple[str, str]] = set()
+    for category, owner in BODY_OWNERSHIP_OWNER_PATTERNS.items():
+        pattern = re.compile(
+            rf"(?i)\b{owner}\s+(?:[A-Za-z-]+\s+){{0,3}}(?P<part>{parts})\b"
+        )
+        for match in pattern.finditer(searchable):
+            part = match.group("part").lower()
+            singular = {
+                "arms": "arm",
+                "breasts": "breast",
+                "elbows": "elbow",
+                "feet": "foot",
+                "fingers": "finger",
+                "hands": "hand",
+                "hips": "hip",
+                "knees": "knee",
+                "legs": "leg",
+                "shoulders": "shoulder",
+                "wrists": "wrist",
+            }.get(part, part)
+            ownership.add((category, singular))
+    return ownership
+
+
+def body_part_ownership_contract_issues(
+    final_prompt: str,
+    original_prompt: str,
+) -> list[str]:
+    """Preserve explicitly authored person-to-body-part bindings."""
+
+    source = explicit_body_part_ownership(original_prompt)
+    if not source:
+        return []
+    candidate = explicit_body_part_ownership(final_prompt)
+    issues: list[str] = []
+    for category, part in sorted(source - candidate):
+        issues.append(f"missing explicit {category} ownership of {part}")
+    for category, part in sorted(source):
+        swapped = {
+            other
+            for other, candidate_part in candidate
+            if candidate_part == part
+            and other not in {category, "neutral"}
+        }
+        if swapped:
+            issues.append(
+                f"{part} ownership changed from {category} to "
+                + ", ".join(sorted(swapped))
+            )
     return issues
 
 
@@ -4396,16 +4792,34 @@ def format_krea_recommendation(
 def format_generator_recommendation(
     generator_target: str = "Krea 2",
     *,
+    flux_model_variant: str = "Distilled (4-step)",
+    flux_text_encoder_profile: str = "Official Qwen3 8B",
     creativity: str = "raw",
     intensity: int = 0,
     complexity: int = 0,
     movement: int = 0,
 ) -> str:
     if normalize_generator_target(generator_target) == "FLUX.2 Klein 9B":
+        variant = normalize_flux_model_variant(flux_model_variant)
+        encoder = normalize_flux_text_encoder_profile(
+            flux_text_encoder_profile
+        )
+        setup = (
+            "4 inference steps, guidance 1.0"
+            if variant == "Distilled (4-step)"
+            else "50 inference steps, guidance 4.0"
+        )
+        encoder_note = (
+            "The abliterated Qwen3 encoder is a compatibility profile, not an "
+            "anatomy fix; compare it against the official encoder at the same seed."
+            if flux_encoder_is_abliterated(encoder)
+            else "This is the official Qwen3 8B text-encoder profile."
+        )
         return (
-            "Set separately for FLUX.2 Klein 9B distilled: 4 inference steps, "
-            "guidance 1.0. Prompt upsampling is unavailable, so use the complete "
-            "corrected prompt directly. The 9B weights use the FLUX Non-Commercial License."
+            f"Set separately for FLUX.2 Klein 9B {variant}: {setup}; "
+            f"text encoder={encoder}. Prompt upsampling is unavailable, so use "
+            f"the complete corrected prompt directly. {encoder_note} "
+            "The 9B weights use the FLUX Non-Commercial License."
         )
     return format_krea_recommendation(
         creativity=creativity,
@@ -4416,7 +4830,12 @@ def format_generator_recommendation(
 
 
 def word_count(text: str) -> int:
-    return len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", text))
+    return len(
+        re.findall(
+            r"[A-Za-z0-9][A-Za-z0-9'-]*",
+            flux_structured_semantic_text(text),
+        )
+    )
 
 
 def top_significant_terms(text: str, *, limit: int = 12) -> list[str]:
@@ -5985,6 +6404,7 @@ def krea_settings_issues(
 def final_compliance_issues(
     final_prompt: str,
     *,
+    generator_target: str = "Krea 2",
     original_prompt: str = "",
     concept_keywords: str = "",
     goal_headline: str = "",
@@ -6021,6 +6441,13 @@ def final_compliance_issues(
         issues.extend(safe_for_work_issues(cleaned))
     if "\n" in cleaned.strip():
         issues.append("Final prompt contains multiple lines")
+    if parse_flux_structured_prompt(cleaned) is not None:
+        issues.append(
+            "Visible prompt format: structured JSON must be flattened to natural language"
+        )
+    camera_issues = camera_viewpoint_conflict_issues(cleaned)
+    if camera_issues:
+        issues.append("Camera viewpoint conflict: " + ", ".join(camera_issues))
     issues.extend(internal_prompt_guidance_issues(cleaned))
     issues.extend(forbidden_syntax_issues(cleaned))
     issues.extend(contradiction_issues(cleaned, original_prompt))
@@ -6146,6 +6573,14 @@ def final_compliance_issues(
     )
     if gender_issues:
         issues.append("Gender identity contract: " + ", ".join(gender_issues))
+    ownership_issues = body_part_ownership_contract_issues(
+        cleaned,
+        f"{original_prompt}\n{story_elements}",
+    )
+    if ownership_issues:
+        issues.append(
+            "Person/body ownership contract: " + ", ".join(ownership_issues)
+        )
     if explicit_nsfw:
         adult_language = explicit_adult_language_terms(cleaned)
         if adult_language:
@@ -6563,6 +6998,8 @@ def validate_no_minor_sexual_content(text: str) -> None:
 HARD_COMPLIANCE_PREFIXES = (
     "Final prompt is empty",
     "Final prompt contains multiple lines",
+    "Visible prompt format",
+    "Camera viewpoint conflict",
     "Internal prompt guidance leaked",
     "Forbidden syntax matched",
     "Contradictory terms",
@@ -6590,6 +7027,7 @@ HARD_COMPLIANCE_PREFIXES = (
     "Safe-for-work contract violated",
     "Multi-person role ambiguity",
     "Gender identity contract",
+    "Person/body ownership contract",
     "Adult toy object contract",
     "Inserted object/body contact contract",
     "Unrequested gender/anatomy traits",
@@ -9270,6 +9708,11 @@ def build_exact_system_prompt(
             "- Keep Krea generation controls outside the image prompt."
         )
     )
+    structure_rule = (
+        flux_multi_person_schema_instruction()
+        if target == "FLUX.2 Klein 9B" and normalized_format == "Single Image"
+        else "Use one cohesive natural-language prompt."
+    )
     return f"""You are a precision editor for {target} image prompts. Fidelity is the highest priority.
 
 Rewrite the draft as a compact natural-language visual caption. Correct spelling and ambiguity, but do not invent subjects, objects, actions, story events, styles, symbols, text, or scenery. Preserve every explicit count, identity, attribute, material, action, state, exclusion, camera instruction, spatial relation, direction, light source, color, and panel assignment. Preserve exact quoted rendered text character-for-character.
@@ -9287,6 +9730,7 @@ Rules:
 - Integrate camera and visual direction as natural image description. Never output control labels such as "Camera framing and viewpoint:", "Visual direction:", or "Visible action details:".
 - Target-specific rules:
 {target_rules}
+- Structured multi-person rule: {structure_rule}
 - {'Fix genuine contradictions without changing the clearest stated intent.' if fix_logic else 'Do not reinterpret the stated scene logic.'}
 - {'Use explicit plain relationships suitable for an altered text encoder.' if altered_text_encoder else 'Use clear natural-language relationships.'}
 - {'Quote exact visible words.' if optimize_quoted_text else 'Do not add new visible text.'}
@@ -9324,6 +9768,11 @@ def build_small_model_system_prompt(
         "FLUX.2 Klein has no prompt upsampling; state every essential visual fact explicitly in priority order."
         if target == "FLUX.2 Klein 9B"
         else "Use natural Krea 2 language."
+    )
+    structure_rule = (
+        flux_multi_person_schema_instruction()
+        if target == "FLUX.2 Klein 9B" and normalized_format == "Single Image"
+        else ""
     )
     action_rule = (
         "Enhance described actions using only the action-critical chain: camera view, torso direction, active shoulder-to-hand or hip-to-foot chain, contact point, and weight-bearing limb."
@@ -9388,6 +9837,7 @@ def build_small_model_system_prompt(
     return f"""Precisely edit prompts for {target}. Return only the final prompt.
 {format_rule}
 {target_rule}
+{structure_rule}
 Preserve subjects, actions, objects, counts, positions, relationships, exclusions, quoted text, and concepts.
 Open with one compact visual thesis: medium or shot, subject, core action or state, and setting. Then group interactions, environment, camera, light, color, and rendering by owner.
 Anatomical left and right belong to the subject; image-left and image-right belong to the frame. {action_rule}
@@ -9466,15 +9916,30 @@ def build_small_model_user_message(
         )
     if not develop_story:
         sections.append("Do not invent new plot events, outcomes, characters, or panels.")
+    if (
+        normalize_generator_target(generator_target) == "FLUX.2 Klein 9B"
+        and normalize_content_format(content_format) == "Single Image"
+        and appears_multi_person_scene(
+            "\n".join(value for value in (prompt, story_elements) if value.strip())
+        )
+    ):
+        sections.append(flux_multi_person_schema_instruction())
     sections.append(f"Output length: {output_length}. Return only the corrected prompt.")
     return "\n\n".join(sections)
 
 
 def build_small_model_audit_system_prompt(generator_target: str, content_format: str) -> str:
     target = normalize_generator_target(generator_target)
+    structure_rule = (
+        flux_multi_person_schema_instruction()
+        if target == "FLUX.2 Klein 9B"
+        and normalize_content_format(content_format) == "Single Image"
+        else ""
+    )
     return f"""You are a compact {target} prompt compliance auditor.
 Compare the source contract with the candidate. Repair only concrete failures: dropped facts, wrong counts or positions, ambiguous subject-action binding, incoherent action-critical joints or contact, comic layout or continuity loss, and incompatible syntax.
 For individually tracked people, preserve every explicit female, male, and nonbinary identity. Establish a short stable identity-or-role plus position label, and repeat it only when needed to resolve ambiguous action, ownership, contact, or position. Natural pronouns are allowed when unambiguous. Keep purely collective couples, crowds, and groups collective.
+{structure_rule}
 Return only the repaired {normalize_content_format(content_format)} prompt. Do not output a score, notes, or reasoning."""
 
 
@@ -9759,6 +10224,11 @@ def build_system_prompt(
             "- Krea 2 is strong at expressive aesthetics, composition, style direction, and visual variation."
         )
     )
+    structure_rule = (
+        flux_multi_person_schema_instruction()
+        if target == "FLUX.2 Klein 9B" and normalized_format == "Single Image"
+        else "Use one cohesive natural-language prompt."
+    )
 
     return f"""You are a creative director and precision prompt editor for {target} text-to-image prompts.
 
@@ -9777,6 +10247,7 @@ Detail guidance: {detail_guidance}
 Length guidance: {length_guidance}
 Rules:
 - Output format contract: {format_rule}
+- Structured multi-person rule: {structure_rule}
 - Preserve the user's intended subject, scene, style, mood, camera, lighting, colors, composition, and important constraints.
 - If required concepts are provided in the user message, integrate every one into the final prompt as concrete visual content unless it directly contradicts the core scene.
 - If weighted visual emphasis terms are provided, treat them as hard composition priorities. Weighted terms at 1.3 or above must remain visibly represented. Terms at 2.0 or above must become dominant focal elements through early placement in the prompt, foreground or main-subject binding, stronger framing, clearer lighting, sharper material or anatomical detail, richer texture, and explicit action or pose binding. Do not output numeric weights or Stable Diffusion emphasis syntax.
@@ -9841,6 +10312,13 @@ def build_user_message(
 ) -> str:
     target = normalize_generator_target(generator_target)
     normalized_format = normalize_content_format(content_format)
+    flux_structure_required = (
+        target == "FLUX.2 Klein 9B"
+        and normalized_format == "Single Image"
+        and appears_multi_person_scene(
+            "\n".join(value for value in (prompt, story_elements) if value.strip())
+        )
+    )
     format_summary = {
         "Single Image": "Required output format: Single Image. Return one still image only, with no panels or sequential layout.",
         "Comic Story": "Required output format: Comic Story. Return one complete multi-panel comic page. If no count is supplied, use exactly 4 panels.",
@@ -9878,6 +10356,11 @@ def build_user_message(
                 "may clarify requested concepts only. Never transfer a source "
                 "image's scene, subject, pose, action, camera, crop, framing, composition, layout, object "
                 "placement, setting, background, palette, lighting arrangement, text, or narrative event."
+            )
+        if flux_structure_required:
+            sections.append(
+                "FLUX.2 multi-person output contract:\n"
+                + flux_multi_person_schema_instruction()
             )
         sections.append(
             f"Return the shortest complete {target}-ready prompt that preserves every hard contract. "
@@ -10103,6 +10586,13 @@ Rewrite the final prompt so every individually tracked person has a distinct ide
         if role_issues
         else ""
     )
+    flux_structure_section = (
+        "\nFLUX.2 multi-person output contract:\n"
+        + flux_multi_person_schema_instruction()
+        + "\n"
+        if flux_structure_required
+        else ""
+    )
     length_instruction = (
         "Respect the explicit word bounds while preserving the main subject, action, focus, "
         "required concepts, quoted text, and critical constraints."
@@ -10159,6 +10649,7 @@ Draft prompt:
 {vague_section}
 {feeling_section}
 {role_section}
+{flux_structure_section}
 {multi_panel_section}
 {story_development_section}
 {length_section}
@@ -10216,11 +10707,17 @@ def build_audit_system_prompt(
         if target == "FLUX.2 Klein 9B"
         else "Repaired Krea prompt:"
     )
+    structure_rule = (
+        flux_multi_person_schema_instruction()
+        if target == "FLUX.2 Klein 9B" and normalized_format == "Single Image"
+        else "Use one cohesive natural-language prompt."
+    )
     return f"""You are a strict {target} prompt compliance auditor and repair editor.
 
 Audit the corrected prompt against these {target} expectations:
 - {format_rule}
 - {target_expectation}
+- Structured multi-person rule: {structure_rule}
 - Natural-language visual description, not old Stable Diffusion tag soup.
 - Correct spelling, grammar, and phrasing derived from every user-authored field, while exact quoted rendered text and intentional names remain unchanged.
 - Clear main subject, action, environment, composition, lighting, palette, camera/style, and quality details when relevant.
@@ -10495,6 +10992,11 @@ def build_final_repair_system_prompt(
         if target == "FLUX.2 Klein 9B"
         else "Keep the repaired prompt compatible with Krea 2 natural-language prompting."
     )
+    structure_rule = (
+        flux_multi_person_schema_instruction()
+        if target == "FLUX.2 Klein 9B" and normalized_format == "Single Image"
+        else "Use one cohesive natural-language prompt."
+    )
     return f"""You repair a {target} prompt after deterministic validation.
 
 Return only paste-ready prompt output. No notes, audit text, or markdown.
@@ -10502,6 +11004,7 @@ Return only paste-ready prompt output. No notes, audit text, or markdown.
 {settings_rule}
 {target_rule}
 {format_rule}
+{structure_rule}
 Do not output <think> blocks or visible reasoning.
 Use natural language, plain ASCII punctuation, and no semicolons.
 Preserve the scene intent, required concepts, quoted rendered text, and requested focus.
@@ -13881,6 +14384,7 @@ def post_chat_completion(
 
     def enforce_mechanical_contracts(candidate: str) -> str:
         candidate = strip_private_prompt_guidance(candidate)
+        candidate = flux_structured_to_natural_prompt(candidate)
         candidate = strip_nsfw_catalog_labels(candidate)
         candidate = normalize_concept_text(candidate)
         if explicit_nsfw:
@@ -13932,12 +14436,14 @@ def post_chat_completion(
         )
         candidate = enforce_style_mode_contract(candidate, mode, prompt)
         candidate = enforce_visual_direction_contract(candidate, visual_direction)
-        return strip_unexpected_scripts(candidate, source_script_context)
+        candidate = strip_unexpected_scripts(candidate, source_script_context)
+        return flux_structured_to_natural_prompt(candidate)
 
     def compliance_issues(candidate: str) -> list[str]:
         return rule_strength_compliance_issues(
             final_compliance_issues(
                 candidate,
+                generator_target=generator_target,
                 original_prompt=prompt,
                 concept_keywords=concept_keywords,
                 goal_headline=goal_headline,
@@ -14580,6 +15086,24 @@ def parse_args() -> argparse.Namespace:
         help="Image generator whose prompt syntax should be optimized. Default: Krea 2.",
     )
     parser.add_argument(
+        "--flux-variant",
+        choices=FLUX_MODEL_VARIANTS,
+        default=FLUX_MODEL_VARIANTS[0],
+        help=(
+            "FLUX.2 Klein checkpoint profile used for separate setup guidance. "
+            "Default: Distilled (4-step)."
+        ),
+    )
+    parser.add_argument(
+        "--flux-text-encoder",
+        choices=FLUX_TEXT_ENCODER_PROFILES,
+        default=FLUX_TEXT_ENCODER_PROFILES[0],
+        help=(
+            "FLUX.2 Klein Qwen3 text-encoder profile. The abliterated profile "
+            "enables explicit modifier-binding rules but is not an anatomy fix."
+        ),
+    )
+    parser.add_argument(
         "--krea-official",
         action="store_true",
         help=(
@@ -14739,7 +15263,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--standard-text-encoder",
         action="store_true",
-        help="Disable extra robustness rules for altered image-generator text encoders.",
+        help=(
+            "Legacy compatibility switch that disables altered-encoder robustness. "
+            "For FLUX, prefer --flux-text-encoder."
+        ),
     )
     parser.add_argument(
         "--thinking-mode",
@@ -14980,7 +15507,11 @@ def main() -> int:
             enhance_actions=args.enhance_actions,
             develop_story=not args.no_story_development,
             clean_constraints=not args.no_clean_constraints,
-            altered_text_encoder=not args.standard_text_encoder,
+            altered_text_encoder=(
+                flux_encoder_is_abliterated(args.flux_text_encoder)
+                if args.target == "FLUX.2 Klein 9B"
+                else not args.standard_text_encoder
+            ),
             thinking_mode=args.thinking_mode,
             include_krea_settings=args.include_krea_settings,
             creativity=args.creativity,
@@ -15017,6 +15548,8 @@ def main() -> int:
         print(
             format_generator_recommendation(
                 args.target,
+                flux_model_variant=args.flux_variant,
+                flux_text_encoder_profile=args.flux_text_encoder,
                 creativity=args.creativity,
                 intensity=args.intensity,
                 complexity=args.complexity,
