@@ -23,6 +23,7 @@ from nsfw_scene_contract import (
     dildo_direction_instruction,
     enforce_cross_subject_genital_binding,
     enforce_penis_ventral_orientation_contract,
+    enforce_reaction_binding,
     extract_nsfw_scene_contract,
     format_nsfw_preset_contract,
     format_nsfw_scene_contract,
@@ -162,6 +163,17 @@ class NsfwSceneContractTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_cross_subject_lead_preserves_finger_ownership(self):
+        source = (
+            "A woman stands behind a seated man, her fingers gripping his shaft "
+            "while precum glistens at the tip."
+        )
+
+        lead = cross_subject_genital_binding_lead(source)
+
+        self.assertIn("reaches forward with her fingers", lead)
+        self.assertNotIn("reaches forward with her hands", lead)
 
     def test_penile_ventral_orientation_repairs_reversed_and_missing_geometry(self):
         source = (
@@ -465,6 +477,22 @@ class NsfwSceneContractTests(unittest.TestCase):
         self.assertTrue(any("named adult role" in issue for issue in weak))
         self.assertTrue(any("causing action" in issue for issue in weak))
         self.assertEqual(strong, [])
+
+    def test_reaction_enforcement_binds_clear_pronoun_and_source_action(self):
+        source = (
+            "A woman stands behind a man and strokes his penis while precum "
+            "glistens at the tip."
+        )
+        candidate = "Her eyes blaze with joy and ecstasy."
+
+        repaired = enforce_reaction_binding(candidate, source)
+
+        self.assertIn("The adult woman's eyes", repaired)
+        self.assertIn("during her manual stimulation of the adult man's penis", repaired)
+        self.assertEqual(
+            reaction_binding_issues(repaired, participant_count=2),
+            [],
+        )
 
     def test_single_image_rejects_visible_multi_phase_progression(self):
         prompt = (

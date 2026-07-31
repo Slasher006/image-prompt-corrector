@@ -208,17 +208,26 @@ def cross_subject_genital_binding_lead(text: str) -> str:
     )
     wide = bool(re.search(r"\bwide(?:\s+full[- ]scene)?\s+shot\b|\bshot\s+wide\b", cleaned, re.I))
     erect = bool(re.search(r"\berect\b", cleaned, re.IGNORECASE))
+    uses_fingers = bool(
+        re.search(
+            r"\b(?:her|(?:the\s+)?(?:adult\s+)?woman['’]s)\s+"
+            r"(?:[a-z-]+\s+){0,2}fingers?\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
     frame = " in one continuous wide shot" if wide else " in one continuous scene"
     man_role = "the seated adult man" if seated_man else "the adult man"
+    effector = "fingers" if uses_fingers else "hands"
     if seated_man and woman_behind_man:
         staging = ""
         action = (
             "The adult woman is positioned directly behind the seated adult man "
-            "and reaches forward with her hands to grip and manually stimulate "
+            f"and reaches forward with her {effector} to grip and manually stimulate "
         )
     else:
         staging = "One is an adult woman and the other is an adult man. "
-        action = "The adult woman uses her hands to grip and manually stimulate "
+        action = f"The adult woman uses her {effector} to grip and manually stimulate "
     anatomy = f"{man_role}'s {'erect ' if erect else ''}penis"
     return (
         f"Exactly two distinct adults are fully visible{frame}. "
@@ -304,6 +313,12 @@ def enforce_cross_subject_genital_binding(
         r"adult bodies in the overlapping pose\.\s*"
     )
     cleaned = obsolete.sub("", cleaned).strip()
+    cleaned = re.sub(
+        r"(?i)^\s*(?:2|two)\s+people\s*\.\s*",
+        "",
+        cleaned,
+        count=1,
+    )
     cleaned = re.sub(
         r"(?i)\bA\s+woman\s+stands\s+behind\s+a\s+seated\s+man\s*,\s*"
         r"her\s+hands\s+gripping\s+his\s+(?:erect\s+)?penis\s+with\s+"
@@ -932,6 +947,68 @@ def reaction_binding_issues(text: str, *, participant_count: int | None) -> list
     return _unique(issues)
 
 
+def enforce_reaction_binding(text: str, original_prompt: str) -> str:
+    """Bind clear gender pronouns and their reactions to the source action."""
+
+    source = extract_nsfw_scene_contract(original_prompt)
+    participant_count = source.get("participant_count")
+    if not isinstance(participant_count, int) or participant_count < 2:
+        return str(text or "").strip()
+    cross_subject_manual = requires_explicit_cross_subject_genital_binding(
+        original_prompt
+    )
+    sentences: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", str(text or "").strip()):
+        if not REACTION_PATTERN.search(sentence):
+            sentences.append(sentence)
+            continue
+        bound = re.sub(
+            r"^\s*Her\b",
+            "The adult woman's",
+            sentence,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        bound = re.sub(
+            r"^\s*She\b",
+            "The adult woman",
+            bound,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        bound = re.sub(
+            r"^\s*His\b",
+            "The adult man's",
+            bound,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        bound = re.sub(
+            r"^\s*He\b",
+            "The adult man",
+            bound,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        cause_searchable = re.sub(
+            r"(?i)\bnot\s+from\s+[^,.!?;]{1,60}?\s+but\s+[^,.!?;]+",
+            "",
+            bound,
+        )
+        if (
+            cross_subject_manual
+            and ROLE_PATTERN.search(bound)
+            and not ACTION_CAUSE_PATTERN.search(cause_searchable)
+        ):
+            punctuation = bound[-1] if bound[-1:] in ".!?" else "."
+            bound = bound.rstrip(".!?") + (
+                " during her manual stimulation of the adult "
+                "man's penis"
+            ) + punctuation
+        sentences.append(bound)
+    return " ".join(sentence for sentence in sentences if sentence).strip()
+
+
 def single_phase_issues(text: str, *, content_format: str) -> list[str]:
     """Reject visible multi-step progression in a normal still-image prompt."""
 
@@ -1046,6 +1123,8 @@ def nsfw_scene_contract_issues(
         issues.append(f"unrequested adult object added: {added_object}")
 
     source_phases = set(source.get("phases", []))
+    if source_acts:
+        source_phases.add("active")
     source_visible_phase = str(source.get("visible_phase", ""))
     if source_visible_phase:
         source_phases.add(source_visible_phase)

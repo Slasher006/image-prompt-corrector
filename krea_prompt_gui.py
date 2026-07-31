@@ -1216,8 +1216,8 @@ def classify_workflow_error(
         elif "nsfw scene fidelity contract" in lowered:
             next_step = (
                 "The input is preserved. Review the named adult-scene issue in Activity, "
-                "make the adult actor, sexual action, contact target, and separate object "
-                "explicit, then retry."
+                "make only the disputed actor, action, reaction, participant, or contact "
+                "wording explicit, then retry."
             )
         else:
             next_step = (

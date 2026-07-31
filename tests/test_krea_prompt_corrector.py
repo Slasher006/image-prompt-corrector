@@ -3920,6 +3920,13 @@ class PromptCorrectorTests(unittest.TestCase):
             ),
             [],
         )
+        self.assertEqual(
+            corrector.count_contract_issues(
+                "Exactly two distinct adults are fully visible.",
+                "2 people.",
+            ),
+            [],
+        )
 
     def test_spatial_contract_detects_changed_side(self):
         original = "A red cup on the left and a blue vase on the right."
@@ -5465,6 +5472,13 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?i)\b28\s*mm\b", cleaned)), 1)
         self.assertEqual(corrector.flux_klein_prompt_rule_issues(cleaned), [])
 
+        source_first = corrector.deduplicate_flux_camera_phrasing(
+            "28mm wide shot captures the room. Wide full-scene shot, 28mm lens."
+        )
+        self.assertEqual(len(re.findall(r"(?i)\b28\s*mm\b", source_first)), 1)
+        self.assertIn("Wide shot captures the room", source_first)
+        self.assertIn("Wide full-scene shot, 28mm lens", source_first)
+
         current_variant = corrector.naturalize_flux_positive_framing(
             "No adornments, no distractions, just primal energy between them."
         )
@@ -5510,6 +5524,39 @@ class PromptCorrectorTests(unittest.TestCase):
         )
         self.assertIn("driven by surrender", positive)
         self.assertEqual(corrector.flux_klein_prompt_rule_issues(positive), [])
+
+    def test_reported_invent_fallback_passes_every_hard_contract(self):
+        source = (
+            "2 people. A woman stands behind a seated man, her fingers gripping "
+            "his shaft with deliberate force as precum glistens under warm light. "
+            "Her eyes blaze with unfiltered joy, lips parted in silent ecstasy. "
+            "The man's body trembles, not from fear but surrender, his head back. "
+            "28mm wide shot captures the room. The scene pulses with raw sexual "
+            "energy. Wide full-scene shot, 28mm lens."
+        )
+
+        candidate = corrector.enforce_cross_subject_genital_binding(source, source)
+        candidate = corrector.enforce_reaction_binding(candidate, source)
+        candidate = corrector.naturalize_flux_positive_framing(candidate)
+        candidate = corrector.deduplicate_flux_camera_phrasing(candidate)
+        issues = corrector.final_compliance_issues(
+            candidate,
+            generator_target="FLUX.2 Klein 9B",
+            original_prompt=source,
+            concept_keywords="handjob, penis, precum",
+            goal_headline="raw sexual energy",
+            output_length="Concise",
+            altered_text_encoder=True,
+            content_format="Single Image",
+            risk_level="Strict cleanup",
+            explicit_nsfw=True,
+        )
+
+        hard, _soft = corrector.split_compliance_issues(issues)
+        self.assertEqual(hard, [])
+        self.assertEqual(len(re.findall(r"(?i)\b28\s*mm\b", candidate)), 1)
+        self.assertIn("her fingers", candidate)
+        self.assertIn("The adult woman's eyes", candidate)
 
     def test_final_gate_rejects_invented_explicit_scene_facts(self):
         source = (

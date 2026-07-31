@@ -30,6 +30,7 @@ from nsfw_scene_contract import (
     dildo_direction_instruction,
     enforce_cross_subject_genital_binding,
     enforce_penis_ventral_orientation_contract,
+    enforce_reaction_binding,
     extract_nsfw_scene_contract,
     format_nsfw_scene_contract,
     nsfw_scene_contract_issues,
@@ -5380,13 +5381,23 @@ def count_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
     issues: list[str] = []
     for count, head, source in extract_count_contracts(original_prompt):
         count_tokens = [str(count)] + [word for word, value in NUMBER_VALUES.items() if value == count]
-        represented = any(
-            re.search(
-                rf"\b{re.escape(token)}\b(?:\s+[A-Za-z-]+){{0,4}}\s+{re.escape(head)}s?\b",
-                final,
+        if head in {"people", "person"}:
+            represented = any(
+                re.search(
+                    rf"\b{re.escape(token)}\b(?:\s+[A-Za-z-]+){{0,4}}\s+"
+                    r"(?:adults?|characters?|people|persons?|subjects?)\b",
+                    final,
+                )
+                for token in count_tokens
             )
-            for token in count_tokens
-        )
+        else:
+            represented = any(
+                re.search(
+                    rf"\b{re.escape(token)}\b(?:\s+[A-Za-z-]+){{0,4}}\s+{re.escape(head)}s?\b",
+                    final,
+                )
+                for token in count_tokens
+            )
         if not represented and count == 2:
             represented = bool(
                 re.search(
@@ -5611,19 +5622,38 @@ def deduplicate_flux_camera_phrasing(text: str) -> str:
     """Keep one camera/lens statement for a single FLUX image."""
 
     cleaned = str(text or "")
-    wide_lens = re.search(
-        r"(?i)\bwide\s+full[- ]scene\s+shot\s*,\s*(\d+)\s*mm\s+lens\b",
-        cleaned,
-    )
-    if not wide_lens:
-        return normalize_final_prompt_text(cleaned)
-    millimeters = re.escape(wide_lens.group(1))
+    lens_pattern = re.compile(r"(?i)\b(\d+)\s*mm(?:\s+lens)?\b")
+    matches = list(lens_pattern.finditer(cleaned))
+    removals: list[tuple[int, int]] = []
+    for millimeters in sorted({match.group(1) for match in matches}, key=int):
+        same_lens = [match for match in matches if match.group(1) == millimeters]
+        if len(same_lens) < 2:
+            continue
+        preferred = next(
+            (
+                match
+                for match in same_lens
+                if re.search(
+                    r"(?i)wide\s+full[- ]scene\s+shot\s*,\s*$",
+                    cleaned[max(0, match.start() - 45):match.start()],
+                )
+            ),
+            same_lens[0],
+        )
+        removals.extend(
+            match.span() for match in same_lens if match is not preferred
+        )
+    for start, end in sorted(removals, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+    cleaned = re.sub(r"\b(shot|view)\s*,\s*(captures?|shows?|frames?)\b", r"\1 \2", cleaned, flags=re.I)
     cleaned = re.sub(
-        rf"(?i)\bShot\s+wide\s+at\s+{millimeters}\s*mm\s*,\s*"
-        r"the\s+scene\s+is\s+framed\b",
-        "The scene is framed",
+        r"(^\s*|(?<=[.!?])\s+)wide\s+shot\b",
+        lambda match: match.group(1) + "Wide shot",
         cleaned,
+        flags=re.IGNORECASE,
     )
+    cleaned = re.sub(r"\s+([,.!?;])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
     return normalize_final_prompt_text(cleaned)
 
 
@@ -14819,6 +14849,10 @@ def post_chat_completion(
                         source_request,
                     )
                 candidate = enforce_penis_ventral_orientation_contract(
+                    candidate,
+                    source_request,
+                )
+                candidate = enforce_reaction_binding(
                     candidate,
                     source_request,
                 )

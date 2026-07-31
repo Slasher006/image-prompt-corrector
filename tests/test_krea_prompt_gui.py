@@ -1133,9 +1133,10 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
         self.assertEqual(diagnostic["category"], "contract")
         self.assertIn(
-            "make the adult actor, sexual action, contact target, and separate object explicit",
+            "make only the disputed actor, action, reaction, participant, or contact wording explicit",
             diagnostic["next_step"],
         )
+        self.assertNotIn("separate object", diagnostic["next_step"])
         self.assertNotIn("identity, count, or position", diagnostic["next_step"])
 
     def test_creative_development_error_gives_expansion_specific_recovery_guidance(self):
