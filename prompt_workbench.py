@@ -29,7 +29,11 @@ from krea_prompt_corrector import (
     final_compliance_issues,
     validate_explicit_adult_mode,
 )
-from nsfw_scene_contract import nsfw_image_audit_contract
+from nsfw_scene_contract import (
+    PENIS_VENTRAL_ORIENTATION_PROMPT,
+    nsfw_image_audit_contract,
+    requests_visible_penis_ventral_orientation,
+)
 
 
 PROJECT_SCHEMA_VERSION = 1
@@ -55,7 +59,52 @@ GENERATOR_PROFILE_DEFAULTS = {
     "FLUX.2 Klein 9B": {
         "prompt_style": "priority ordered explicit description",
         "negative_prompt": False,
-        "setup": {"steps": 4, "guidance": 1.0},
+        "setup": {
+            "variant": "Distilled (4-step)",
+            "steps": 4,
+            "guidance": 1.0,
+            "text_encoder": "Official Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Distilled - Official Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Distilled (4-step)",
+            "steps": 4,
+            "guidance": 1.0,
+            "text_encoder": "Official Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Distilled - Abliterated Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Distilled (4-step)",
+            "steps": 4,
+            "guidance": 1.0,
+            "text_encoder": "Abliterated Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Base - Official Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Base (50-step)",
+            "steps": 50,
+            "guidance": 4.0,
+            "text_encoder": "Official Qwen3 8B",
+        },
+    },
+    "FLUX.2 Klein 9B Base - Abliterated Qwen3": {
+        "prompt_style": "priority ordered explicit description",
+        "negative_prompt": False,
+        "setup": {
+            "variant": "Base (50-step)",
+            "steps": 50,
+            "guidance": 4.0,
+            "text_encoder": "Abliterated Qwen3 8B",
+        },
     },
     "ComfyUI custom": {
         "prompt_style": "workflow supplied",
@@ -63,6 +112,56 @@ GENERATOR_PROFILE_DEFAULTS = {
         "setup": {},
     },
 }
+FLUX_BENCHMARK_PROFILE_NAMES = tuple(
+    name
+    for name in GENERATOR_PROFILE_DEFAULTS
+    if name.startswith("FLUX.2 Klein 9B ")
+    and name != "FLUX.2 Klein 9B"
+)
+
+
+def build_flux_fixed_seed_benchmark(
+    prompt: str,
+    *,
+    seed: int = 42,
+) -> dict[str, object]:
+    """Build the four-case Klein variant/encoder comparison manifest."""
+
+    clean_prompt = str(prompt or "").strip()
+    if not clean_prompt:
+        raise ValueError("A non-empty corrected prompt is required.")
+    if not 0 <= int(seed) <= 2_147_483_647:
+        raise ValueError("Seed must be between 0 and 2147483647.")
+    cases = []
+    for profile_name in FLUX_BENCHMARK_PROFILE_NAMES:
+        profile = GENERATOR_PROFILE_DEFAULTS[profile_name]
+        setup = dict(profile["setup"])
+        cases.append(
+            {
+                "profile": profile_name,
+                "prompt": clean_prompt,
+                "seed": int(seed),
+                "setup": setup,
+                "review": {
+                    "subject_count_correct": None,
+                    "subjects_separate": None,
+                    "limb_count_correct": None,
+                    "gender_and_body_ownership_correct": None,
+                    "camera_contract_correct": None,
+                    "notes": "",
+                },
+            }
+        )
+    return {
+        "schema_version": 1,
+        "benchmark": "FLUX.2 Klein fixed-seed variant and encoder matrix",
+        "controls": {
+            "same_prompt": True,
+            "same_seed": True,
+            "change_only": ["model variant", "text encoder"],
+        },
+        "cases": cases,
+    }
 
 
 def utc_now() -> str:
@@ -313,7 +412,8 @@ def build_result_review_messages(
         "generator prompt, and intentional reference roles. Do not reward beauty when a requirement is wrong. "
         "Return JSON only with keys score (0-100), summary, passed (array), failed (array), warnings (array), "
         "and repair_prompt. When explicit adult mode is enabled, also return nsfw_fidelity as an object "
-        "with participant_count, action_roles, contact_targets, object_separation, visible_phase, reactions, "
+        "with participant_count, action_roles, body_ownership, anatomical_attachment, anatomical_orientation, contact_targets, "
+        "object_separation, visible_phase, reactions, "
         "and discrepancies; each check value must be pass, fail, or not_applicable, and discrepancies must "
         "be an array. The repair_prompt must preserve successful content and change only failed items. "
         "Check counts, identity, pose and viewpoint, spatial side, props, exact text, exclusions, composition, "
@@ -380,6 +480,9 @@ def parse_review_response(text: str) -> dict[str, object]:
         for key in (
             "participant_count",
             "action_roles",
+            "body_ownership",
+            "anatomical_attachment",
+            "anatomical_orientation",
             "contact_targets",
             "object_separation",
             "visible_phase",
@@ -471,6 +574,22 @@ def targeted_repair_prompt(review: dict[str, object], current_prompt: str) -> st
     )
     nsfw_fidelity = review.get("nsfw_fidelity", {})
     if isinstance(nsfw_fidelity, dict):
+        fidelity_labels = {
+            "participant_count": "participant count",
+            "action_roles": "action roles",
+            "body_ownership": "body ownership",
+            "anatomical_attachment": "anatomical attachment",
+            "anatomical_orientation": "anatomical orientation",
+            "contact_targets": "contact targets",
+            "object_separation": "object separation",
+            "visible_phase": "visible phase",
+            "reactions": "participant reactions",
+        }
+        failures.extend(
+            "NSFW fidelity: failed " + fidelity_labels.get(key, key.replace("_", " "))
+            for key, value in nsfw_fidelity.items()
+            if key in fidelity_labels and str(value).strip().lower() == "fail"
+        )
         discrepancies = nsfw_fidelity.get("discrepancies", [])
         if isinstance(discrepancies, list):
             failures.extend(
@@ -711,3 +830,113 @@ def enqueue_comfyui(
     if not isinstance(result, dict):
         raise RuntimeError("ComfyUI returned an unexpected response")
     return result
+
+
+def build_image_edit_prompt(
+    *,
+    instruction: str,
+    preserve: str = "",
+    target_prompt: str = "",
+    image_analysis: str = "",
+    reference_roles: Iterable[str] = (),
+    masked_reference_indices: Iterable[int] = (),
+) -> str:
+    """Build an explicit edit command while keeping preservation constraints visible."""
+    instruction = instruction.strip()
+    preserve = preserve.strip()
+    target_prompt = target_prompt.strip()
+    image_analysis = image_analysis.strip()
+    if not instruction and not target_prompt:
+        raise ValueError("Enter an edit request or create a corrected target prompt first.")
+    parts = ["Edit the supplied reference image or images."]
+    if instruction:
+        parts.append(f"Requested change: {instruction}")
+    if preserve:
+        parts.append(f"Preserve unchanged: {preserve}")
+    else:
+        parts.append("Preserve all visible content that the requested change does not require altering.")
+    role_lines = [
+        f"Image {index}: {str(role).strip() or 'use as an intentional visual reference'}."
+        for index, role in enumerate(reference_roles, start=1)
+    ]
+    if role_lines:
+        parts.append("Reference roles: " + " ".join(role_lines))
+    masked_values: set[int] = set()
+    for index in masked_reference_indices:
+        try:
+            normalized_index = int(index)
+        except (TypeError, ValueError):
+            continue
+        if normalized_index > 0:
+            masked_values.add(normalized_index)
+    masked = sorted(masked_values)
+    if masked:
+        labels = ", ".join(f"Image {index}" for index in masked)
+        parts.append(
+            f"Edit only inside the supplied mask for {labels}; preserve "
+            "everything outside each mask."
+        )
+    if image_analysis:
+        parts.append(f"Verified image observations: {image_analysis}")
+    if target_prompt:
+        parts.append(f"Target result: {target_prompt}")
+    orientation_source = "\n".join(
+        value
+        for value in (instruction, target_prompt, image_analysis)
+        if value.strip()
+    )
+    if requests_visible_penis_ventral_orientation(orientation_source):
+        parts.append(PENIS_VENTRAL_ORIENTATION_PROMPT)
+    return " ".join(parts)
+
+
+def upload_comfyui_image(
+    *,
+    server_url: str,
+    path: str | Path,
+    upload_name: str = "",
+    timeout: float = 30,
+) -> str:
+    """Upload one local image to ComfyUI's input directory."""
+    source = Path(path)
+    if not source.is_file():
+        raise ValueError(f"Image file is unavailable: {source}")
+    boundary = f"----PromptCorrector{uuid.uuid4().hex}"
+    content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+    requested_name = upload_name.strip() or source.name
+    safe_name = requested_name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+    body = bytearray()
+
+    def add_field(name: str, value: str) -> None:
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.extend(value.encode())
+        body.extend(b"\r\n")
+
+    add_field("type", "input")
+    add_field("overwrite", "true")
+    body.extend(f"--{boundary}\r\n".encode())
+    body.extend(
+        (
+            f'Content-Disposition: form-data; name="image"; filename="{safe_name}"\r\n'
+            f"Content-Type: {content_type}\r\n\r\n"
+        ).encode()
+    )
+    body.extend(source.read_bytes())
+    body.extend(f"\r\n--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        server_url.rstrip("/") + "/upload/image",
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"ComfyUI image upload failed: {exc}") from exc
+    if not isinstance(result, dict) or not str(result.get("name", "")).strip():
+        raise RuntimeError("ComfyUI returned an unexpected image-upload response")
+    name = str(result["name"])
+    subfolder = str(result.get("subfolder", "")).strip().strip("/\\")
+    return f"{subfolder}/{name}" if subfolder else name

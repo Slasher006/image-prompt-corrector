@@ -1,3 +1,4 @@
+import base64
 import os
 import inspect
 import json
@@ -27,6 +28,8 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.application.processEvents()
 
     def tearDown(self):
+        if self.controller.flux_image_edit_window is not None:
+            self.controller.flux_image_edit_window.close()
         self.root.close()
         gui.SETTINGS_PATH = self.original_settings_path
         self.temp_dir.cleanup()
@@ -71,8 +74,81 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(shortcuts["Correct prompt"], "Ctrl+Return")
         self.assertEqual(shortcuts["Copy corrected prompt"], "Ctrl+Shift+C")
         self.assertEqual(shortcuts["Iterate corrected prompt"], "Ctrl+Shift+R")
+        self.assertEqual(shortcuts["FLUX Image Edit tab"], "Ctrl+Shift+I")
         self.assertIsNotNone(self.controller.library_dock)
         self.assertFalse(self.controller.library_dock.isVisible())
+
+    def test_flux_profiles_are_explicit_persisted_and_drive_encoder_mode(self):
+        self.controller.generator_target_var.set("FLUX.2 Klein 9B")
+        self.controller.flux_model_variant_var.set("Base (50-step)")
+        self.controller.flux_text_encoder_profile_var.set(
+            "Abliterated Qwen3 8B"
+        )
+        self.application.processEvents()
+
+        self.assertTrue(
+            all(widget.isVisible() for widget in self.controller.flux_profile_widgets)
+        )
+        self.assertTrue(self.controller.altered_encoder_var.get())
+        snapshot = self.controller._prompt_option_snapshot()
+        self.assertEqual(snapshot["flux_model_variant"], "Base (50-step)")
+        self.assertEqual(
+            snapshot["flux_text_encoder_profile"],
+            "Abliterated Qwen3 8B",
+        )
+        recommendation = self.controller._krea_recommendation_text()
+        self.assertIn("50 inference steps", recommendation)
+        self.assertIn("not an anatomy fix", recommendation)
+
+    @mock.patch("krea_prompt_gui.messagebox.showwarning")
+    def test_camera_control_authoritatively_replaces_draft_camera(self, showwarning):
+        self.controller.content_format_var.set("Single Image")
+        self.controller.camera_control_var.set(
+            "Point-of-view shot, natural 35mm perspective"
+        )
+        prompt = "Over-the-shoulder view from behind her shoulder. An adult woman waits."
+
+        allowed = self.controller._prompt_ambiguity_preflight(
+            requested_prompt=prompt,
+            effective_prompt=self.controller._apply_camera_direction(
+                prompt,
+                "prompt",
+            ),
+            story_elements="",
+            destination="prompt",
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(self.controller.contract_blocker_highlight_spans, [])
+        showwarning.assert_not_called()
+
+    @mock.patch("krea_prompt_gui.messagebox.showwarning")
+    def test_invented_environmental_motion_passes_ambiguity_preflight(
+        self,
+        showwarning,
+    ):
+        self.controller.content_format_var.set("Single Image")
+        self.controller.camera_control_var.set("Wide full-scene shot, 28mm lens")
+        prompt = (
+            "2 people. A woman stands behind a seated man, her fingers gripping "
+            "his shaft with deliberate force. The room is a vintage study: "
+            "leather-bound books, dust motes dancing in shafts of amber light, "
+            "and a cracked mirror reflecting their forms."
+        )
+
+        allowed = self.controller._prompt_ambiguity_preflight(
+            requested_prompt=prompt,
+            effective_prompt=self.controller._apply_camera_direction(
+                prompt,
+                "prompt",
+            ),
+            story_elements="",
+            destination="prompt",
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(self.controller.ambiguity_highlight_spans, [])
+        showwarning.assert_not_called()
 
     def test_ollama_provider_switches_default_port_and_persists(self):
         self.controller.model_provider_var.set("Ollama")
@@ -277,6 +353,463 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             },
         )
 
+    def test_flux_image_edit_push_uploads_and_sends_three_references(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok": true, "reference_images": 3}'
+        )
+        with (
+            mock.patch(
+                "krea_prompt_gui.upload_comfyui_image",
+                side_effect=["one.png", "two.png", "three.png"],
+            ) as upload,
+            mock.patch(
+                "krea_prompt_gui.urllib.request.urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            result = gui.push_prompt_to_comfyui_bridge(
+                server_url="http://127.0.0.1:8188",
+                prompt="Combine Image 1, Image 2, and Image 3.",
+                workspace="FLUX Image Edit",
+                reference_image_paths=["/tmp/one.png", "/tmp/two.png", "/tmp/three.png"],
+            )
+
+        self.assertEqual(upload.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["upload_name"] for call in upload.call_args_list],
+            [
+                "promptcorrector_flux_ref_1_one.png",
+                "promptcorrector_flux_ref_2_two.png",
+                "promptcorrector_flux_ref_3_three.png",
+            ],
+        )
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(
+            payload["reference_images"],
+            ["one.png", "two.png", "three.png"],
+        )
+        self.assertEqual(result["reference_images"], 3)
+
+    def test_minimax_h3_i2v_push_uploads_keyframes_and_parameters(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok": true, "reference_images": 2}'
+        )
+        with (
+            mock.patch(
+                "krea_prompt_gui.upload_comfyui_image",
+                side_effect=["first.png", "last.png"],
+            ) as upload,
+            mock.patch(
+                "krea_prompt_gui.urllib.request.urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            gui.push_prompt_to_comfyui_bridge(
+                server_url="http://127.0.0.1:8188",
+                prompt="Use <Picture 1> as the exact first frame.",
+                workspace="MiniMax H3 I2V",
+                reference_image_paths=["/tmp/first.png", "/tmp/last.png"],
+                parameters={
+                    "duration": 5.0,
+                    "width": 864,
+                    "height": 480,
+                    "seed": 42,
+                },
+            )
+
+        self.assertEqual(
+            [call.kwargs["upload_name"] for call in upload.call_args_list],
+            [
+                "promptcorrector_minimax_h3_frame_1_first.png",
+                "promptcorrector_minimax_h3_frame_2_last.png",
+            ],
+        )
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["reference_images"], ["first.png", "last.png"])
+        self.assertEqual(
+            payload["parameters"],
+            {"duration": 5.0, "width": 864, "height": 480, "seed": 42},
+        )
+
+    def test_minimax_h3_llm_messages_bind_first_and_last_frames(self):
+        messages = gui.build_minimax_h3_i2v_llm_messages(
+            action="correct",
+            state={
+                "scene": "A red car in rain.",
+                "motion": "The car accelerates while the camera pans right.",
+                "audio": "Rain and engine sound.",
+                "prepared_prompt": "Draft motion prompt.",
+                "duration": 5,
+            },
+            image_data_urls=[
+                "data:image/png;base64,first",
+                "data:image/png;base64,last",
+            ],
+        )
+        content = messages[1]["content"]
+        image_items = [item for item in content if item["type"] == "image_url"]
+        joined_text = "\n".join(
+            item["text"] for item in content if item["type"] == "text"
+        )
+        self.assertEqual(len(image_items), 2)
+        self.assertIn("Picture 1: exact first frame", joined_text)
+        self.assertIn("Picture 2: optional exact final frame", joined_text)
+        self.assertIn("native stereo", messages[0]["content"])
+        self.assertIn("otherwise repeat the exact noun", messages[0]["content"])
+
+    def test_entity_reference_repair_turn_preserves_grounded_request(self):
+        original = gui.build_minimax_h3_i2v_llm_messages(
+            action="correct",
+            state={"prepared_prompt": "A cat sits beside a lamp. It glows."},
+            image_data_urls=["data:image/png;base64,first"],
+        )
+        repaired = gui.build_entity_reference_repair_messages(
+            original,
+            candidate="A cat sits beside a lamp. It glows.",
+            issues=['Ambiguous reference "It" in Candidate'],
+            output_kind="MiniMax H3 prompt",
+        )
+
+        self.assertEqual(repaired[:2], original)
+        self.assertEqual(repaired[2]["role"], "assistant")
+        self.assertIn("repeat", repaired[3]["content"])
+        self.assertIn("MiniMax H3 prompt", repaired[3]["content"])
+
+    def test_minimax_h3_workspace_is_persistent_embedded_tab(self):
+        widget = self.controller.minimax_h3_i2v_window
+        self.assertIsNotNone(widget)
+        self.assertEqual(self.controller.mode_tabs.indexOf(widget), 5)
+        widget.motion.setPlainText("The camera slowly pushes in.")
+        snapshot = self.controller._settings_snapshot()
+        self.assertEqual(
+            snapshot["minimax_h3_i2v"]["motion"],
+            "The camera slowly pushes in.",
+        )
+
+    def test_flux_image_edit_is_embedded_tab_and_sends_three_references(self):
+        self.controller.show_flux_image_edit_window()
+        widget = self.controller.flux_image_edit_window
+        self.assertIsNotNone(widget)
+        self.assertEqual(self.controller.mode_tabs.indexOf(widget), 4)
+        self.assertEqual(
+            self.controller.mode_tabs.currentWidget(),
+            widget,
+        )
+        paths = [f"/tmp/reference-{index}.png" for index in range(1, 4)]
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.send_flux_image_edit_to_comfyui(
+                "http://127.0.0.1:8188",
+                "Prepared FLUX edit prompt",
+                paths,
+            )
+        self.assertEqual(
+            thread_class.call_args.kwargs["args"],
+            (
+                "http://127.0.0.1:8188",
+                "Prepared FLUX edit prompt",
+                "FLUX Image Edit",
+                False,
+                paths,
+            ),
+        )
+
+    def test_flux_image_edit_llm_messages_attach_all_three_images_and_roles(self):
+        messages = gui.build_flux_image_edit_llm_messages(
+            action="correct",
+            state={
+                "instruction": "Put the subject in the supplied jacket.",
+                "preserve": "face and pose",
+                "prepared_prompt": "Draft edit prompt",
+                "analysis": "The jacket is yellow wool.",
+                "references": [
+                    {"path": "/tmp/one.png", "role": "base composition"},
+                    {"path": "/tmp/two.png", "role": "subject identity"},
+                    {"path": "/tmp/three.png", "role": "outfit"},
+                ],
+            },
+            image_data_urls=["data:image/png;base64,one", "data:image/png;base64,two", "data:image/png;base64,three"],
+        )
+        content = messages[1]["content"]
+        image_items = [item for item in content if item["type"] == "image_url"]
+        self.assertEqual(len(image_items), 3)
+        joined_text = "\n".join(
+            item["text"] for item in content if item["type"] == "text"
+        )
+        self.assertIn("Image 3: outfit", joined_text)
+        self.assertIn("The jacket is yellow wool", joined_text)
+
+    def test_flux_image_edit_llm_messages_apply_ventral_frenulum_orientation(self):
+        messages = gui.build_flux_image_edit_llm_messages(
+            action="correct",
+            state={
+                "instruction": (
+                    "Correct the penis underside so the frenulum faces the camera."
+                ),
+                "prepared_prompt": "Draft edit prompt",
+                "references": [
+                    {"path": "/tmp/base.png", "role": "base composition"},
+                    {"path": "/tmp/anatomy.png", "role": "anatomical orientation"},
+                ],
+            },
+            image_data_urls=[
+                "data:image/png;base64,base",
+                "data:image/png;base64,anatomy",
+            ],
+        )
+
+        system = messages[0]["content"]
+        joined_text = "\n".join(
+            item["text"]
+            for item in messages[1]["content"]
+            if item["type"] == "text"
+        )
+        self.assertIn("dorsal/ventral relationship", system)
+        self.assertIn("ventral midline directly beneath", joined_text)
+        self.assertIn("never as image-left versus image-right", joined_text)
+
+    def test_flux_image_edit_llm_start_uses_shared_cancellable_worker(self):
+        state = {
+            "references": [
+                {"path": "/tmp/one.png", "role": "base"},
+                {"path": "/tmp/two.png", "role": "identity"},
+                {"path": "/tmp/three.png", "role": "style"},
+            ]
+        }
+        with mock.patch("krea_prompt_gui.threading.Thread") as thread_class:
+            self.controller.start_flux_image_edit_llm("analyze", state)
+        self.assertTrue(self.controller.request_in_progress)
+        self.assertEqual(
+            thread_class.call_args.kwargs["args"],
+            (self.controller.active_request_id, "analyze", state),
+        )
+        thread_class.return_value.start.assert_called_once_with()
+        self.controller.cancel_event.set()
+        self.controller.request_in_progress = False
+        self.controller._finish_progress(False)
+
+    def test_flux_image_edit_converts_webp_to_png_for_lm_studio(self):
+        path = Path(self.temp_dir.name) / "flux-reference.webp"
+        image = gui.QImage(8, 6, gui.QImage.Format.Format_RGB32)
+        image.fill(gui.QColor("#5b84d7"))
+        self.assertTrue(image.save(str(path), "WEBP"))
+
+        data_url = gui.fetch_local_vision_image_data_url(
+            path,
+            timeout=1.0,
+        )
+
+        self.assertTrue(data_url.startswith("data:image/png;base64,"))
+        encoded = data_url.split(",", 1)[1]
+        converted = gui.QImage.fromData(base64.b64decode(encoded), "PNG")
+        self.assertFalse(converted.isNull())
+        self.assertEqual((converted.width(), converted.height()), (8, 6))
+
+    def test_flux_image_edit_worker_sends_three_local_images_to_selected_model(self):
+        paths = []
+        for index in range(1, 4):
+            path = Path(self.temp_dir.name) / f"flux-reference-{index}.png"
+            path.write_bytes(b"test image placeholder")
+            paths.append(path)
+        state = {
+            "instruction": "Combine the references.",
+            "references": [
+                {"path": str(path), "role": f"role {index}"}
+                for index, path in enumerate(paths, start=1)
+            ],
+        }
+        self.controller.active_request_id = 41
+        self.controller.cancel_event.clear()
+        data_urls = [
+            f"data:image/png;base64,image-{index}"
+            for index in range(1, 4)
+        ]
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                side_effect=data_urls,
+            ) as fetch,
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value="Use Image 1 as the base.",
+            ) as completion,
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(41, "correct", state)
+        self.assertEqual(fetch.call_count, 3)
+        sent_content = completion.call_args.kwargs["messages"][1]["content"]
+        sent_images = [
+            item["image_url"]["url"]
+            for item in sent_content
+            if item["type"] == "image_url"
+        ]
+        self.assertEqual(sent_images, data_urls)
+        self.assertEqual(
+            completion.call_args.kwargs["model"],
+            self.controller.model_var.get(),
+        )
+        self.assertEqual(
+            after.call_args.args[1],
+            self.controller._finish_flux_image_edit_llm,
+        )
+
+    def test_flux_image_edit_worker_unloads_selected_model_when_enabled(self):
+        path = Path(self.temp_dir.name) / "flux-unload-reference.png"
+        path.write_bytes(b"test image placeholder")
+        state = {
+            "instruction": "Adjust the lighting.",
+            "references": [{"path": str(path), "role": "base"}],
+        }
+        self.controller.active_request_id = 42
+        self.controller.cancel_event.clear()
+        self.controller.unload_after_generation_var.set(True)
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                return_value="data:image/png;base64,image",
+            ),
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value="Use Image 1 as the base.",
+            ),
+            mock.patch(
+                "krea_prompt_gui.unload_local_model",
+                return_value=[self.controller.model_var.get()],
+            ) as unload,
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity,
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(42, "correct", state)
+
+        unload.assert_called_once_with(
+            provider=self.controller.model_provider_var.get(),
+            base_url=self.controller._current_base_url(),
+            model=self.controller.model_var.get(),
+            timeout=30.0,
+            api_key=self.controller._model_api_key(),
+        )
+        self.assertTrue(
+            any(
+                "Unloaded LM Studio model" in str(call.args[0])
+                for call in activity.call_args_list
+            )
+        )
+        self.assertEqual(
+            after.call_args.args[1],
+            self.controller._finish_flux_image_edit_llm,
+        )
+
+    def test_flux_image_edit_unload_failure_keeps_successful_result(self):
+        path = Path(self.temp_dir.name) / "flux-unload-failure.png"
+        path.write_bytes(b"test image placeholder")
+        state = {
+            "instruction": "Adjust the lighting.",
+            "references": [{"path": str(path), "role": "base"}],
+        }
+        self.controller.active_request_id = 43
+        self.controller.cancel_event.clear()
+        self.controller.unload_after_generation_var.set(True)
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                return_value="data:image/png;base64,image",
+            ),
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                return_value="Use Image 1 as the base.",
+            ),
+            mock.patch(
+                "krea_prompt_gui.unload_local_model",
+                side_effect=RuntimeError("unload unavailable"),
+            ),
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity,
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(43, "correct", state)
+
+        self.assertTrue(
+            any(
+                "Model unload failed after FLUX Image Edit" in str(call.args[0])
+                for call in activity.call_args_list
+            )
+        )
+        self.assertEqual(
+            after.call_args.args[1],
+            self.controller._finish_flux_image_edit_llm,
+        )
+
+    def test_cancelled_flux_image_edit_does_not_start_unload(self):
+        path = Path(self.temp_dir.name) / "flux-cancelled.png"
+        path.write_bytes(b"test image placeholder")
+        state = {
+            "instruction": "Adjust the lighting.",
+            "references": [{"path": str(path), "role": "base"}],
+        }
+        self.controller.active_request_id = 44
+        self.controller.cancel_event.clear()
+        self.controller.unload_after_generation_var.set(True)
+        with (
+            mock.patch(
+                "krea_prompt_gui.fetch_local_vision_image_data_url",
+                return_value="data:image/png;base64,image",
+            ),
+            mock.patch(
+                "krea_prompt_gui.chat_completion",
+                side_effect=gui.CorrectionCancelled(),
+            ),
+            mock.patch(
+                "krea_prompt_gui.unload_local_model",
+            ) as unload,
+            mock.patch.object(
+                self.controller,
+                "_set_progress_threadsafe",
+            ),
+            mock.patch.object(
+                self.controller,
+                "_after_threadsafe",
+            ) as after,
+        ):
+            self.controller._flux_image_edit_llm_worker(44, "correct", state)
+
+        unload.assert_not_called()
+        after.assert_not_called()
+
+    def test_clean_flux_llm_result_removes_wrapper_but_keeps_prompt(self):
+        result = gui.clean_flux_image_edit_llm_result(
+            "correct",
+            "```text\nCorrected FLUX image-edit prompt: Use Image 1 as the base.\n```",
+        )
+        self.assertEqual(result, "Use Image 1 as the base.")
+
     def test_iteration_feedback_stays_separate_from_persistent_model_instructions(self):
         self.controller.draft_text.setPlainText("A red knight at a castle gate.")
         self.controller.model_instructions_var.set("Keep the knight's red cloak.")
@@ -306,7 +839,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         self.assertNotIn("Generation feedback", sent["model_instructions"])
 
-    def test_ambiguity_preflight_blocks_model_and_marks_disputed_words_red(self):
+    def test_role_ambiguity_is_highlighted_but_correction_continues(self):
         prompt = "Two people enter a cave; he follows her while they carry a torch."
         self.controller.camera_control_var.set("Auto")
         self.controller.draft_text.setPlainText(prompt)
@@ -317,26 +850,22 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         ):
             self.controller.correct_prompt()
 
-        thread_class.assert_not_called()
-        warning.assert_called_once()
+        thread_class.return_value.start.assert_called_once()
+        warning.assert_not_called()
         highlighted = {
             prompt[start:end].casefold()
             for start, end in self.controller.ambiguity_highlight_spans
         }
         self.assertTrue({"he", "her", "they"}.issubset(highlighted))
-        red_selections = [
+        advisory_selections = [
             selection
             for selection in self.controller.draft_text.extraSelections()
-            if selection.format.foreground().color().name() == "#ff6677"
+            if selection.format.foreground().color().name() == "#ffbf69"
         ]
-        self.assertGreaterEqual(len(red_selections), 3)
-        self.assertEqual(
-            self.controller.status_var.get(),
-            "Clarify highlighted ambiguity",
-        )
+        self.assertGreaterEqual(len(advisory_selections), 3)
         activity = self.controller.activity_text.toPlainText()
-        self.assertIn("Ambiguity preflight stopped correction", activity)
-        self.assertNotIn("Started prompt correction", activity)
+        self.assertIn("continuing with automatic correction", activity)
+        self.assertIn("Started prompt correction", activity)
 
     def test_ambiguity_preflight_allows_first_person_single_subject(self):
         self.controller.camera_control_var.set(
@@ -351,6 +880,39 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
         thread_class.return_value.start.assert_called_once()
         self.assertEqual(self.controller.ambiguity_highlight_spans, [])
+
+    def test_input_contract_preflight_blocks_cross_field_exclusion_before_worker(self):
+        self.controller.content_format_var.set("Single Image")
+        self.controller.camera_control_var.set("Auto")
+        self.controller.draft_text.setPlainText(
+            "A centered black bottle in a clean studio. No flowers."
+        )
+        self.controller.goal_headline_var.set(
+            "Pink flowers surround the bottle."
+        )
+
+        with (
+            mock.patch("krea_prompt_gui.threading.Thread") as thread_class,
+            mock.patch.object(gui.messagebox, "showwarning") as warning,
+        ):
+            self.controller.correct_prompt()
+
+        thread_class.assert_not_called()
+        warning.assert_called_once()
+        self.assertEqual(
+            self.controller.status_var.get(),
+            "Resolve input contract conflict",
+        )
+        activity = self.controller.activity_text.toPlainText()
+        self.assertIn("Input contract preflight stopped correction", activity)
+        self.assertIn("flowers", activity)
+        self.assertNotIn("Started prompt correction", activity)
+        blocker_selections = [
+            selection
+            for selection in self.controller.draft_text.extraSelections()
+            if selection.format.foreground().color().name() == "#ff6677"
+        ]
+        self.assertGreaterEqual(len(blocker_selections), 1)
 
     def test_context_tokens_default_dropdown_and_legacy_migration(self):
         self.assertEqual(
@@ -694,10 +1256,37 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
         self.assertEqual(diagnostic["category"], "contract")
         self.assertIn(
-            "make the adult actor, sexual action, contact target, and separate object explicit",
+            "make only the disputed actor, action, reaction, participant, or contact wording explicit",
             diagnostic["next_step"],
         )
+        self.assertNotIn("separate object", diagnostic["next_step"])
         self.assertNotIn("identity, count, or position", diagnostic["next_step"])
+
+    def test_combined_exclusion_and_adult_contract_error_names_both_repairs(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "Excluded content appears positively: mouth; NSFW scene fidelity contract: "
+            "unrequested sexual fluid or outcome added: semen, reaction is not assigned "
+            "to a named adult role: orgasm",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn("remove the named excluded term", diagnostic["next_step"])
+        self.assertIn("make only the named adult role/reaction explicit", diagnostic["next_step"])
+        self.assertIn("authorize the named fluid/outcome", diagnostic["next_step"])
+
+    def test_input_contract_conflict_is_classified_as_input_problem(self):
+        diagnostic = gui.classify_workflow_error(
+            'Input contract conflict: Input exclusion conflict for "flowers"',
+            workspace="prompt",
+            stage="Input preflight",
+        )
+
+        self.assertEqual(diagnostic["category"], "input")
+        self.assertEqual(diagnostic["title"], "The current input needs attention")
+        self.assertIn("Correct the named input conflict", diagnostic["next_step"])
 
     def test_creative_development_error_gives_expansion_specific_recovery_guidance(self):
         diagnostic = gui.classify_workflow_error(
@@ -716,6 +1305,20 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "target prompt-specific scene and story development",
             diagnostic["next_step"],
         )
+        self.assertNotIn("identity, count, or position", diagnostic["next_step"])
+
+    def test_flux_positive_prompt_error_gives_visual_state_recovery_guidance(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "FLUX.2 Klein positive-prompt contract: negative phrasing remains "
+            "instead of a positive desired visual state: No shadows",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn("state its desired visible result positively", diagnostic["next_step"])
+        self.assertIn("soft shadowless light", diagnostic["next_step"])
         self.assertNotIn("identity, count, or position", diagnostic["next_step"])
 
     def test_unexpected_worker_exception_unlocks_ui_and_preserves_result(self):
@@ -1074,12 +1677,16 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(self.controller.active_request_id, 9)
 
     def test_ui_groups_prompt_workflow_and_direct_model_chat(self):
-        self.assertEqual(self.controller.mode_tabs.count(), 5)
+        self.assertEqual(self.controller.mode_tabs.count(), 7)
         self.assertEqual(self.controller.mode_tabs.tabText(0), "Prompt Corrector")
         self.assertEqual(self.controller.mode_tabs.tabText(1), "Comic Story")
         self.assertEqual(self.controller.mode_tabs.tabText(2), "Meme Creator")
         self.assertEqual(self.controller.mode_tabs.tabText(3), "Model Chat")
-        self.assertEqual(self.controller.mode_tabs.tabText(4), "Workbench")
+        self.assertEqual(self.controller.mode_tabs.tabText(4), "FLUX Image Edit")
+        self.assertEqual(self.controller.mode_tabs.tabText(5), "MiniMax H3 I2V")
+        self.assertEqual(self.controller.mode_tabs.tabText(6), "Workbench")
+        self.assertIsNotNone(self.controller.flux_image_edit_window)
+        self.assertIsNotNone(self.controller.minimax_h3_i2v_window)
         self.assertIsNotNone(self.controller.workbench_widget)
         self.assertEqual(self.controller.setup_tabs.count(), 4)
         self.assertEqual(self.controller.setup_tabs.tabText(0), "Sampling and presets")
@@ -1642,7 +2249,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             self.controller.setup_tabs.tabText(
                 self.controller.generator_controls_tab_index
             ),
-            "FLUX setup (fixed)",
+            "FLUX profile",
         )
         recommendation = self.controller._krea_recommendation_text()
         self.assertIn("4 inference steps", recommendation)
@@ -2884,6 +3491,46 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         logged = "\n".join(call.args[0] for call in activity.call_args_list)
         self.assertIn("deterministic length recovery", logged)
+
+    def test_invent_repair_returns_preserved_seed_after_ambiguous_model_repair(self):
+        seed = "A woman in a red coat stands in a studio."
+        ambiguous = (
+            "A woman and a second woman stand in a studio while her silver "
+            "necklace glows."
+        )
+        with mock.patch(
+            "krea_prompt_gui.chat_completion",
+            return_value=ambiguous,
+        ) as repair:
+            with mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity:
+                result = self.controller._normalize_or_repair_invent(
+                    request_id=self.controller.active_request_id,
+                    base_url="http://127.0.0.1:1234/v1",
+                    model="test-model",
+                    workspace="single",
+                    field="draft",
+                    response=ambiguous,
+                    seed_value=seed,
+                    temperature=0.7,
+                    seed=None,
+                )
+
+        self.assertEqual(repair.call_count, 1)
+        self.assertEqual(result, seed)
+        self.assertEqual(
+            gui.invent_field_issues(
+                "single",
+                "draft",
+                result,
+                seed_value=seed,
+            ),
+            [],
+        )
+        logged = "\n".join(call.args[0] for call in activity.call_args_list)
+        self.assertIn("returned the preserved input", logged)
 
     def test_concepts_invent_deterministically_keeps_the_existing_seed(self):
         with mock.patch("krea_prompt_gui.chat_completion") as repair:

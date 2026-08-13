@@ -10,11 +10,21 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from contract_validation import candidate_delta_issues, compile_prompt_contract
+from scene_relations import extract_relation_facts
+
 
 SEXUAL_SIGNAL_PATTERN = re.compile(
     r"\b(?:nsfw|nude|naked|erotic|sexual|sex|intercourse|masturbat\w*|"
     r"oral\s+(?:sex|stimulation)|blowjobs?|handjobs?|anal\s+sex|"
-    r"penetrat\w*|orgasm\w*|climax\w*|foreplay|"
+    r"manual(?:ly)?\s+stimulat(?:e|es|ed|ing|ion)|precum|"
+    r"(?:grip(?:s|ped|ping)?|hold(?:s|ing)?|held|strok(?:e|es|ed|ing)|"
+    r"rub(?:s|bed|bing)?)\b[^.!?;]{0,70}\b(?:penis|cock|"
+    r"(?:his|her|their)(?:\s+erect)?\s+shaft|erect\s+shaft)\b|"
+    r"penetrat\w*|penetrative\s+sex|"
+    r"fuck(?:s|ed|ing)?\s+(?:(?:an?|the)\s+)?(?:adult\s+)?"
+    r"(?:woman|man|female|male|her|him|them)\b|"
+    r"orgasm\w*|climax\w*|foreplay|"
     r"seduc\w*|intimate|kiss(?:es|ed|ing)?|dildos?|vibrators?|strap[- ]ons?|"
     r"sex\s+toys?|adult\s+toys?|bondage)\b",
     re.IGNORECASE,
@@ -32,7 +42,8 @@ ROLE_PATTERN_TEXT = (
 ROLE_PATTERN = re.compile(rf"\b{ROLE_PATTERN_TEXT}\b", re.IGNORECASE)
 
 NEGATIVE_CLAUSE_PATTERN = re.compile(
-    r"(?i)\b(?:no|without|avoid|exclude|never|do\s+not|don't)\b[^,.!?;\n]*"
+    r"(?i)\b(?:no|without|avoid|exclude|never|do\s+not|don't)\b"
+    r"(?:(?!\bbut\b)[^,.!?;\n])*"
 )
 TOY_TERM_PATTERN_TEXT = (
     r"(?:dildos?|vibrators?|strap[- ]ons?|sex\s+toys?|adult\s+toys?|"
@@ -60,6 +71,569 @@ DILDO_USE_PATTERN = re.compile(
     r"(?:vagina|vaginal\s+opening|vulva|pussy|anus|anal\s+opening|rectum)\b)",
     re.IGNORECASE,
 )
+
+PENIS_VENTRAL_ORIENTATION_PROMPT = (
+    "The penis is oriented with its ventral underside facing the camera, the "
+    "frenulum visibly centered on the ventral midline directly beneath the "
+    "glans, and the dorsal surface facing away from the camera."
+)
+SEMEN_TIP_ORIGIN_PROMPT = (
+    "Visible semen emerges from the urethral opening centered at the tip of the "
+    "glans; the shaft base remains clean and continuously attached to the pelvis."
+)
+VISIBLE_SEMEN_RELEASE_PATTERN = re.compile(
+    r"\b(?:cum(?:shot)?|semen|ejaculat(?:e|es|ed|ing|ion)|spurts?|"
+    r"jets?|shoots?|sprays?|release(?:s|d|ing)?\s+(?:cum|semen))\b",
+    re.IGNORECASE,
+)
+SEMEN_WRONG_BASE_PATTERNS = (
+    re.compile(
+        r"\b(?:cum|semen|ejaculat\w*|spurts?|jets?|sprays?)\b"
+        r"[^.!?;]{0,45}\b(?:from|at|out\s+of)\s+(?:the\s+)?"
+        r"(?:penile\s+|penis\s+|shaft\s+)?(?:base|root)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:base|root)\s+of\s+(?:the\s+)?(?:penis|shaft)\b"
+        r"[^.!?;]{0,45}\b(?:releases?|emits?|shoots?|sprays?|ejaculat\w*)\b"
+        r"[^.!?;]{0,20}\b(?:cum|semen)?\b",
+        re.IGNORECASE,
+    ),
+)
+PENIS_ANATOMY_PATTERN = re.compile(
+    r"\b(?:penis|penile|cock|dick|phallus|frenulum|frenular|"
+    r"penisb(?:a|ä)ndchen)\b",
+    re.IGNORECASE,
+)
+PENIS_VENTRAL_VIEWPOINT_PATTERN = re.compile(
+    r"\b(?:from\s+(?:directly\s+)?(?:below|beneath)|viewed\s+from\s+beneath|"
+    r"underneath\s+view|worm['’]?s[- ]eye(?:\s+view)?|"
+    r"(?:camera|viewpoint)\s+(?:is\s+)?(?:placed|positioned|located)?\s*"
+    r"(?:directly\s+)?(?:below|beneath|under)\s+(?:the\s+)?"
+    r"(?:penis|genitals?|pelvis|groin)|"
+    r"(?:camera|viewpoint)[^.!?]{0,80}\blooking\s+upward\b|"
+    r"(?:camera|viewpoint)[^.!?]{0,80}\bat\s+(?:the\s+)?(?:feet|foot\s+end)"
+    r"[^.!?]{0,80}\b(?:toward|towards)\s+(?:the\s+)?torso\b)\b",
+    re.IGNORECASE,
+)
+PENIS_ORIENTATION_ANALYSIS_PATTERN = re.compile(
+    r"\b(?:low[- ]angle|high[- ]angle|eye[- ]level|overhead|top[- ]down|"
+    r"front(?:al)?\s+view|rear\s+view|side(?:\s+view|[- ]profile)?|"
+    r"three-quarter\s+view|camera|viewpoint|lens|from\s+(?:above|below|beneath)|"
+    r"supine|prone|reclining|lying|standing|kneeling|seated|crouching|"
+    r"rotated|rotation|pointing|angled|erect|flaccid)\b",
+    re.IGNORECASE,
+)
+PENIS_VENTRAL_REVERSED_PATTERNS = (
+    re.compile(
+        r"\bfrenulum\b[^.!?]{0,45}\b(?:on|along|at)\b[^.!?]{0,20}"
+        r"\b(?:dorsal|upper|top)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:dorsal|upper|top)\b[^.!?]{0,35}"
+        r"\b(?:contains?|showing|with|bearing)\b[^.!?]{0,25}\bfrenulum\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bdorsal(?:\s+(?:side|surface))?\b[^.!?]{0,35}"
+        r"\b(?:faces?|facing|turned|oriented)\s+"
+        r"(?:(?:directly|toward|towards|to)\s+)?(?:the\s+)?"
+        r"(?:camera|viewer)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bventral(?:\s+(?:side|surface|underside))?\b[^.!?]{0,35}"
+        r"\b(?:faces?|facing|turned|oriented)\s+away\b",
+        re.IGNORECASE,
+    ),
+)
+
+CROSS_SUBJECT_MANUAL_ACTION_PATTERN = re.compile(
+    r"\b(?:grip(?:s|ped|ping)?|hold(?:s|ing)?|held|stroke(?:s|d|ing)?|"
+    r"rub(?:s|bed|bing)?|manual(?:ly)?\s+stimulat(?:e|es|ed|ing|ion)|"
+    r"hand[- ]?to[- ]?penis\s+contact|handjobs?)\b",
+    re.IGNORECASE,
+)
+CROSS_SUBJECT_MALE_GENITAL_OWNER_PATTERN = re.compile(
+    r"(?:\b(?:his|(?:the\s+)?(?:[a-z-]+\s+){0,4}man['’]s)\s+"
+    r"(?:[a-z-]+\s+){0,3}(?:penis|shaft|cock|dick|phallus)\b|"
+    r"\b(?:penis|shaft|cock|dick|phallus)\s+of\s+(?:the\s+)?"
+    r"(?:[a-z-]+\s+){0,4}man\b)",
+    re.IGNORECASE,
+)
+CROSS_SUBJECT_EXPLICIT_MALE_GENITAL_OWNER_PATTERN = re.compile(
+    r"(?:\b(?:the\s+)?(?:[a-z-]+\s+){0,4}man['’]s\s+"
+    r"(?:[a-z-]+\s+){0,3}(?:penis|shaft|cock|dick|phallus)\b|"
+    r"\b(?:penis|shaft|cock|dick|phallus)\s+of\s+(?:the\s+)?"
+    r"(?:[a-z-]+\s+){0,4}man\b)",
+    re.IGNORECASE,
+)
+
+
+def requires_explicit_cross_subject_genital_binding(text: str) -> bool:
+    """Detect a woman manually stimulating a distinctly male-owned penis."""
+
+    cleaned = NEGATIVE_CLAUSE_PATTERN.sub("", str(text or ""))
+    has_woman = bool(re.search(r"\b(?:woman|female|lady|wife|bride)\b", cleaned, re.I))
+    has_man = bool(re.search(r"\b(?:man|male|husband|groom)\b", cleaned, re.I))
+    female_actor = bool(
+        re.search(
+            r"\b(?:she|her\s+(?:own\s+)?hands?|(?:the\s+)?(?:adult\s+)?"
+            r"(?:woman|female|lady|wife|bride)(?:['’]s\s+hands?)?)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+    sexual_context = bool(
+        SEXUAL_SIGNAL_PATTERN.search(cleaned)
+        or re.search(r"\b(?:erect\s+shaft|precum|semen)\b", cleaned, re.IGNORECASE)
+    )
+    return bool(
+        has_woman
+        and has_man
+        and female_actor
+        and sexual_context
+        and CROSS_SUBJECT_MANUAL_ACTION_PATTERN.search(cleaned)
+        and CROSS_SUBJECT_MALE_GENITAL_OWNER_PATTERN.search(cleaned)
+    )
+
+
+def cross_subject_genital_binding_instruction(text: str) -> str:
+    """Return private FLUX wording guidance for overlapping intimate contact."""
+
+    if not requires_explicit_cross_subject_genital_binding(text):
+        return ""
+    return (
+        "Private cross-subject body-binding contract: in one natural action "
+        "lead at the beginning of the final prompt, state that exactly two distinct "
+        "adults are visible, and name both adults instead of relying only on her/his "
+        "pronouns. State that the adult woman performs the manual contact on the "
+        "adult man's penis and that the penis is visibly attached to the man's "
+        "pelvis with a continuous base-to-tip direction extending outward from his "
+        "groin. Do not quote or label this private contract in the final prompt."
+    )
+
+
+def cross_subject_genital_binding_lead(text: str) -> str:
+    """Build a concise positive FLUX lead from the supplied spatial relationship."""
+
+    if not requires_explicit_cross_subject_genital_binding(text):
+        return ""
+    cleaned = NEGATIVE_CLAUSE_PATTERN.sub("", str(text or ""))
+    seated_man = bool(
+        re.search(
+            r"\b(?:seated\s+(?:adult\s+)?man|(?:adult\s+)?man\s+(?:is\s+)?seated)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+    woman_behind_man = bool(
+        re.search(
+            r"\b(?:woman|female|lady|wife|bride)\b[^.!?;]{0,100}\bbehind\b"
+            r"[^.!?;]{0,100}\b(?:man|male|husband|groom)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+    wide = bool(re.search(r"\bwide(?:\s+full[- ]scene)?\s+shot\b|\bshot\s+wide\b", cleaned, re.I))
+    erect = bool(re.search(r"\berect\b", cleaned, re.IGNORECASE))
+    uses_fingers = bool(
+        re.search(
+            r"\b(?:her|(?:the\s+)?(?:adult\s+)?woman['’]s)\s+"
+            r"(?:[a-z-]+\s+){0,2}fingers?\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+    frame = " in one continuous wide shot" if wide else " in one continuous scene"
+    man_role = "the seated adult man" if seated_man else "the adult man"
+    effector = "fingers" if uses_fingers else "hands"
+    if seated_man and woman_behind_man:
+        staging = ""
+        action = (
+            "The adult woman is positioned directly behind the seated adult man "
+            f"and reaches forward with her {effector} to grip and manually stimulate "
+        )
+    else:
+        staging = "One is an adult woman and the other is an adult man. "
+        action = f"The adult woman uses her {effector} to grip and manually stimulate "
+    anatomy = f"{man_role}'s {'erect ' if erect else ''}penis"
+    return (
+        f"Exactly two distinct adults are fully visible{frame}. "
+        + staging
+        + action
+        + anatomy
+        + ", whose base is visibly attached to the man's pelvis as the penis "
+        + "extends outward from his groin in one continuous base-to-tip direction."
+    )
+
+
+def cross_subject_genital_binding_issues(
+    final_prompt: str,
+    original_prompt: str,
+) -> list[str]:
+    """Require role nouns beside the actor and anatomy owner for FLUX."""
+
+    if not requires_explicit_cross_subject_genital_binding(original_prompt):
+        return []
+    candidate = str(final_prompt or "")
+    opening = " ".join(candidate.split()[:90])
+    if not re.search(r"\bexactly\s+two\s+distinct\s+adults\b", opening, re.IGNORECASE):
+        return ["front-load exactly two distinct adults before secondary scene detail"]
+    for sentence in re.split(r"(?<=[.!?;])\s+", opening):
+        woman_before_action = re.search(
+            r"\b(?:the\s+)?(?:[a-z-]+\s+){0,4}woman(?:['’]s\s+hands?)?\b"
+            r"[^.!?;]{0,140}\b(?:grip(?:s|ped|ping)?|hold(?:s|ing)?|held|"
+            r"stroke(?:s|d|ing)?|rub(?:s|bed|bing)?|manual(?:ly)?\s+"
+            r"stimulat(?:e|es|ed|ing|ion))\b",
+            sentence,
+            re.IGNORECASE,
+        )
+        passive_woman_actor = re.search(
+            r"\b(?:grip(?:ped|ping)?|held|strok(?:ed|ing)|rubbed|stimulated)\b"
+            r"[^.!?;]{0,100}\bby\s+(?:the\s+)?(?:[a-z-]+\s+){0,4}woman\b",
+            sentence,
+            re.IGNORECASE,
+        )
+        if (
+            (woman_before_action or passive_woman_actor)
+            and CROSS_SUBJECT_EXPLICIT_MALE_GENITAL_OWNER_PATTERN.search(sentence)
+            and re.search(
+                r"\b(?:attached|connected|continuous)\b[^.!?;]{0,80}\b"
+                r"(?:man's|male|pelvis)\b|\bman's\s+pelvis\b",
+                opening,
+                re.IGNORECASE,
+            )
+            and re.search(
+                r"\b(?:base-to-tip|root-to-tip|extends?\s+outward)\b",
+                opening,
+                re.IGNORECASE,
+            )
+        ):
+            return []
+    return [
+        "front-load the adult woman as the manual actor, the adult man as the "
+        "penis owner, and a continuous outward base-to-tip direction from the "
+        "man's pelvis"
+    ]
+
+
+def enforce_cross_subject_genital_binding(
+    candidate: str,
+    original_prompt: str,
+) -> str:
+    """Front-load one positive visual contract when FLUX role binding is weak."""
+
+    cleaned = " ".join(str(candidate or "").split()).strip()
+    lead = cross_subject_genital_binding_lead(original_prompt)
+    if not lead:
+        return cleaned
+    cleaned = re.sub(
+        r"(?is)^\s*Exactly\s+two\s+distinct\s+adults\b.*?"
+        r"(?:continuous\s+(?:base|root)-to-tip\s+direction|"
+        r"two\s+distinct\s+adult\s+bodies\s+in\s+the\s+overlapping\s+pose)\s*\.\s*",
+        "",
+        cleaned,
+        count=1,
+    )
+    obsolete = re.compile(
+        r"(?i)\bThe adult woman's hands visibly grip and manually stimulate the "
+        r"adult man's penis, with her arms and his pelvis belonging to two distinct "
+        r"adult bodies in the overlapping pose\.\s*"
+    )
+    cleaned = obsolete.sub("", cleaned).strip()
+    cleaned = re.sub(
+        r"(?i)^\s*(?:2|two)\s+people\s*\.\s*",
+        "",
+        cleaned,
+        count=1,
+    )
+    cleaned = re.sub(
+        r"(?i)\bA\s+woman\s+stands\s+behind\s+a\s+seated\s+man\s*,\s*"
+        r"her\s+hands\s+gripping\s+his\s+(?:erect\s+)?penis\s+with\s+"
+        r"deliberate\s+force\s+as\s+precum\s+glistens\s+under\s+warm\s*,\s*"
+        r"intimate\s+lighting\s*\.\s*",
+        "The woman's grip remains deliberately forceful while precum glistens "
+        "at the tip of the man's penis under warm, intimate lighting. ",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)\bThe\s+scene\s+visibly\s+includes\s+manual\s+stimulation\s+"
+        r"of\s+(?:the\s+)?penis\s*\.?\s*",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(re.escape(lead), "", cleaned, flags=re.IGNORECASE).strip(" .")
+    compacted_sentences: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", cleaned):
+        redundant_action = bool(
+            re.search(r"\b(?:woman|female)\b", sentence, re.IGNORECASE)
+            and re.search(r"\b(?:man|male)\b", sentence, re.IGNORECASE)
+            and CROSS_SUBJECT_MANUAL_ACTION_PATTERN.search(sentence)
+            and CROSS_SUBJECT_MALE_GENITAL_OWNER_PATTERN.search(sentence)
+        )
+        if not redundant_action:
+            compacted_sentences.append(sentence)
+            continue
+        details: list[str] = []
+        if re.search(r"\bphotoreal(?:istic)?\b", sentence, re.IGNORECASE):
+            details.append("Photorealistic rendering.")
+        lens = re.search(r"\b(\d+)\s*mm\s+lens\b", sentence, re.IGNORECASE)
+        if lens:
+            details.append(f"The wide composition uses a {lens.group(1)}mm lens.")
+        lighting = re.search(
+            r"\b((?:soft|warm|natural|intimate|dramatic)(?:\s+[a-z-]+){0,3}\s+"
+            r"light(?:ing)?)\b",
+            sentence,
+            re.IGNORECASE,
+        )
+        if lighting:
+            details.append(lighting.group(1).capitalize() + " illuminates the scene.")
+        if re.search(r"\b(?:deliberate\s+force|forceful)\b", sentence, re.IGNORECASE):
+            details.append("The woman's grip remains deliberately forceful.")
+        if re.search(r"\bprecum\b", sentence, re.IGNORECASE):
+            details.append("Precum glistens at the tip of the man's penis.")
+        compacted_sentences.extend(details)
+    cleaned = " ".join(value.strip() for value in compacted_sentences if value.strip())
+    combined = lead + ((" " + cleaned) if cleaned else "")
+    return " ".join(combined.split()).strip()
+
+
+def requests_visible_penis_ventral_orientation(text: str) -> bool:
+    """Return whether the request makes the penile underside orientation visible."""
+
+    cleaned = NEGATIVE_CLAUSE_PATTERN.sub("", str(text or ""))
+    if re.search(
+        r"\b(?:frenulum|frenular|penisb(?:a|ä)ndchen)\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    penis_term = r"(?:penis|penile|cock|dick|phallus)"
+    orientation_cue = r"(?:ventral(?:ly)?|underside|under[- ]surface|unterseite)"
+    explicit_pair = re.search(
+        rf"\b(?:{penis_term}\b[^.!?]{{0,35}}\b{orientation_cue}|"
+        rf"{orientation_cue}\b[^.!?]{{0,35}}\b{penis_term})\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if explicit_pair:
+        return True
+    explicit_dorsal_pair = re.search(
+        rf"\b(?:{penis_term}\b[^.!?]{{0,35}}\bdorsal|"
+        rf"dorsal\b[^.!?]{{0,35}}\b{penis_term})\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if explicit_dorsal_pair:
+        return False
+    return bool(
+        PENIS_ANATOMY_PATTERN.search(cleaned)
+        and PENIS_VENTRAL_VIEWPOINT_PATTERN.search(cleaned)
+    )
+
+
+def needs_penis_orientation_analysis(text: str) -> bool:
+    """Return whether pose or camera cues require conditional surface reasoning."""
+
+    cleaned = NEGATIVE_CLAUSE_PATTERN.sub("", str(text or ""))
+    return bool(
+        PENIS_ANATOMY_PATTERN.search(cleaned)
+        and PENIS_ORIENTATION_ANALYSIS_PATTERN.search(cleaned)
+    )
+
+
+def penis_ventral_orientation_instruction(text: str) -> str:
+    """Return private dorsal/ventral guidance only for a requested visible underside."""
+
+    underside_required = requests_visible_penis_ventral_orientation(text)
+    if not underside_required and not needs_penis_orientation_analysis(text):
+        return ""
+    shared = (
+        "Private viewpoint-aware penile anatomy contract: treat this as a "
+        "front-to-back dorsal/ventral relationship, never as image-left versus "
+        "image-right. Infer the visible surface only from the combined body pose, "
+        "penile rotation, and camera viewpoint. A side view, ordinary front view, "
+        "close-up, or generic low angle alone is not enough. "
+    )
+    if underside_required:
+        return shared + (
+            "The requested view exposes the underside, so the ventral surface faces "
+            "the camera, the frenulum lies on the ventral midline directly beneath "
+            "the glans, and the dorsal surface faces away. State that relationship "
+            "concretely in the final visual prompt without clinical explanation."
+        )
+    return shared + (
+        "Determine whether the supplied pose and viewpoint expose the ventral underside "
+        "or the dorsal surface. If the underside is exposed, place the frenulum on the "
+        "ventral midline directly beneath the glans. If the dorsal or top surface is "
+        "exposed, do not move or invent the frenulum there. Add only the orientation "
+        "that is visually supported."
+    )
+
+
+def penis_ventral_orientation_issues(
+    final_prompt: str,
+    original_prompt: str,
+) -> list[str]:
+    """Validate a specifically requested view of the penile ventral underside."""
+
+    if not requests_visible_penis_ventral_orientation(original_prompt):
+        return []
+    candidate = str(final_prompt or "")
+    issues: list[str] = []
+    if any(pattern.search(candidate) for pattern in PENIS_VENTRAL_REVERSED_PATTERNS):
+        issues.append("frenulum or ventral underside is assigned to the dorsal or top surface")
+    required_patterns = (
+        (r"\bfrenulum\b", "frenulum is not explicitly visible"),
+        (
+            r"\b(?:ventral(?:\s+(?:surface|side|underside|midline))?|underside)\b",
+            "ventral underside is not explicit",
+        ),
+        (
+            r"\b(?:directly\s+)?(?:beneath|under|below)\s+(?:the\s+)?glans\b",
+            "frenulum is not bound beneath the glans",
+        ),
+        (
+            r"\b(?:ventral(?:\s+(?:surface|side|underside))?|underside)\b"
+            r"[^.!?]{0,90}\b(?:faces?|facing|toward|towards)\b"
+            r"[^.!?]{0,35}\b(?:camera|viewer)\b",
+            "ventral underside is not oriented toward the camera",
+        ),
+        (
+            r"\bdorsal(?:\s+(?:surface|side))?\b[^.!?]{0,90}"
+            r"\b(?:faces?|facing|turned)\b[^.!?]{0,35}\baway\b",
+            "dorsal surface is not oriented away from the camera",
+        ),
+    )
+    for pattern, label in required_patterns:
+        if not re.search(pattern, candidate, flags=re.IGNORECASE):
+            issues.append(label)
+    return issues
+
+
+def enforce_penis_ventral_orientation_contract(
+    candidate: str,
+    original_prompt: str,
+) -> str:
+    """Add one concise, correct orientation sentence when the request requires it."""
+
+    cleaned = str(candidate or "").strip()
+    if not requests_visible_penis_ventral_orientation(original_prompt):
+        return cleaned
+    cleaned = re.sub(
+        r"(?i)\b(?:the\s+)?frenulum(?:\s+is)?(?:\s+clearly)?"
+        r"(?:\s+visible|\s+located)?\s+(?:on|along|at)\s+(?:the\s+)?"
+        r"(?:dorsal|upper|top)\s+(?:side|surface|midline)\b",
+        "the frenulum is visible on the ventral midline directly beneath the glans",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)\b(?:the\s+)?dorsal\s+(?:side|surface)\s+"
+        r"(?:faces?|facing|turned\s+toward|oriented\s+toward)\s+"
+        r"(?:the\s+)?(?:camera|viewer)\b",
+        "the ventral underside facing the camera",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)\b(?:the\s+)?ventral\s+(?:side|surface|underside)\s+"
+        r"(?:faces?|facing|turned)\s+away\s+from\s+(?:the\s+)?"
+        r"(?:camera|viewer)\b",
+        "the dorsal surface facing away from the camera",
+        cleaned,
+    )
+    if not penis_ventral_orientation_issues(cleaned, original_prompt):
+        return cleaned
+    if cleaned:
+        return cleaned.rstrip(" .") + ". " + PENIS_VENTRAL_ORIENTATION_PROMPT
+    return PENIS_VENTRAL_ORIENTATION_PROMPT
+
+
+def requires_semen_tip_origin(text: str) -> bool:
+    """Return whether a visible penile semen release needs an origin contract."""
+
+    cleaned = NEGATIVE_CLAUSE_PATTERN.sub("", str(text or ""))
+    return bool(
+        PENIS_ANATOMY_PATTERN.search(cleaned)
+        and VISIBLE_SEMEN_RELEASE_PATTERN.search(cleaned)
+        and not re.search(
+            r"\b(?:female\s+ejaculat\w*|vaginal\s+fluid|specimen|sample|vial|cup)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+
+
+def semen_tip_origin_instruction(text: str) -> str:
+    """Return private generation guidance for the anatomical emission point."""
+
+    if not requires_semen_tip_origin(text):
+        return ""
+    return (
+        "Private semen-origin anatomy contract: visible semen must emerge only "
+        "from the urethral opening centered at the tip of the glans. Keep the "
+        "shaft base clean and continuously attached to the pelvis; never depict "
+        "semen emerging from the base, root, shaft surface, or groin. Express the "
+        "correct positive anatomy naturally without quoting this private contract."
+    )
+
+
+def semen_tip_origin_issues(final_prompt: str, original_prompt: str) -> list[str]:
+    """Validate the visible origin of semen when penile release is requested."""
+
+    if not requires_semen_tip_origin(original_prompt):
+        return []
+    candidate = str(final_prompt or "")
+    issues: list[str] = []
+    if any(pattern.search(candidate) for pattern in SEMEN_WRONG_BASE_PATTERNS):
+        issues.append("semen is incorrectly emitted from the penis base or root")
+    correct_origin = bool(
+        re.search(
+            r"\b(?:cum|semen|ejaculat\w*|fluid)\b[^.!?;]{0,70}"
+            r"\b(?:from|through|at|out\s+of)\b[^.!?;]{0,35}"
+            r"\b(?:urethral\s+opening|meatus|tip\s+of\s+(?:the\s+)?glans|glans\s+tip)\b",
+            candidate,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:urethral\s+opening|meatus|tip\s+of\s+(?:the\s+)?glans|glans\s+tip)\b"
+            r"[^.!?;]{0,70}\b(?:emits?|releases?|shoots?|sprays?|spurts?|jets?)\b"
+            r"[^.!?;]{0,25}\b(?:cum|semen|ejaculate|fluid)\b",
+            candidate,
+            re.IGNORECASE,
+        )
+    )
+    if not correct_origin:
+        issues.append("semen origin is not explicitly bound to the urethral opening at the glans tip")
+    return issues
+
+
+def enforce_semen_tip_origin_contract(candidate: str, original_prompt: str) -> str:
+    """Repair wrong semen origins and add one concise positive anatomy sentence."""
+
+    cleaned = str(candidate or "").strip()
+    if not requires_semen_tip_origin(original_prompt):
+        return cleaned
+    replacements = (
+        (
+            r"(?i)\b(?:from|at|out\s+of)\s+(?:the\s+)?"
+            r"(?:penile\s+|penis\s+|shaft\s+)?(?:base|root)\b",
+            "from the urethral opening at the tip of the glans",
+        ),
+        (
+            r"(?i)\b(?:base|root)\s+of\s+(?:the\s+)?(?:penis|shaft)\b"
+            r"(?=[^.!?;]{0,45}\b(?:releases?|emits?|shoots?|sprays?|ejaculat\w*))",
+            "urethral opening at the tip of the glans",
+        ),
+    )
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned)
+    if not semen_tip_origin_issues(cleaned, original_prompt):
+        return cleaned
+    if cleaned:
+        return cleaned.rstrip(" .") + ". " + SEMEN_TIP_ORIGIN_PROMPT
+    return SEMEN_TIP_ORIGIN_PROMPT
 
 ACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("toy use", TOY_USE_PATTERN),
@@ -97,8 +671,28 @@ ACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("intercourse", re.compile(r"\b(?:intercourse|making\s+love|has?\s+sex)\b", re.IGNORECASE)),
-    ("manual stimulation", re.compile(r"\b(?:manual\s+stimulation|handjob|fingering)\b", re.IGNORECASE)),
+    (
+        "intercourse",
+        re.compile(
+            r"\b(?:intercourse|penetrative\s+sex|making\s+love|"
+            r"(?:has|have|having|had)\s+sex|"
+            r"fuck(?:s|ed|ing)?\s+(?:(?:an?|the)\s+)?(?:adult\s+)?"
+            r"(?:woman|man|female|male|her|him|them))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "manual stimulation",
+        re.compile(
+            r"\b(?:manual(?:ly)?\s+stimulat(?:e|es|ed|ing|ion)|"
+            r"handjobs?|fingering|"
+            r"(?:grip(?:s|ped|ping)?|hold(?:s|ing)?|held|"
+            r"strok(?:e|es|ed|ing)|rub(?:s|bed|bing)?)\b"
+            r"[^.!?;]{0,70}\b(?:penis|cock|(?:his|her|their)"
+            r"(?:\s+erect)?\s+shaft|erect\s+shaft))\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("kissing", re.compile(r"\b(?:kiss(?:es|ed|ing)?|making\s+out)\b", re.IGNORECASE)),
     ("undressing", re.compile(r"\b(?:undress\w*|remov\w+\s+(?:clothing|lingerie))\b", re.IGNORECASE)),
     ("bondage", re.compile(r"\b(?:bondage|restraints?|restrain\w*|blindfold|cuffs?|rope)\b", re.IGNORECASE)),
@@ -107,14 +701,45 @@ BODY_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "vaginal",
         re.compile(
-            r"\b(?:vagina|vaginal|vaginally|vulva|vulval|labia|pussy)\b",
+            r"\b(?:vagina|vaginal|vaginally|vulva|vulval|labia|pussy|"
+            r"cunt|twat|snatch|cooch(?:ie)?)\b",
             re.IGNORECASE,
         ),
     ),
-    ("anal", re.compile(r"\b(?:anus|anal|anally|rectum|rectal)\b", re.IGNORECASE)),
+    (
+        "anal",
+        re.compile(
+            r"\b(?:anus|anal|anally|rectum|rectal|asshole|butt\s*hole|back\s*door)\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("oral", re.compile(r"\b(?:mouth|oral|lips|tongue)\b", re.IGNORECASE)),
-    ("chest", re.compile(r"\b(?:chest|breasts?|nipples?)\b", re.IGNORECASE)),
-    ("genital", re.compile(r"\b(?:genitals?|penis|vagina|vulva|testicles?|scrotum)\b", re.IGNORECASE)),
+    (
+        "chest",
+        re.compile(
+            r"\b(?:chest|breasts?|nipples?|tits?|boobs?|knockers|jugs|funbags)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "genital",
+        re.compile(
+            r"\b(?:genitals?|penis|cock|dick|schlong|dong|wang|vagina|vulva|"
+            r"testicles?|scrotum)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+EXPLICIT_ORAL_CONTACT_PATTERN = re.compile(
+    r"\b(?:oral\s+(?:sex|pleasure|intimacy|stimulation)|blowjobs?|cunnilingus|"
+    r"mouth-to-(?:genital|penis|vulva)\s+contact|"
+    r"(?:mouth|lips|tongue)\b[^.!?;]{0,55}\b(?:on|around|against|touching|"
+    r"contact(?:ing)?)\b[^.!?;]{0,35}\b"
+    r"(?:penis|cock|genitals?|vulva|clitoris)|"
+    r"(?:penis|cock|genitals?|vulva|clitoris)\b[^.!?;]{0,55}\b"
+    r"(?:in|inside|against|touching|contact(?:ing)?)\b[^.!?;]{0,25}\b"
+    r"(?:mouth|lips|tongue))\b",
+    re.IGNORECASE,
 )
 OBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dildo", re.compile(r"\bdildos?\b", re.IGNORECASE)),
@@ -125,10 +750,40 @@ OBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 PHASE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aftercare", re.compile(r"\b(?:aftercare|afterglow|cleaning\s+up|morning\s+after|post-climax)\b", re.IGNORECASE)),
-    ("climax", re.compile(r"\b(?:climax\w*|orgasm\w*|peak|release)\b", re.IGNORECASE)),
-    ("active", re.compile(r"\b(?:penetrat\w*|intercourse|masturbat\w*|thrust\w*|oral\s+(?:sex|pleasure)|manual\s+stimulation)\b", re.IGNORECASE)),
+    (
+        "climax",
+        re.compile(
+            r"\b(?:climax\w*|orgasm\w*|ejaculat\w*|peak|release)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "active",
+        re.compile(
+            r"\b(?:penetrat\w*|penetrative\s+sex|intercourse|masturbat\w*|thrust\w*|"
+            r"fuck(?:s|ed|ing)?\s+(?:(?:an?|the)\s+)?(?:adult\s+)?"
+            r"(?:woman|man|female|male|her|him|them)|"
+            r"oral\s+(?:sex|pleasure)|manual\s+stimulation)\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("foreplay", re.compile(r"\b(?:foreplay|undress\w*|caress\w*|intimate\s+touch|deep\s+kiss)\b", re.IGNORECASE)),
     ("anticipation", re.compile(r"\b(?:anticipat\w*|seduc\w*|teas\w*|almost-touching|inviting\s+closer)\b", re.IGNORECASE)),
+)
+FLUID_OUTCOME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("precum", re.compile(r"\b(?:precum|pre[- ]ejaculate)\b", re.IGNORECASE)),
+    ("semen", re.compile(r"\b(?:semen|cum)\b", re.IGNORECASE)),
+    (
+        "ejaculation",
+        re.compile(
+            r"(?<!pre-)(?<!pre )\bejaculat\w*\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+ADDITIONAL_PARTICIPANT_PATTERN = re.compile(
+    rf"\b(?:another|additional|second|third|fourth)\s+{ROLE_PATTERN_TEXT}\b",
+    re.IGNORECASE,
 )
 REACTION_PATTERN = re.compile(
     r"\b(?:gasp\w*|moan\w*|trembl\w*|shudder\w*|flush\w*|"
@@ -322,11 +977,14 @@ def extract_nsfw_scene_contract(
         act in acts for act in ("anal sex", "vaginal intercourse")
     ):
         acts.remove("intercourse")
-    targets = (
-        [label for label, pattern in BODY_TARGET_PATTERNS if pattern.search(normalized)]
-        if acts
-        else []
-    )
+    targets = []
+    if acts:
+        for label, pattern in BODY_TARGET_PATTERNS:
+            if not pattern.search(normalized):
+                continue
+            if label == "oral" and not EXPLICIT_ORAL_CONTACT_PATTERN.search(normalized):
+                continue
+            targets.append(label)
     if "genital" in targets and any(
         value in targets for value in ("vaginal", "anal")
     ):
@@ -346,6 +1004,9 @@ def extract_nsfw_scene_contract(
         "active" if acts else "",
     )
     reaction_terms = _unique(match.group(0).lower() for match in REACTION_PATTERN.finditer(normalized))
+    fluid_outcomes = [
+        label for label, pattern in FLUID_OUTCOME_PATTERNS if pattern.search(normalized)
+    ]
     dildo_context = _dildo_use_context(normalized)
     dildo_use_target = ""
     if dildo_context and not re.search(
@@ -360,6 +1021,7 @@ def extract_nsfw_scene_contract(
             if BODY_TARGET_PATTERNS[1][1].search(dildo_context)
             else "intended body-contact point"
         )
+    scoped_relations = extract_relation_facts(text)
     return {
         "sexual": bool(SEXUAL_SIGNAL_PATTERN.search(normalized)),
         "participant_count": participant_count,
@@ -370,9 +1032,23 @@ def extract_nsfw_scene_contract(
         "dildo_use_target": dildo_use_target,
         "literal_core": _literal_dildo_contact(normalized),
         "relations": _relations(normalized),
+        "scoped_relations": [
+            {
+                "predicate": relation.predicate,
+                "actor": relation.actor_id,
+                "receiver": relation.receiver_id,
+                "object": relation.object_id,
+                "body_target": relation.body_target_id,
+                "reaction_owner": relation.reaction_owner_id,
+                "cause": relation.cause_relation_id,
+                "confidence": relation.confidence,
+            }
+            for relation in scoped_relations
+        ],
         "phases": phases,
         "visible_phase": chosen_phase,
         "reactions": reaction_terms,
+        "fluid_outcomes": fluid_outcomes,
         "single_phase_required": content_format == "Single Image",
     }
 
@@ -459,6 +1135,78 @@ def reaction_binding_issues(text: str, *, participant_count: int | None) -> list
     return _unique(issues)
 
 
+def _canonical_reaction_issue(issue: str) -> str:
+    """Normalize reaction synonyms before comparing source and candidate issues."""
+
+    return re.sub(
+        r"\b(?:climax\w*|orgasm\w*)\b",
+        "climax",
+        str(issue or "").casefold(),
+    )
+
+
+def enforce_reaction_binding(text: str, original_prompt: str) -> str:
+    """Bind clear gender pronouns and their reactions to the source action."""
+
+    source = extract_nsfw_scene_contract(original_prompt)
+    participant_count = source.get("participant_count")
+    if not isinstance(participant_count, int) or participant_count < 2:
+        return str(text or "").strip()
+    cross_subject_manual = requires_explicit_cross_subject_genital_binding(
+        original_prompt
+    )
+    sentences: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", str(text or "").strip()):
+        if not REACTION_PATTERN.search(sentence):
+            sentences.append(sentence)
+            continue
+        bound = re.sub(
+            r"^\s*Her\b",
+            "The adult woman's",
+            sentence,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        bound = re.sub(
+            r"^\s*She\b",
+            "The adult woman",
+            bound,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        bound = re.sub(
+            r"^\s*His\b",
+            "The adult man's",
+            bound,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        bound = re.sub(
+            r"^\s*He\b",
+            "The adult man",
+            bound,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        cause_searchable = re.sub(
+            r"(?i)\bnot\s+from\s+[^,.!?;]{1,60}?\s+but\s+[^,.!?;]+",
+            "",
+            bound,
+        )
+        if (
+            cross_subject_manual
+            and ROLE_PATTERN.search(bound)
+            and not ACTION_CAUSE_PATTERN.search(cause_searchable)
+        ):
+            punctuation = bound[-1] if bound[-1:] in ".!?" else "."
+            bound = bound.rstrip(".!?") + (
+                " during her manual stimulation of the adult "
+                "man's penis"
+            ) + punctuation
+        sentences.append(bound)
+    return " ".join(sentence for sentence in sentences if sentence).strip()
+
+
 def single_phase_issues(text: str, *, content_format: str) -> list[str]:
     """Reject visible multi-step progression in a normal still-image prompt."""
 
@@ -509,14 +1257,34 @@ def nsfw_scene_contract_issues(
         issues.append(
             f"missing requested adult participant count: expected {source_count}"
         )
+    if (
+        isinstance(source_count, int)
+        and isinstance(candidate_count, int)
+        and candidate_count > source_count
+    ):
+        issues.append(
+            "unrequested additional adult participant count: "
+            f"expected {source_count}, found {candidate_count}"
+        )
+    if (
+        ADDITIONAL_PARTICIPANT_PATTERN.search(final_prompt)
+        and not ADDITIONAL_PARTICIPANT_PATTERN.search(original_prompt)
+    ):
+        issues.append("unrequested additional adult participant")
     candidate_acts = set(candidate.get("acts", []))
-    for act in source.get("acts", []):
+    source_acts = set(source.get("acts", []))
+    for act in source_acts:
         if act == "intercourse" and candidate_acts.intersection(
             {"intercourse", "anal sex", "vaginal intercourse"}
         ):
             continue
         if act not in candidate_acts:
             issues.append(f"missing requested sexual act family: {act}")
+    authorized_acts = set(source_acts)
+    if "intercourse" in source_acts:
+        authorized_acts.update(("anal sex", "vaginal intercourse"))
+    for act in sorted(candidate_acts - authorized_acts):
+        issues.append(f"unrequested sexual act family added: {act}")
     source_targets = set(source.get("body_targets", []))
     candidate_targets = set(candidate.get("body_targets", []))
     for target in source_targets - candidate_targets:
@@ -525,8 +1293,20 @@ def nsfw_scene_contract_issues(
         issues.append("unrequested anal contact added to a vaginal source")
     if "anal" in source_targets and "vaginal" in candidate_targets - source_targets:
         issues.append("unrequested vaginal contact added to an anal source")
+    authorized_targets = set(source_targets)
+    if "oral sex" in source_acts:
+        authorized_targets.add("oral")
+    if source_acts.intersection({"manual stimulation", "masturbation"}):
+        authorized_targets.add("genital")
+    for target in sorted(candidate_targets - authorized_targets):
+        if target == "anal" and "vaginal" in source_targets:
+            continue
+        if target == "vaginal" and "anal" in source_targets:
+            continue
+        issues.append(f"unrequested body/contact target added: {target}")
+    source_objects = set(source.get("objects", []))
+    candidate_objects = set(candidate.get("objects", []))
     for requested_object in source.get("objects", []):
-        candidate_objects = set(candidate.get("objects", []))
         generic_toy_satisfied = (
             requested_object == "adult toy"
             and bool(candidate_objects.intersection(
@@ -535,6 +1315,30 @@ def nsfw_scene_contract_issues(
         )
         if requested_object not in candidate_objects and not generic_toy_satisfied:
             issues.append(f"missing requested adult object: {requested_object}")
+    for added_object in sorted(candidate_objects - source_objects):
+        if "adult toy" in source_objects:
+            continue
+        issues.append(f"unrequested adult object added: {added_object}")
+
+    source_phases = set(source.get("phases", []))
+    if source_acts:
+        source_phases.add("active")
+    source_visible_phase = str(source.get("visible_phase", ""))
+    if source_visible_phase:
+        source_phases.add(source_visible_phase)
+    candidate_phases = set(candidate.get("phases", []))
+    for phase in sorted(candidate_phases - source_phases):
+        issues.append(f"unrequested visible sexual phase or outcome added: {phase}")
+    source_fluids = set(source.get("fluid_outcomes", []))
+    authorized_fluids = set(source_fluids)
+    # A requested visible ejaculation may be rendered in canonical visual
+    # wording as semen. The reverse is not necessarily true: a passive semen
+    # mention must not silently authorize a newly invented ejaculation event.
+    if "ejaculation" in source_fluids:
+        authorized_fluids.add("semen")
+    candidate_fluids = set(candidate.get("fluid_outcomes", []))
+    for fluid in sorted(candidate_fluids - authorized_fluids):
+        issues.append(f"unrequested sexual fluid or outcome added: {fluid}")
 
     candidate_relations = {
         (
@@ -558,6 +1362,33 @@ def nsfw_scene_contract_issues(
                 "missing or reversed sexual role binding: "
                 f"{key[0]} -> {key[1]} -> {key[2]}"
             )
+    # A fidelity fallback must never become impossible merely because the
+    # user's source already contains a compact, unbound reaction such as
+    # "both flushed". Still reject newly introduced or newly ambiguous
+    # reactions, but do not turn verbatim source ambiguity into an
+    # unrecoverable hard failure.
+    source_reaction_issues = {
+        _canonical_reaction_issue(issue)
+        for issue in reaction_binding_issues(
+            original_prompt,
+            participant_count=source_count,
+        )
+    }
+    issues.extend(
+        issue
+        for issue in reaction_binding_issues(
+            final_prompt,
+            participant_count=candidate_count,
+        )
+        if _canonical_reaction_issue(issue) not in source_reaction_issues
+    )
+    issues.extend(single_phase_issues(final_prompt, content_format=content_format))
+    typed_source = compile_prompt_contract({"Draft": original_prompt})
+    for typed_issue in candidate_delta_issues(typed_source, final_prompt):
+        if typed_issue.code == "candidate.relation_reversed":
+            issues.append("scoped actor/receiver relation changed")
+        elif typed_issue.code == "candidate.ownership_reassigned":
+            issues.append("scoped body ownership changed")
     return _unique(issues)
 
 
@@ -697,6 +1528,15 @@ def nsfw_image_audit_contract(
     targets = _unique([*source.get("body_targets", []), *corrected.get("body_targets", [])])
     objects = _unique([*source.get("objects", []), *corrected.get("objects", [])])
     direction = dildo_direction_instruction(source) or dildo_direction_instruction(corrected)
+    penile_orientation = requests_visible_penis_ventral_orientation(
+        f"{original_prompt}\n{corrected_prompt}"
+    )
+    semen_tip_origin = requires_semen_tip_origin(
+        f"{original_prompt}\n{corrected_prompt}"
+    )
+    cross_subject_binding = requires_explicit_cross_subject_genital_binding(
+        f"{original_prompt}\n{corrected_prompt}"
+    )
     lines = [
         "NSFW visual fidelity audit:",
         f"- Adult participant count and distinct roles: {source.get('participant_count') or 'as requested'}; "
@@ -705,6 +1545,39 @@ def nsfw_image_audit_contract(
         "- Required body/contact targets: " + (", ".join(targets) or "preserve the supplied contact"),
         "- Required separate objects: " + (", ".join(objects) or "none explicitly extracted"),
         *([f"- Required normal-use object direction: {direction}"] if direction else []),
+        *(
+            [
+                "- Required cross-subject anatomy binding: exactly two distinct "
+                "adults; the woman's hands perform the manual contact and the penis "
+                "has its base anatomically attached to the man's pelvis and extends "
+                "outward from his groin in a continuous base-to-tip direction. Mark "
+                "participant_count, action_roles, body_ownership, anatomical_attachment, "
+                "and anatomical_orientation as fail if "
+                "the image shows one fused subject, assigns the penis to the woman, "
+                "shows detached or floating anatomy, or does not show a continuous "
+                "outward attachment and orientation from the man's pelvis."
+            ]
+            if cross_subject_binding
+            else []
+        ),
+        *(
+            [
+                "- Required penile orientation: the visible frenulum is on the ventral "
+                "midline directly beneath the glans, the ventral underside faces the "
+                "camera, and the dorsal surface faces away."
+            ]
+            if penile_orientation
+            else []
+        ),
+        *(
+            [
+                "- Required semen origin: visible semen emerges from the urethral "
+                "opening centered at the tip of the glans, never from the shaft "
+                "base, root, shaft surface, or groin."
+            ]
+            if semen_tip_origin
+            else []
+        ),
         f"- Required visible phase: {source.get('visible_phase') or corrected.get('visible_phase') or 'one decisive phase'}",
         "- Verify actor and receiver roles, limb ownership, object/body separation, contact direction, "
         "and participant-specific reactions. Report every mismatch in nsfw_fidelity.",

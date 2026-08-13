@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import importlib
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -13,6 +15,11 @@ WORKSPACE_CHOICES = (
     "Prompt Corrector",
     "Comic Story",
     "Meme Creator",
+)
+PUSH_WORKSPACE_CHOICES = (
+    *WORKSPACE_CHOICES[1:],
+    "FLUX Image Edit",
+    "MiniMax H3 I2V",
 )
 TRANSFER_MODES = (
     "Refresh on queue",
@@ -30,6 +37,8 @@ TOP_LEVEL_RESULT_KEYS = {
 }
 MAX_SETTINGS_BYTES = 20 * 1024 * 1024
 MAX_PUSHED_PROMPT_CHARACTERS = 1_000_000
+MAX_REFERENCE_IMAGES = 8
+MAX_REFERENCE_NAME_CHARACTERS = 1024
 
 
 class PromptCorrectorBridgeError(RuntimeError):
@@ -50,7 +59,7 @@ def validate_bridge_push_payload(payload: Any) -> dict[str, object]:
         raise PromptCorrectorBridgeError(
             "The pushed prompt exceeds the bridge size limit."
         )
-    if workspace not in WORKSPACE_CHOICES[1:]:
+    if workspace not in PUSH_WORKSPACE_CHOICES:
         raise PromptCorrectorBridgeError(
             f"Unsupported pushed workspace: {workspace}"
         )
@@ -64,6 +73,81 @@ def validate_bridge_push_payload(payload: Any) -> dict[str, object]:
         "workspace": workspace,
         "source": workspace,
     }
+    raw_references = payload.get("reference_images", [])
+    if not isinstance(raw_references, list):
+        raise PromptCorrectorBridgeError(
+            "reference_images must be a list of uploaded ComfyUI filenames."
+        )
+    if len(raw_references) > MAX_REFERENCE_IMAGES:
+        raise PromptCorrectorBridgeError(
+            f"The bridge supports up to {MAX_REFERENCE_IMAGES} reference images."
+        )
+    references: list[str] = []
+    for value in raw_references:
+        if not isinstance(value, str) or not value.strip():
+            raise PromptCorrectorBridgeError(
+                "Every reference image must have an uploaded ComfyUI filename."
+            )
+        name = value.strip().replace("\\", "/")
+        path = PurePosixPath(name)
+        if (
+            len(name) > MAX_REFERENCE_NAME_CHARACTERS
+            or path.is_absolute()
+            or ".." in path.parts
+            or "\x00" in name
+        ):
+            raise PromptCorrectorBridgeError(
+                "A reference image filename is unsafe or too long."
+            )
+        references.append(name)
+    if references and workspace not in {"FLUX Image Edit", "MiniMax H3 I2V"}:
+        raise PromptCorrectorBridgeError(
+            "Reference images may only be pushed to FLUX Image Edit or MiniMax H3 I2V."
+        )
+    if workspace == "FLUX Image Edit" and not references:
+        raise PromptCorrectorBridgeError(
+            "FLUX Image Edit requires at least one reference image."
+        )
+    if workspace == "MiniMax H3 I2V" and not 1 <= len(references) <= 2:
+        raise PromptCorrectorBridgeError(
+            "MiniMax H3 I2V requires one first frame and supports one optional last frame."
+        )
+    if references:
+        result["reference_images"] = references
+    parameters = payload.get("parameters", {})
+    if workspace == "MiniMax H3 I2V":
+        if not isinstance(parameters, dict):
+            raise PromptCorrectorBridgeError("MiniMax H3 I2V parameters must be an object.")
+        try:
+            duration = float(parameters.get("duration", 5.0))
+            width = int(parameters.get("width", 864))
+            height = int(parameters.get("height", 480))
+            seed = int(parameters.get("seed", 42))
+        except (TypeError, ValueError) as exc:
+            raise PromptCorrectorBridgeError(
+                "MiniMax H3 I2V duration, width, height, and seed must be numeric."
+            ) from exc
+        if not 1.0 <= duration <= 15.0:
+            raise PromptCorrectorBridgeError("MiniMax H3 I2V duration must be 1 to 15 seconds.")
+        if (
+            width < 32 or height < 32 or width > 2048 or height > 2048
+            or width % 32 or height % 32
+        ):
+            raise PromptCorrectorBridgeError(
+                "MiniMax H3 I2V dimensions must be multiples of 32 between 32 and 2048."
+            )
+        if seed < 0 or seed > 9_223_372_036_854_775_807:
+            raise PromptCorrectorBridgeError("MiniMax H3 I2V seed is out of range.")
+        result["parameters"] = {
+            "duration": duration,
+            "width": width,
+            "height": height,
+            "seed": seed,
+        }
+    elif parameters:
+        raise PromptCorrectorBridgeError(
+            "Structured generation parameters are only supported for MiniMax H3 I2V."
+        )
     if queue_after_send:
         result["queue_after_send"] = True
     return result
@@ -278,10 +362,289 @@ class PromptCorrectorBridge:
         )
 
 
+def _empty_reference_image():
+    try:
+        torch = importlib.import_module("torch")
+    except ImportError as exc:
+        raise PromptCorrectorBridgeError(
+            "PyTorch is unavailable inside ComfyUI."
+        ) from exc
+    return (
+        torch.zeros((1, 1, 1, 3), dtype=torch.float32),
+        torch.zeros((1, 1, 1), dtype=torch.float32),
+    )
+
+
+def load_comfyui_reference_image(filename: str):
+    """Load one uploaded ComfyUI input image or return an empty placeholder."""
+
+    filename = str(filename or "").strip()
+    if not filename:
+        return _empty_reference_image()
+    try:
+        comfy_nodes = importlib.import_module("nodes")
+        loader = comfy_nodes.LoadImage()
+        return loader.load_image(filename)
+    except Exception as exc:
+        raise PromptCorrectorBridgeError(
+            f"Could not load ComfyUI reference image {filename}: {exc}"
+        ) from exc
+
+
+class PromptCorrectorFluxImageEditBridge:
+    """Expose a FLUX edit prompt plus up to eight separately connectable images."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        required: dict[str, object] = {
+            "prompt": (
+                "STRING",
+                {
+                    "default": "",
+                    "multiline": True,
+                    "dynamicPrompts": True,
+                    "tooltip": (
+                        "FLUX edit prompt pushed from the Image Edit tab."
+                    ),
+                },
+            ),
+        }
+        for index in range(1, MAX_REFERENCE_IMAGES + 1):
+            required[f"reference_image_{index}"] = (
+                "STRING",
+                {
+                    "default": "",
+                    "tooltip": (
+                        f"Uploaded ComfyUI input filename for reference Image {index}."
+                    ),
+                },
+            )
+        return {"required": required}
+
+    RETURN_TYPES = (
+        "STRING",
+        "STRING",
+        *(item for _index in range(MAX_REFERENCE_IMAGES) for item in ("IMAGE", "MASK")),
+    )
+    RETURN_NAMES = (
+        "prompt",
+        "source",
+        *(
+            item
+            for index in range(1, MAX_REFERENCE_IMAGES + 1)
+            for item in (f"reference_{index}", f"reference_{index}_mask")
+        ),
+    )
+    FUNCTION = "transfer"
+    CATEGORY = "image/PromptCorrector"
+    DESCRIPTION = (
+        "Receive a FLUX.2 Klein edit prompt and up to eight reference images "
+        "from Image Prompt Corrector. Connect each IMAGE output to the VAE/"
+        "reference-latent path used by your FLUX.2 Klein workflow."
+    )
+    SEARCH_ALIASES = [
+        "flux image edit",
+        "prompt corrector image bridge",
+        "multi reference",
+        "klein image edit",
+    ]
+
+    def transfer(
+        self,
+        prompt: str,
+        reference_image_1: str = "",
+        reference_image_2: str = "",
+        reference_image_3: str = "",
+        reference_image_4: str = "",
+        reference_image_5: str = "",
+        reference_image_6: str = "",
+        reference_image_7: str = "",
+        reference_image_8: str = "",
+    ):
+        cleaned_prompt = str(prompt or "").strip()
+        if not cleaned_prompt:
+            raise PromptCorrectorBridgeError(
+                "The FLUX Image Edit prompt is empty. Send it from PromptCorrector."
+            )
+        filenames = (
+            reference_image_1,
+            reference_image_2,
+            reference_image_3,
+            reference_image_4,
+            reference_image_5,
+            reference_image_6,
+            reference_image_7,
+            reference_image_8,
+        )
+        if not any(str(filename or "").strip() for filename in filenames):
+            raise PromptCorrectorBridgeError(
+                "No FLUX Image Edit references were received."
+            )
+        outputs: list[object] = [cleaned_prompt, "FLUX Image Edit"]
+        for filename in filenames:
+            image, mask = load_comfyui_reference_image(filename)
+            outputs.extend((image, mask))
+        return tuple(outputs)
+
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        prompt: str,
+        reference_image_1: str = "",
+        reference_image_2: str = "",
+        reference_image_3: str = "",
+        reference_image_4: str = "",
+        reference_image_5: str = "",
+        reference_image_6: str = "",
+        reference_image_7: str = "",
+        reference_image_8: str = "",
+    ):
+        return (
+            str(prompt or ""),
+            reference_image_1,
+            reference_image_2,
+            reference_image_3,
+            reference_image_4,
+            reference_image_5,
+            reference_image_6,
+            reference_image_7,
+            reference_image_8,
+        )
+
+
+class PromptCorrectorMiniMaxH3I2VBridge:
+    """Receive an H3 prompt, first/last frames, and native generation controls."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "dynamicPrompts": True,
+                        "tooltip": "MiniMax H3 natural-language I2V prompt.",
+                    },
+                ),
+                "first_frame": (
+                    "STRING",
+                    {"default": "", "tooltip": "Uploaded exact opening frame."},
+                ),
+                "last_frame": (
+                    "STRING",
+                    {"default": "", "tooltip": "Optional uploaded final frame."},
+                ),
+                "duration": (
+                    "FLOAT",
+                    {"default": 5.0, "min": 1.0, "max": 15.0, "step": 0.5},
+                ),
+                "width": (
+                    "INT",
+                    {"default": 864, "min": 32, "max": 2048, "step": 32},
+                ),
+                "height": (
+                    "INT",
+                    {"default": 480, "min": 32, "max": 2048, "step": 32},
+                ),
+                "seed": (
+                    "INT",
+                    {
+                        "default": 42,
+                        "min": 0,
+                        "max": 9_223_372_036_854_775_807,
+                        "control_after_generate": True,
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = (
+        "STRING", "STRING", "IMAGE", "MASK", "IMAGE", "MASK",
+        "FLOAT", "INT", "INT", "INT",
+    )
+    RETURN_NAMES = (
+        "prompt", "source", "first_frame", "first_frame_mask",
+        "last_frame", "last_frame_mask", "duration", "width", "height", "seed",
+    )
+    FUNCTION = "transfer"
+    CATEGORY = "video/PromptCorrector"
+    DESCRIPTION = (
+        "Receive a MiniMax H3 I2V prompt, exact first frame, optional last "
+        "frame, duration, dimensions, and seed from PromptCorrector."
+    )
+    SEARCH_ALIASES = [
+        "minimax h3",
+        "h3 image to video",
+        "h3 i2v",
+        "prompt corrector video bridge",
+    ]
+
+    def transfer(
+        self,
+        prompt: str,
+        first_frame: str,
+        last_frame: str = "",
+        duration: float = 5.0,
+        width: int = 864,
+        height: int = 480,
+        seed: int = 42,
+    ):
+        cleaned_prompt = str(prompt or "").strip()
+        if not cleaned_prompt:
+            raise PromptCorrectorBridgeError(
+                "The MiniMax H3 I2V prompt is empty. Send it from PromptCorrector."
+            )
+        if not str(first_frame or "").strip():
+            raise PromptCorrectorBridgeError(
+                "MiniMax H3 I2V did not receive a first frame."
+            )
+        first_image, first_mask = load_comfyui_reference_image(first_frame)
+        if str(last_frame or "").strip():
+            last_image, last_mask = load_comfyui_reference_image(last_frame)
+        else:
+            # The official H3 node treats an absent last frame as I2V. Passing
+            # a synthetic 1x1 image would accidentally turn it into FL2V.
+            last_image, last_mask = None, None
+        return (
+            cleaned_prompt,
+            "MiniMax H3 I2V",
+            first_image,
+            first_mask,
+            last_image,
+            last_mask,
+            float(duration),
+            int(width),
+            int(height),
+            int(seed),
+        )
+
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        prompt: str,
+        first_frame: str,
+        last_frame: str = "",
+        duration: float = 5.0,
+        width: int = 864,
+        height: int = 480,
+        seed: int = 42,
+    ):
+        return (
+            str(prompt or ""), first_frame, last_frame, float(duration),
+            int(width), int(height), int(seed),
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "PromptCorrectorBridge": PromptCorrectorBridge,
+    "PromptCorrectorFluxImageEditBridge": PromptCorrectorFluxImageEditBridge,
+    "PromptCorrectorMiniMaxH3I2VBridge": PromptCorrectorMiniMaxH3I2VBridge,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptCorrectorBridge": "PromptCorrector Bridge",
+    "PromptCorrectorFluxImageEditBridge": "PromptCorrector FLUX Image Edit Bridge",
+    "PromptCorrectorMiniMaxH3I2VBridge": "PromptCorrector MiniMax H3 I2V Bridge",
 }

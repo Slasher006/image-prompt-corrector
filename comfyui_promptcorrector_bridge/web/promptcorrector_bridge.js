@@ -5,6 +5,12 @@ const QUEUE_AFTER_UPDATE_DELAY_MS = 500;
 
 function matchingBridgeNodes(workspace) {
     return (app.graph?._nodes || []).filter((node) => {
+        if (workspace === "FLUX Image Edit") {
+            return node.type === "PromptCorrectorFluxImageEditBridge";
+        }
+        if (workspace === "MiniMax H3 I2V") {
+            return node.type === "PromptCorrectorMiniMaxH3I2VBridge";
+        }
         if (node.type !== "PromptCorrectorBridge") {
             return false;
         }
@@ -25,12 +31,56 @@ async function updateBridgeNode(node, payload, status) {
     }
     promptWidget.value = payload.prompt;
     await promptWidget.callback?.(payload.prompt);
+    const referenceImages = Array.isArray(payload.reference_images)
+        ? payload.reference_images
+        : [];
+    for (let index = 1; index <= 8; index += 1) {
+        const referenceWidget = node.widgets?.find(
+            (widget) => widget.name === `reference_image_${index}`,
+        );
+        if (!referenceWidget) {
+            continue;
+        }
+        const filename = referenceImages[index - 1] || "";
+        referenceWidget.value = filename;
+        await referenceWidget.callback?.(filename);
+    }
+    if (node.type === "PromptCorrectorMiniMaxH3I2VBridge") {
+        const frameNames = ["first_frame", "last_frame"];
+        for (let index = 0; index < frameNames.length; index += 1) {
+            const widget = node.widgets?.find(
+                (item) => item.name === frameNames[index],
+            );
+            if (!widget) {
+                continue;
+            }
+            const filename = referenceImages[index] || "";
+            widget.value = filename;
+            await widget.callback?.(filename);
+        }
+        const parameters = payload.parameters || {};
+        for (const name of ["duration", "width", "height", "seed"]) {
+            if (!(name in parameters)) {
+                continue;
+            }
+            const widget = node.widgets?.find((item) => item.name === name);
+            if (!widget) {
+                continue;
+            }
+            widget.value = parameters[name];
+            await widget.callback?.(parameters[name]);
+        }
+    }
     if (node.promptCorrectorBridgeButton) {
         node.promptCorrectorBridgeButton.name = status;
         window.setTimeout(() => {
             if (node.promptCorrectorBridgeButton) {
                 node.promptCorrectorBridgeButton.name =
-                    "Pull latest corrected prompt";
+                    node.type === "PromptCorrectorFluxImageEditBridge"
+                        ? "Waiting for FLUX Image Edit"
+                        : node.type === "PromptCorrectorMiniMaxH3I2VBridge"
+                          ? "Waiting for MiniMax H3 I2V"
+                        : "Pull latest corrected prompt";
                 node.setDirtyCanvas(true, true);
             }
         }, 2500);
@@ -95,7 +145,12 @@ api.addEventListener("promptcorrector_bridge_prompt", async ({ detail }) => {
 app.registerExtension({
     name: "promptcorrector.bridge",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "PromptCorrectorBridge") {
+        const isTextBridge = nodeData.name === "PromptCorrectorBridge";
+        const isFluxEditBridge =
+            nodeData.name === "PromptCorrectorFluxImageEditBridge";
+        const isMiniMaxH3Bridge =
+            nodeData.name === "PromptCorrectorMiniMaxH3I2VBridge";
+        if (!isTextBridge && !isFluxEditBridge && !isMiniMaxH3Bridge) {
             return;
         }
 
@@ -104,6 +159,22 @@ app.registerExtension({
             const result = onNodeCreated
                 ? onNodeCreated.apply(this, arguments)
                 : undefined;
+            if (isFluxEditBridge || isMiniMaxH3Bridge) {
+                const statusButton = this.addWidget(
+                    "button",
+                    isMiniMaxH3Bridge
+                        ? "Waiting for MiniMax H3 I2V"
+                        : "Waiting for FLUX Image Edit",
+                    null,
+                    () => {},
+                );
+                this.promptCorrectorBridgeButton = statusButton;
+                this.size = [
+                    Math.max(this.size[0], 420),
+                    Math.max(this.size[1], isMiniMaxH3Bridge ? 440 : 520),
+                ];
+                return result;
+            }
             const button = this.addWidget(
                 "button",
                 "Pull latest corrected prompt",

@@ -54,6 +54,12 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 - Resumable CSV batch correction with JSON result export.
 - Loaded-model fidelity and vision benchmarking.
 - Editable generator profiles and optional ComfyUI API-workflow handoff.
+- An embedded FLUX.2 Klein Image Edit tab with explicit edit/preservation
+  instructions, editable role presets, vision-model analysis, output-folder
+  reload, mask painting, and direct ComfyUI transport for up to eight images.
+- A persistent MiniMax H3 I2V tab with exact first/optional last frames,
+  local-vision motion and audio prompt preparation, 1-15 second duration,
+  low-VRAM and native resolution presets, and direct structured ComfyUI transport.
 - Mutually exclusive persistent **Safe for work** and **Explicit adult (NSFW)** modes for prompt correction, comics, memes, batches, A/B variants, and generated-image review.
 
 ## Requirements
@@ -269,6 +275,60 @@ Generator profiles are editable JSON objects containing prompt style, negative-p
 
 For ComfyUI, export a workflow in API format, choose its JSON file, enter the positive CLIP text node ID, and click **Enqueue current prompt**. PromptCorrector copies the corrected prompt into that node and posts the workflow to the configured `/prompt` endpoint. No ComfyUI dependency is required inside PromptCorrector.
 
+For a FLUX.2 Klein 9B image edit, select the main **FLUX Image Edit** workspace
+tab or use **Create > FLUX Image Edit tab** (`Ctrl+Shift+I`). Its compact
+**Edit** and **References & Mask** pages keep the workflow inside the main
+window. Add one to eight references, including at least three when the edit
+needs separate composition, identity, and style sources. Give every reference
+a role, enter the requested change and preservation constraints, then prepare
+the explicit multi-reference prompt. Roles can be chosen from presets such as base
+composition, subject identity, pose, outfit, prop, environment, style,
+lighting, material, and text/layout, or typed as a custom role.
+
+**Analyze images with LLM** sends every actual reference image and its role to
+the currently selected vision-capable LM Studio or Ollama model. **Correct with
+LLM + images** uses that visual evidence to improve the prepared edit prompt.
+WebP, GIF, and BMP references are converted to PNG in memory for local vision
+models that accept only PNG/JPEG data URLs; the source files remain unchanged.
+Unmasked references are sent to ComfyUI in their original format, while a
+painted mask uses a temporary RGBA PNG transport copy.
+The instruction and preservation fields also have **Invent** buttons. Every
+model-updated field has **Recall** for restoring its exact previous value, and
+each field has an explicit **Clear** control. Reference images have a separate
+**Clear all** action. A text-only model cannot perform these image-aware
+actions; select a vision model in the main window first.
+When **Options > Model and processing > Unload model after request** is
+enabled, every successful FLUX analysis, correction, or Invent request unloads
+the exact selected LM Studio or Ollama model after its result is secured.
+
+For iterative editing, choose the ComfyUI output folder on **References &
+Mask**, then click **Reload latest output as base**. PromptCorrector searches
+that folder and its subfolders for the newest supported image and replaces
+Image 1 while retaining the other role references. Use **Paint**, **Erase**,
+brush size, **Invert**, and **Clear mask** to define the editable region of the
+selected reference. Painted pixels become the bridge node's mask; pixels
+outside the mask remain protected. Masks and the output-folder choice persist
+with the edit workspace.
+
+**Send prompt + references to ComfyUI** uploads every image to ComfyUI and
+pushes their returned input filenames together with the prompt through the
+connector bridge.
+
+For local video, open **MiniMax H3 I2V**. Choose the exact first frame and an
+optional exact last frame, describe scene continuity, temporal motion, camera
+movement, and optional native stereo audio, then click **Prepare** or use the
+selected vision-capable local model to invent/correct the H3 prompt. The default
+864 x 480 preset is a practical low-VRAM starting point; native H3 landscape,
+portrait, and square sizes are also available. **Send H3 I2V to ComfyUI** uploads
+the keyframes and transfers prompt, duration, dimensions, and seed to the
+dedicated bundled bridge node. Connect that node to ComfyUI's official
+**Image to Video (MiniMax H3)** subgraph. H3 supports natural multimodal
+instructions, native stereo audio, roughly 15-second clips, and up to 2K output;
+the local official workflow uses a native 768-pixel short edge capped at
+768 x 1344 before optional regeneration/upscaling. See the
+[MiniMax H3 release](https://www.minimax.io/blog/minimax-h3) and
+[official ComfyUI I2V template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_i2v.json).
+
 For a pull-based workflow, install the bundled
 `comfyui_promptcorrector_bridge` custom node. It exposes the newest saved
 Prompt Corrector, Comic Story, or Meme Creator result as a normal ComfyUI
@@ -282,13 +342,20 @@ is skipped when no matching bridge node is open.
 See [`comfyui_promptcorrector_bridge/README.md`](comfyui_promptcorrector_bridge/README.md)
 for installation and usage.
 
+FLUX.2 officially supports multi-reference image editing. The Image Edit
+window's eight-reference limit matches the documented API limit:
+[FLUX.2 Image Editing](https://docs.bfl.ai/flux_2/flux2_image_editing) and
+[FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
+
 The draft and latest result are autosaved while you work and restored after the next launch. The counters below both editors show word totals and approximate token usage. Use the **Changes** tab to inspect additions, removals, and replacements. Concise, Balanced, and Detailed remain qualitative length preferences. **Expanded** is a concrete 140–280-word contract; if a local model returns less than 140 words, the correction pipeline performs one targeted expansion repair. With **Creative enhancement**, Expanded must add prompt-specific visual development rather than paraphrasing or adjective padding.
 
 The final corrected output contains only the image prompt. Krea generation controls are deliberately kept outside it. Krea Turbo is useful for fast iteration; Krea Medium or Large is the better final pass when prompt and style fidelity matter most.
 
-For **FLUX.2 Klein 9B**, the corrector follows Black Forest Labs' documented priority order: main subject, key action, critical style, essential context, then secondary details. Klein does not include prompt upsampling, so the corrected prompt explicitly contains the necessary visual information rather than relying on automatic expansion. The separate setup recommendation uses the official distilled-model defaults of four inference steps and guidance `1.0`. The 9B weights are distributed under the FLUX Non-Commercial License. See the [official FLUX.2 overview](https://docs.bfl.ai/flux_2/flux2_overview) and [FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
+For **FLUX.2 Klein 9B**, the corrector follows Black Forest Labs' documented priority order: main subject, key action, critical style, essential context, then secondary details. Klein does not include prompt upsampling, so the corrected prompt explicitly contains the necessary visual information rather than relying on automatic expansion. Multi-person Single Image prompts internally organize separate subject identities, positions, actions, body ownership, interaction, and camera details, but the visible result always remains one normal natural-language image prompt. If a local model returns JSON anyway, the final gate flattens it to prose before display. Contact poses retain relative staging instead of receiving invented image-left/image-right positions.
 
-Models whose names advertise 4B parameters or fewer automatically use a streamlined correction path. Their main instruction is reduced to a compact contract, and **Audit and repair** uses a short concrete audit instead of the large-model free-form audit. The path stays capped at two calls unless a hard contract still requires one targeted final repair. Missing counts, changed positions, violated exclusions, lost quoted text, panel errors, or other hard contracts still trigger repair or a conservative deterministic fallback.
+The FLUX controls distinguish **Distilled (4-step)** at four inference steps and guidance `1.0` from **Base (50-step)** at 50 steps and guidance `4.0`. They also distinguish the official Qwen3 8B encoder from an abliterated Qwen3 8B compatibility profile. Abliteration is treated as changed language interpretation, not an anatomy repair; use the fixed-seed matrix below to compare it with the official encoder. The 9B weights are distributed under the FLUX Non-Commercial License. See the [official FLUX.2 overview](https://docs.bfl.ai/flux_2/flux2_overview) and [FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
+
+Models whose names advertise 4B parameters or fewer automatically use a streamlined correction path. Their main instruction is reduced to a compact contract, and **Audit and repair** uses a short concrete audit instead of the large-model free-form audit. A validated immutable source base is available with Audit on or off, so a hard model delta falls back safely before an avoidable whole-prompt repair. Missing counts, changed positions, violated exclusions, lost quoted text, panel errors, or other hard contracts still reject the model candidate.
 
 Some Qwen3.5 reasoning fine-tunes ignore `/no_think` and can consume the entire completion budget in `reasoning_content` without producing a prompt. The app detects this response explicitly. Prefer a Qwen3 VL instruct variant for prompt correction; the local `huihui-qwen3-vl-4b-instruct-abliterated@q8_0` model has been live-tested with the streamlined workflow.
 
@@ -425,7 +492,7 @@ The three sliders use Krea-style values from `-100` to `100`. `0` is neutral. Ex
 
 This behavior follows Krea's own guidance: [Krea 2 API controls](https://www.krea.ai/blog/krea-2-api-launch) documents raw creativity as no prompt expansion, while [Krea 2 Turbo](https://www.krea.ai/blog/krea-2-turbo) positions Turbo for rapid ideation and Medium/Large for higher-quality final generation.
 
-When FLUX.2 Klein 9B is selected, the Krea sliders are disabled because they do not apply. The result instead shows the fixed FLUX setup recommendation separately.
+When FLUX.2 Klein 9B is selected, the Krea sliders are disabled because they do not apply. Select the matching FLUX variant and text encoder beside the Generator control; the result shows their setup recommendation separately.
 
 **Model instructions**
 
@@ -453,7 +520,7 @@ The corrector now treats creativity as visual concept development rather than ad
 
 Related details are organized into entity-centered clusters. An object stays beside its material, attributes, action, position, and visual effects. For example, a light bulb is described together with its fixture, glass, color temperature, glow, illuminated surfaces, cast shadows, and reflections. The model then orders those clusters by visual hierarchy instead of preserving a scrambled draft order.
 
-For scenes with multiple people, the corrector gives each person a stable gender-or-role plus position label and repeats that label before the person's actions and attributes. Ambiguous pronouns and dropped male/female identities are hard validation failures, so the final repair pass must replace them before the prompt is returned.
+For scenes with multiple people, the corrector builds stable entity and group identities for people, objects, body parts, and high-confidence references. Inherited source ambiguity is shown as an amber advisory and correction continues; a newly introduced high-confidence ambiguity or a changed identity, actor, receiver, or ownership relation remains a hard candidate failure.
 
 Every user-authored text field is checked for clear spelling and language errors before it affects the final prompt. Exact quoted rendered text is preserved character-for-character, and uncertain names, brands, fictional terms, foreign words, or specialist vocabulary are not silently changed.
 
@@ -564,6 +631,21 @@ python3 krea_prompt_corrector.py \
   --prompt "a knight at a castle gate, torchlight, historically accurate armor"
 ```
 
+Create a repeatable four-case benchmark manifest using one corrected prompt and
+one seed across distilled/base and official/abliterated encoder profiles:
+
+```bash
+python3 tools/benchmark_flux_profiles.py \
+  --prompt-file corrected_flux_prompt.txt \
+  --seed 42 \
+  --output flux_benchmark_manifest.json
+```
+
+Run each manifest case through its matching ComfyUI workflow without changing
+resolution, sampler, scheduler, prompt, or seed. Record subject count, subject
+separation, limb count, gender/body ownership, and camera-contract results in
+the included review fields.
+
 Comic Story with FLUX.2 Klein:
 
 ```bash
@@ -619,6 +701,8 @@ printf "a cinematic knight at a castle gate" | python3 krea_prompt_corrector.py
 - `--base-url`
 - `--model`
 - `--target` (`Krea 2` or `FLUX.2 Klein 9B`)
+- `--flux-variant` (`Distilled (4-step)` or `Base (50-step)`)
+- `--flux-text-encoder` (`Official Qwen3 8B` or `Abliterated Qwen3 8B`)
 - `--format` (`Single Image` or `Comic Story`)
 - `--prompt`
 - `--file`
@@ -657,10 +741,16 @@ Run syntax checks for all application modules:
 python3 -m py_compile \
   action_emotion_presets.py \
   concept_presets.py \
+  contract_validation.py \
+  entity_resolution.py \
   krea_prompt_corrector.py \
   krea_prompt_gui.py \
   mix_ingredient_presets.py \
+  nsfw_scene_contract.py \
+  prompt_contract.py \
   prompt_workbench.py \
+  scene_dimensions.py \
+  scene_relations.py \
   visual_direction_presets.py \
   workbench_gui.py
 ```
@@ -677,6 +767,10 @@ GitHub Actions runs the same checks on Python 3.10 and 3.12.
 
 - `krea_prompt_corrector.py`: correction engine, local-model client, research,
   validation, repair, and CLI.
+- `prompt_contract.py`, `entity_resolution.py`, `scene_relations.py`,
+  `scene_dimensions.py`, and `contract_validation.py`: typed provenance and
+  authority, entity/coreference graphs, scoped scene facts, stable issue
+  severity, source-relative deltas, and immutable recovery validation.
 - `krea_prompt_gui.py`: main PySide6 desktop interface and saved-state handling.
 - `prompt_workbench.py`: project bundles, generated-image review, contracts,
   batch processing, benchmarks, and ComfyUI helpers.

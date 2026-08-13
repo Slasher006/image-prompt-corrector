@@ -98,6 +98,9 @@ class PromptWorkbenchTests(unittest.TestCase):
         self.assertIn("act families", review_text)
         self.assertIn("contact targets", review_text)
         self.assertIn("object/body separation", review_text)
+        self.assertIn("body_ownership", messages[0]["content"])
+        self.assertIn("anatomical_attachment", messages[0]["content"])
+        self.assertIn("anatomical_orientation", messages[0]["content"])
 
     def test_review_response_parses_json_and_targeted_repair(self):
         parsed = workbench.parse_review_response(
@@ -110,14 +113,22 @@ class PromptWorkbenchTests(unittest.TestCase):
         parsed = workbench.parse_review_response(
             '{"score":61,"summary":"Wrong contact","passed":[],"failed":[],'
             '"warnings":[],"repair_prompt":"","nsfw_fidelity":{'
-            '"participant_count":"pass","action_roles":"fail","contact_targets":"fail",'
+            '"participant_count":"pass","action_roles":"fail","body_ownership":"fail",'
+            '"anatomical_attachment":"fail","anatomical_orientation":"fail",'
+            '"contact_targets":"fail",'
             '"object_separation":"fail","visible_phase":"pass","reactions":"fail",'
             '"discrepancies":["receiver role is reversed","toy merged with anatomy"]}}'
         )
 
         self.assertEqual(parsed["nsfw_fidelity"]["action_roles"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["body_ownership"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["anatomical_attachment"], "fail")
+        self.assertEqual(parsed["nsfw_fidelity"]["anatomical_orientation"], "fail")
         self.assertEqual(parsed["nsfw_fidelity"]["object_separation"], "fail")
         repair = workbench.targeted_repair_prompt(parsed, "Current prompt.")
+        self.assertIn("NSFW fidelity: failed body ownership", repair)
+        self.assertIn("NSFW fidelity: failed anatomical attachment", repair)
+        self.assertIn("NSFW fidelity: failed anatomical orientation", repair)
         self.assertIn("NSFW fidelity: receiver role is reversed", repair)
         self.assertIn("NSFW fidelity: toy merged with anatomy", repair)
         self.assertIn("Current prompt.", repair)
@@ -169,6 +180,36 @@ class PromptWorkbenchTests(unittest.TestCase):
         self.assertIn("Krea 2", profiles)
         self.assertTrue(profiles["My model"]["negative_prompt"])
 
+    def test_flux_fixed_seed_benchmark_crosses_variant_and_encoder(self):
+        manifest = workbench.build_flux_fixed_seed_benchmark(
+            '{"scene":"two people","subjects":[]}',
+            seed=31415,
+        )
+
+        self.assertEqual(len(manifest["cases"]), 4)
+        self.assertEqual(
+            {case["seed"] for case in manifest["cases"]},
+            {31415},
+        )
+        self.assertEqual(
+            {
+                (
+                    case["setup"]["variant"],
+                    case["setup"]["text_encoder"],
+                )
+                for case in manifest["cases"]
+            },
+            {
+                ("Distilled (4-step)", "Official Qwen3 8B"),
+                ("Distilled (4-step)", "Abliterated Qwen3 8B"),
+                ("Base (50-step)", "Official Qwen3 8B"),
+                ("Base (50-step)", "Abliterated Qwen3 8B"),
+            },
+        )
+        self.assertTrue(
+            all(case["prompt"] == manifest["cases"][0]["prompt"] for case in manifest["cases"])
+        )
+
     @mock.patch("prompt_workbench.urllib.request.urlopen")
     def test_comfyui_handoff_injects_prompt_into_selected_node(self, urlopen):
         response = mock.MagicMock()
@@ -185,6 +226,85 @@ class PromptWorkbenchTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         payload = json.loads(request.data.decode("utf-8"))
         self.assertEqual(payload["prompt"]["6"]["inputs"]["text"], "new prompt")
+
+    def test_image_edit_prompt_separates_change_preservation_and_target(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction="change the coat to yellow",
+            preserve="face, pose, and background",
+            target_prompt="A woman in a yellow coat under soft daylight.",
+            image_analysis="Image 2 visibly has a wool coat texture.",
+            reference_roles=[
+                "base composition",
+                "use this person's face",
+                "take the coat texture from this image",
+            ],
+            masked_reference_indices=[1, 3],
+        )
+        self.assertIn("Requested change: change the coat to yellow", prompt)
+        self.assertIn("Preserve unchanged: face, pose, and background", prompt)
+        self.assertIn("Target result: A woman in a yellow coat", prompt)
+        self.assertIn("Image 1: base composition.", prompt)
+        self.assertIn("Image 2: use this person's face.", prompt)
+        self.assertIn("Image 3: take the coat texture from this image.", prompt)
+        self.assertIn("Verified image observations", prompt)
+        self.assertIn(
+            "Edit only inside the supplied mask for Image 1, Image 3",
+            prompt,
+        )
+
+    def test_image_edit_prompt_adds_requested_ventral_frenulum_orientation(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction=(
+                "Correct the penis underside so the frenulum is visible to the camera."
+            ),
+            preserve="identity, framing, lighting, and everything outside the mask",
+            reference_roles=["base composition", "anatomical orientation"],
+            masked_reference_indices=[1],
+        )
+
+        self.assertIn("ventral underside facing the camera", prompt)
+        self.assertIn("frenulum visibly centered", prompt)
+        self.assertIn("dorsal surface facing away", prompt)
+
+    def test_image_edit_prompt_does_not_add_anatomy_to_unrelated_edit(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction="Change the coat to yellow.",
+            preserve="face, pose, and background",
+        )
+
+        self.assertNotIn("frenulum", prompt.lower())
+
+    def test_image_edit_prompt_infers_underside_from_verified_viewpoint(self):
+        prompt = workbench.build_image_edit_prompt(
+            instruction="Correct the visible anatomical orientation.",
+            preserve="identity and lighting",
+            image_analysis=(
+                "The clearly adult subject's visible penis is photographed in a "
+                "low-angle view from below."
+            ),
+        )
+
+        self.assertIn("ventral underside facing the camera", prompt)
+        self.assertIn("frenulum visibly centered", prompt)
+
+    @mock.patch("prompt_workbench.urllib.request.urlopen")
+    def test_upload_comfyui_image_posts_multipart_and_returns_subfolder_name(self, urlopen):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"name":"source.png","subfolder":"promptcorrector","type":"input"}'
+        )
+        urlopen.return_value = response
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(b"png-data")
+            name = workbench.upload_comfyui_image(
+                server_url="http://127.0.0.1:8188",
+                path=source,
+            )
+        self.assertEqual(name, "promptcorrector/source.png")
+        request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/upload/image"))
+        self.assertIn(b'filename="source.png"', request.data)
 
     def test_benchmark_scores_contract_responses(self):
         responses = iter([

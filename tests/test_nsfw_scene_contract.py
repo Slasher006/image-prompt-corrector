@@ -16,14 +16,29 @@ from mix_ingredient_presets import (
     mix_ingredient_preset_catalog,
 )
 from nsfw_scene_contract import (
+    PENIS_VENTRAL_ORIENTATION_PROMPT,
+    cross_subject_genital_binding_lead,
+    cross_subject_genital_binding_instruction,
+    cross_subject_genital_binding_issues,
     dildo_direction_instruction,
+    enforce_cross_subject_genital_binding,
+    enforce_penis_ventral_orientation_contract,
+    enforce_reaction_binding,
+    enforce_semen_tip_origin_contract,
     extract_nsfw_scene_contract,
     format_nsfw_preset_contract,
     format_nsfw_scene_contract,
     nsfw_image_audit_contract,
     nsfw_preset_compatibility_issues,
     nsfw_scene_contract_issues,
+    needs_penis_orientation_analysis,
+    penis_ventral_orientation_instruction,
+    penis_ventral_orientation_issues,
     reaction_binding_issues,
+    requests_visible_penis_ventral_orientation,
+    requires_semen_tip_origin,
+    semen_tip_origin_instruction,
+    semen_tip_origin_issues,
     single_phase_issues,
     strip_nsfw_catalog_labels,
 )
@@ -34,6 +49,176 @@ from visual_direction_presets import (
 
 
 class NsfwSceneContractTests(unittest.TestCase):
+    def test_visible_semen_is_bound_to_urethral_opening_at_glans_tip(self):
+        source = "An adult man visibly ejaculates semen from his penis."
+        wrong = "Semen sprays from the base of the penis."
+
+        self.assertTrue(requires_semen_tip_origin(source))
+        self.assertIn("urethral opening", semen_tip_origin_instruction(source))
+        self.assertTrue(semen_tip_origin_issues(wrong, source))
+
+        repaired = enforce_semen_tip_origin_contract(wrong, source)
+        self.assertIn("urethral opening at the tip of the glans", repaired)
+        self.assertEqual(semen_tip_origin_issues(repaired, source), [])
+        self.assertNotIn("from the base", repaired.casefold())
+
+    def test_semen_origin_contract_ignores_non_penile_samples(self):
+        source = "A sealed laboratory vial contains a semen sample."
+        self.assertFalse(requires_semen_tip_origin(source))
+        self.assertEqual(enforce_semen_tip_origin_contract(source, source), source)
+
+    def test_cross_subject_manual_contact_requires_explicit_role_nouns(self):
+        source = (
+            "A woman stands behind a seated man, her hands gripping his erect "
+            "shaft as she strokes it."
+        )
+        weak = (
+            "A woman stands behind a seated man, her hands gripping his erect "
+            "penis as she strokes it."
+        )
+        strong = (
+            "Exactly two distinct adults are fully visible. The adult woman "
+            "standing behind him grips and manually stimulates the seated adult "
+            "man's penis, whose base is visibly attached to the man's pelvis and "
+            "extends outward from his groin in a continuous base-to-tip direction."
+        )
+
+        self.assertIn(
+            "name both adults",
+            cross_subject_genital_binding_instruction(source),
+        )
+        self.assertEqual(
+            cross_subject_genital_binding_instruction(
+                "A woman grips the wooden shaft of a man's walking staff."
+            ),
+            "",
+        )
+        self.assertTrue(cross_subject_genital_binding_issues(weak, source))
+        self.assertEqual(cross_subject_genital_binding_issues(strong, source), [])
+
+        repaired = enforce_cross_subject_genital_binding(weak, source)
+        self.assertTrue(repaired.startswith("Exactly two distinct adults"))
+        self.assertIn("adult woman is positioned directly behind", repaired)
+        self.assertIn("reaches forward with her hands", repaired)
+        self.assertIn("seated adult man's erect penis", repaired)
+        self.assertIn("base is visibly attached to the man's pelvis", repaired)
+        self.assertIn("continuous base-to-tip direction", repaired)
+        self.assertEqual(cross_subject_genital_binding_issues(repaired, source), [])
+        lead = cross_subject_genital_binding_lead(source)
+        self.assertTrue(repaired == lead or repaired.startswith(lead + " "))
+
+    def test_penile_ventral_orientation_is_targeted_and_viewpoint_explicit(self):
+        source = (
+            "A close-up of a clearly adult man with the penis underside and "
+            "frenulum visible to the camera."
+        )
+
+        self.assertTrue(requests_visible_penis_ventral_orientation(source))
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "A clearly adult man with a visible penis."
+            )
+        )
+        self.assertTrue(
+            requests_visible_penis_ventral_orientation(
+                "A low-angle view from below of a clearly adult man with a visible penis."
+            )
+        )
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "Low-angle medium-wide shot, 35mm lens. A clearly adult man "
+                "with a visible penis."
+            )
+        )
+        self.assertTrue(
+            needs_penis_orientation_analysis(
+                "Low-angle medium-wide shot, 35mm lens. A clearly adult man "
+                "with a visible penis."
+            )
+        )
+        self.assertIn(
+            "generic low angle alone is not enough",
+            penis_ventral_orientation_instruction(
+                "Low-angle medium-wide shot, 35mm lens. A clearly adult man "
+                "with a visible penis."
+            ),
+        )
+        self.assertTrue(
+            requests_visible_penis_ventral_orientation(
+                "A clearly adult man lies supine, with the camera below his pelvis "
+                "looking upward at his visible penis."
+            )
+        )
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "A side-view close-up of a clearly adult man with a visible penis."
+            )
+        )
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "A dorsal view of a clearly adult man's penis."
+            )
+        )
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "A low-angle shot of the dorsal surface of a clearly adult man's penis."
+            )
+        )
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "A low-angle portrait of a clearly adult man with no visible penis."
+            )
+        )
+        self.assertFalse(
+            requests_visible_penis_ventral_orientation(
+                "A clearly adult man with a visible penis stands beside a table "
+                "whose wooden underside faces the camera."
+            )
+        )
+        instruction = penis_ventral_orientation_instruction(source)
+        self.assertIn("front-to-back dorsal/ventral", instruction)
+        self.assertIn("never as image-left versus image-right", instruction)
+        self.assertEqual(
+            penis_ventral_orientation_issues(
+                PENIS_VENTRAL_ORIENTATION_PROMPT,
+                source,
+            ),
+            [],
+        )
+
+    def test_cross_subject_lead_preserves_finger_ownership(self):
+        source = (
+            "A woman stands behind a seated man, her fingers gripping his shaft "
+            "while precum glistens at the tip."
+        )
+
+        lead = cross_subject_genital_binding_lead(source)
+
+        self.assertIn("reaches forward with her fingers", lead)
+        self.assertNotIn("reaches forward with her hands", lead)
+
+    def test_penile_ventral_orientation_repairs_reversed_and_missing_geometry(self):
+        source = (
+            "A close-up of a clearly adult man with the penis underside and "
+            "frenulum visible to the camera."
+        )
+        reversed_prompt = (
+            "The frenulum is visible on the upper surface and the dorsal surface "
+            "faces the camera."
+        )
+
+        self.assertTrue(
+            penis_ventral_orientation_issues(reversed_prompt, source)
+        )
+        repaired = enforce_penis_ventral_orientation_contract(
+            reversed_prompt,
+            source,
+        )
+        self.assertIn("ventral midline directly beneath the glans", repaired)
+        self.assertIn("ventral underside facing the camera", repaired)
+        self.assertIn("dorsal surface facing away from the camera", repaired)
+        self.assertEqual(penis_ventral_orientation_issues(repaired, source), [])
+
     def test_generic_adult_toy_is_satisfied_by_specific_toy(self):
         self.assertEqual(
             nsfw_scene_contract_issues(
@@ -203,6 +388,58 @@ class NsfwSceneContractTests(unittest.TestCase):
         self.assertIn("missing requested adult object: dildo", joined)
         self.assertIn("missing or reversed sexual role binding", joined)
 
+    def test_scene_fidelity_rejects_invented_act_outcome_and_participant(self):
+        source = (
+            "A woman manually stimulates a man's penis while precum remains "
+            "visible at the tip."
+        )
+        candidate = (
+            source
+            + " The woman also performs oral sex. The man ejaculates. "
+            "A second woman watches."
+        )
+
+        joined = "\n".join(nsfw_scene_contract_issues(candidate, source))
+
+        self.assertIn("unrequested sexual act family added: oral sex", joined)
+        self.assertIn("unrequested sexual fluid or outcome added: ejaculation", joined)
+        self.assertIn("unrequested additional adult participant", joined)
+
+    def test_gripping_or_stroking_owned_penis_is_manual_stimulation(self):
+        source = (
+            "A woman stands behind a seated man, her hands gripping his erect "
+            "shaft as she strokes it."
+        )
+        candidate = (
+            "The adult woman grips and manually stimulates the adult man's "
+            "erect penis."
+        )
+
+        self.assertIn(
+            "manual stimulation",
+            extract_nsfw_scene_contract(source)["acts"],
+        )
+        self.assertEqual(nsfw_scene_contract_issues(candidate, source), [])
+
+    def test_scene_fidelity_wires_reaction_and_single_phase_checks(self):
+        source = "Two adult partners engage in manual stimulation."
+        candidate = (
+            "Two adult partners begin with foreplay, then move into manual "
+            "stimulation and afterward rest in afterglow. Trembling and gasps "
+            "fill the room."
+        )
+
+        joined = "\n".join(
+            nsfw_scene_contract_issues(
+                candidate,
+                source,
+                content_format="Single Image",
+            )
+        )
+
+        self.assertIn("single-image prompt contains a visible multi-phase progression", joined)
+        self.assertIn("reaction is not assigned to a named adult role", joined)
+
     def test_solo_toy_mechanics_satisfy_masturbation_act_family(self):
         source = "A solo adult woman masturbates with a dildo vaginally."
         candidate = (
@@ -262,6 +499,165 @@ class NsfwSceneContractTests(unittest.TestCase):
         self.assertTrue(any("named adult role" in issue for issue in weak))
         self.assertTrue(any("causing action" in issue for issue in weak))
         self.assertEqual(strong, [])
+
+    def test_source_authored_unbound_reaction_does_not_break_fidelity_fallback(self):
+        source = (
+            "An adult woman manually stimulates an adult man. Both remain "
+            "flushed."
+        )
+
+        self.assertEqual(nsfw_scene_contract_issues(source, source), [])
+        self.assertTrue(
+            any(
+                "reaction is not assigned" in issue
+                for issue in nsfw_scene_contract_issues(
+                    source + " Breathless pleasure follows.",
+                    source,
+                )
+            )
+        )
+
+    def test_source_climax_normalized_to_orgasm_keeps_same_reaction_issue(self):
+        source = (
+            "An adult woman stands beside an adult man. The room echoes with "
+            "climax."
+        )
+        normalized = source.replace(
+            "climax",
+            "visible orgasm with muscle tension and altered breathing",
+        )
+
+        self.assertEqual(nsfw_scene_contract_issues(normalized, source), [])
+
+    def test_requested_ejaculation_authorizes_semen_but_precum_does_not(self):
+        requested = "An adult man visibly ejaculates during the scene."
+        candidate = "The adult man shows a visible semen release during the scene."
+        self.assertFalse(
+            any(
+                "unrequested sexual fluid or outcome added: semen" in issue
+                for issue in nsfw_scene_contract_issues(candidate, requested)
+            )
+        )
+
+        precum_only = (
+            "An adult woman manually stimulates an adult man while his "
+            "pre-ejaculate remains visible."
+        )
+        contract = extract_nsfw_scene_contract(precum_only)
+        self.assertEqual(contract["fluid_outcomes"], ["precum"])
+        added_semen = precum_only + " The adult man shows a visible semen release."
+        joined = "\n".join(nsfw_scene_contract_issues(added_semen, precum_only))
+        self.assertIn("unrequested sexual fluid or outcome added: semen", joined)
+
+    def test_partnered_fucking_is_active_intercourse_in_source_contract(self):
+        source = "An adult man is fucking an adult woman."
+        candidate = "An adult man is having penetrative sex with an adult woman."
+
+        contract = extract_nsfw_scene_contract(source)
+        self.assertTrue(contract["sexual"])
+        self.assertIn("intercourse", contract["acts"])
+        self.assertIn("active", contract["phases"])
+        self.assertEqual(nsfw_scene_contract_issues(candidate, source), [])
+
+    def test_anatomy_slang_normalization_does_not_invent_body_targets(self):
+        cases = (
+            (
+                "An adult man thrusts a sex toy while his cock remains visible.",
+                "An adult man thrusts a sex toy while his penis remains visible.",
+                "genital",
+            ),
+            (
+                "An adult woman thrusts a sex toy against her cunt.",
+                "An adult woman thrusts a sex toy against her vulva.",
+                "vaginal",
+            ),
+            (
+                "An adult uses a sex toy against their back door.",
+                "An adult uses a sex toy against their anus.",
+                "anal",
+            ),
+            (
+                "Two adults have sex while her tits remain visible.",
+                "Two adults have sex while her breasts remain visible.",
+                "chest",
+            ),
+        )
+
+        for source, candidate, target in cases:
+            with self.subTest(target=target):
+                self.assertIn(
+                    target,
+                    extract_nsfw_scene_contract(source)["body_targets"],
+                )
+                self.assertEqual(nsfw_scene_contract_issues(candidate, source), [])
+
+    def test_profane_adjective_does_not_create_intercourse_contract(self):
+        contract = extract_nsfw_scene_contract(
+            "An adult man carries a fucking huge ceremonial sword."
+        )
+
+        self.assertNotIn("intercourse", contract["acts"])
+
+    def test_visible_mouth_or_lips_do_not_imply_oral_contact(self):
+        non_contact = extract_nsfw_scene_contract(
+            "An adult woman and adult man have sex while her parted lips and "
+            "red lipstick remain visible in profile."
+        )
+        explicit_contact = extract_nsfw_scene_contract(
+            "An adult woman performs oral stimulation on an adult man with "
+            "visible mouth-to-penis contact."
+        )
+
+        self.assertNotIn("oral", non_contact["body_targets"])
+        self.assertIn("oral", explicit_contact["body_targets"])
+
+    def test_negative_sound_clause_preserves_positive_phase_after_but(self):
+        contract = extract_nsfw_scene_contract(
+            "Two adult partners have sex. The room carries no sound but the "
+            "adult man visibly reaches climax under amber light."
+        )
+
+        self.assertTrue(contract["sexual"])
+        self.assertIn("intercourse", contract["acts"])
+        self.assertIn("climax", contract["phases"])
+
+    def test_scoped_relation_graph_normalizes_active_and_passive_roles(self):
+        active = extract_nsfw_scene_contract(
+            "The first adult woman kisses the second adult woman."
+        )["scoped_relations"]
+        passive = extract_nsfw_scene_contract(
+            "The second adult woman is kissed by the first adult woman."
+        )["scoped_relations"]
+
+        self.assertEqual(active[0]["predicate"], "kiss")
+        self.assertEqual(passive[0]["predicate"], "kiss")
+        self.assertTrue(str(active[0]["actor"]).endswith(":first woman"))
+        self.assertTrue(str(passive[0]["actor"]).endswith(":first woman"))
+
+    def test_scoped_relation_validator_rejects_same_gender_role_reversal(self):
+        source = "The first adult woman kisses the second adult woman."
+        candidate = "The second adult woman kisses the first adult woman."
+
+        self.assertIn(
+            "scoped actor/receiver relation changed",
+            nsfw_scene_contract_issues(candidate, source),
+        )
+
+    def test_reaction_enforcement_binds_clear_pronoun_and_source_action(self):
+        source = (
+            "A woman stands behind a man and strokes his penis while precum "
+            "glistens at the tip."
+        )
+        candidate = "Her eyes blaze with joy and ecstasy."
+
+        repaired = enforce_reaction_binding(candidate, source)
+
+        self.assertIn("The adult woman's eyes", repaired)
+        self.assertIn("during her manual stimulation of the adult man's penis", repaired)
+        self.assertEqual(
+            reaction_binding_issues(repaired, participant_count=2),
+            [],
+        )
 
     def test_single_image_rejects_visible_multi_phase_progression(self):
         prompt = (
@@ -356,6 +752,19 @@ class NsfwSceneContractTests(unittest.TestCase):
         self.assertIn("rounded insertion tip points toward the vaginal opening", audit)
         self.assertIn("base or handle stays outside", audit)
         self.assertIn("actor and receiver roles", audit)
+
+        cross_subject_audit = nsfw_image_audit_contract(
+            "A woman stands behind a seated man, her hands gripping his erect "
+            "shaft as she strokes it.",
+            "The adult woman's hands manually stimulate the seated adult man's penis.",
+        )
+        self.assertIn("exactly two distinct adults", cross_subject_audit)
+        self.assertIn("woman's hands perform the manual contact", cross_subject_audit)
+        self.assertIn("base anatomically attached to the man's pelvis", cross_subject_audit)
+        self.assertIn("body_ownership", cross_subject_audit)
+        self.assertIn("anatomical_attachment", cross_subject_audit)
+        self.assertIn("anatomical_orientation", cross_subject_audit)
+        self.assertIn("one fused subject", cross_subject_audit)
 
 
 if __name__ == "__main__":
