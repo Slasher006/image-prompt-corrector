@@ -24,6 +24,7 @@ from nsfw_scene_contract import (
     enforce_cross_subject_genital_binding,
     enforce_penis_ventral_orientation_contract,
     enforce_reaction_binding,
+    enforce_semen_tip_origin_contract,
     extract_nsfw_scene_contract,
     format_nsfw_preset_contract,
     format_nsfw_scene_contract,
@@ -35,6 +36,9 @@ from nsfw_scene_contract import (
     penis_ventral_orientation_issues,
     reaction_binding_issues,
     requests_visible_penis_ventral_orientation,
+    requires_semen_tip_origin,
+    semen_tip_origin_instruction,
+    semen_tip_origin_issues,
     single_phase_issues,
     strip_nsfw_catalog_labels,
 )
@@ -45,6 +49,24 @@ from visual_direction_presets import (
 
 
 class NsfwSceneContractTests(unittest.TestCase):
+    def test_visible_semen_is_bound_to_urethral_opening_at_glans_tip(self):
+        source = "An adult man visibly ejaculates semen from his penis."
+        wrong = "Semen sprays from the base of the penis."
+
+        self.assertTrue(requires_semen_tip_origin(source))
+        self.assertIn("urethral opening", semen_tip_origin_instruction(source))
+        self.assertTrue(semen_tip_origin_issues(wrong, source))
+
+        repaired = enforce_semen_tip_origin_contract(wrong, source)
+        self.assertIn("urethral opening at the tip of the glans", repaired)
+        self.assertEqual(semen_tip_origin_issues(repaired, source), [])
+        self.assertNotIn("from the base", repaired.casefold())
+
+    def test_semen_origin_contract_ignores_non_penile_samples(self):
+        source = "A sealed laboratory vial contains a semen sample."
+        self.assertFalse(requires_semen_tip_origin(source))
+        self.assertEqual(enforce_semen_tip_origin_contract(source, source), source)
+
     def test_cross_subject_manual_contact_requires_explicit_role_nouns(self):
         source = (
             "A woman stands behind a seated man, her hands gripping his erect "
@@ -477,6 +499,149 @@ class NsfwSceneContractTests(unittest.TestCase):
         self.assertTrue(any("named adult role" in issue for issue in weak))
         self.assertTrue(any("causing action" in issue for issue in weak))
         self.assertEqual(strong, [])
+
+    def test_source_authored_unbound_reaction_does_not_break_fidelity_fallback(self):
+        source = (
+            "An adult woman manually stimulates an adult man. Both remain "
+            "flushed."
+        )
+
+        self.assertEqual(nsfw_scene_contract_issues(source, source), [])
+        self.assertTrue(
+            any(
+                "reaction is not assigned" in issue
+                for issue in nsfw_scene_contract_issues(
+                    source + " Breathless pleasure follows.",
+                    source,
+                )
+            )
+        )
+
+    def test_source_climax_normalized_to_orgasm_keeps_same_reaction_issue(self):
+        source = (
+            "An adult woman stands beside an adult man. The room echoes with "
+            "climax."
+        )
+        normalized = source.replace(
+            "climax",
+            "visible orgasm with muscle tension and altered breathing",
+        )
+
+        self.assertEqual(nsfw_scene_contract_issues(normalized, source), [])
+
+    def test_requested_ejaculation_authorizes_semen_but_precum_does_not(self):
+        requested = "An adult man visibly ejaculates during the scene."
+        candidate = "The adult man shows a visible semen release during the scene."
+        self.assertFalse(
+            any(
+                "unrequested sexual fluid or outcome added: semen" in issue
+                for issue in nsfw_scene_contract_issues(candidate, requested)
+            )
+        )
+
+        precum_only = (
+            "An adult woman manually stimulates an adult man while his "
+            "pre-ejaculate remains visible."
+        )
+        contract = extract_nsfw_scene_contract(precum_only)
+        self.assertEqual(contract["fluid_outcomes"], ["precum"])
+        added_semen = precum_only + " The adult man shows a visible semen release."
+        joined = "\n".join(nsfw_scene_contract_issues(added_semen, precum_only))
+        self.assertIn("unrequested sexual fluid or outcome added: semen", joined)
+
+    def test_partnered_fucking_is_active_intercourse_in_source_contract(self):
+        source = "An adult man is fucking an adult woman."
+        candidate = "An adult man is having penetrative sex with an adult woman."
+
+        contract = extract_nsfw_scene_contract(source)
+        self.assertTrue(contract["sexual"])
+        self.assertIn("intercourse", contract["acts"])
+        self.assertIn("active", contract["phases"])
+        self.assertEqual(nsfw_scene_contract_issues(candidate, source), [])
+
+    def test_anatomy_slang_normalization_does_not_invent_body_targets(self):
+        cases = (
+            (
+                "An adult man thrusts a sex toy while his cock remains visible.",
+                "An adult man thrusts a sex toy while his penis remains visible.",
+                "genital",
+            ),
+            (
+                "An adult woman thrusts a sex toy against her cunt.",
+                "An adult woman thrusts a sex toy against her vulva.",
+                "vaginal",
+            ),
+            (
+                "An adult uses a sex toy against their back door.",
+                "An adult uses a sex toy against their anus.",
+                "anal",
+            ),
+            (
+                "Two adults have sex while her tits remain visible.",
+                "Two adults have sex while her breasts remain visible.",
+                "chest",
+            ),
+        )
+
+        for source, candidate, target in cases:
+            with self.subTest(target=target):
+                self.assertIn(
+                    target,
+                    extract_nsfw_scene_contract(source)["body_targets"],
+                )
+                self.assertEqual(nsfw_scene_contract_issues(candidate, source), [])
+
+    def test_profane_adjective_does_not_create_intercourse_contract(self):
+        contract = extract_nsfw_scene_contract(
+            "An adult man carries a fucking huge ceremonial sword."
+        )
+
+        self.assertNotIn("intercourse", contract["acts"])
+
+    def test_visible_mouth_or_lips_do_not_imply_oral_contact(self):
+        non_contact = extract_nsfw_scene_contract(
+            "An adult woman and adult man have sex while her parted lips and "
+            "red lipstick remain visible in profile."
+        )
+        explicit_contact = extract_nsfw_scene_contract(
+            "An adult woman performs oral stimulation on an adult man with "
+            "visible mouth-to-penis contact."
+        )
+
+        self.assertNotIn("oral", non_contact["body_targets"])
+        self.assertIn("oral", explicit_contact["body_targets"])
+
+    def test_negative_sound_clause_preserves_positive_phase_after_but(self):
+        contract = extract_nsfw_scene_contract(
+            "Two adult partners have sex. The room carries no sound but the "
+            "adult man visibly reaches climax under amber light."
+        )
+
+        self.assertTrue(contract["sexual"])
+        self.assertIn("intercourse", contract["acts"])
+        self.assertIn("climax", contract["phases"])
+
+    def test_scoped_relation_graph_normalizes_active_and_passive_roles(self):
+        active = extract_nsfw_scene_contract(
+            "The first adult woman kisses the second adult woman."
+        )["scoped_relations"]
+        passive = extract_nsfw_scene_contract(
+            "The second adult woman is kissed by the first adult woman."
+        )["scoped_relations"]
+
+        self.assertEqual(active[0]["predicate"], "kiss")
+        self.assertEqual(passive[0]["predicate"], "kiss")
+        self.assertTrue(str(active[0]["actor"]).endswith(":first woman"))
+        self.assertTrue(str(passive[0]["actor"]).endswith(":first woman"))
+
+    def test_scoped_relation_validator_rejects_same_gender_role_reversal(self):
+        source = "The first adult woman kisses the second adult woman."
+        candidate = "The second adult woman kisses the first adult woman."
+
+        self.assertIn(
+            "scoped actor/receiver relation changed",
+            nsfw_scene_contract_issues(candidate, source),
+        )
 
     def test_reaction_enforcement_binds_clear_pronoun_and_source_action(self):
         source = (

@@ -24,6 +24,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from contract_validation import (
+    apply_contract_revisions,
+    candidate_delta_issues,
+    compile_prompt_contract as compile_typed_prompt_contract,
+    legacy_compliance_issue,
+    preflight_contract_issues,
+    revision_resolution_messages,
+    structure_legacy_issues,
+    validate_continuation_sentences,
+)
+from entity_resolution import rewrite_high_confidence_references
+from prompt_contract import ComplianceIssue, IssueText, issue_is_hard, issue_text
+
 from nsfw_scene_contract import (
     cross_subject_genital_binding_instruction,
     cross_subject_genital_binding_issues,
@@ -31,11 +44,15 @@ from nsfw_scene_contract import (
     enforce_cross_subject_genital_binding,
     enforce_penis_ventral_orientation_contract,
     enforce_reaction_binding,
+    enforce_semen_tip_origin_contract,
     extract_nsfw_scene_contract,
     format_nsfw_scene_contract,
     nsfw_scene_contract_issues,
     penis_ventral_orientation_instruction,
     penis_ventral_orientation_issues,
+    reaction_binding_issues,
+    semen_tip_origin_instruction,
+    semen_tip_origin_issues,
     strip_nsfw_catalog_labels,
 )
 
@@ -1988,12 +2005,16 @@ COMMON_CONCEPT_FIXES = {
     "medivial": "medieval",
     "medival": "medieval",
     "midieval": "medieval",
+    "mosty": "mostly",
     "reflecion": "reflection",
     "reflecions": "reflections",
     "righ": "right",
+    "semenen": "semen",
     "seperate": "separate",
     "silouette": "silhouette",
+    "totaly": "totally",
     "toungue": "tongue",
+    "visable": "visible",
 }
 
 EXPLICIT_ADULT_GRAMMAR_PROBLEM_PATTERNS = (
@@ -2274,6 +2295,16 @@ def normalize_concept_text(text: str) -> str:
         return replacement
 
     return re.sub(r"[A-Za-z]+", replace_word, text)
+
+
+def correct_common_spelling(text: str) -> str:
+    """Correct only high-confidence typos while preserving exact quoted text."""
+
+    parts = re.split(r'("[^"]*")', str(text or ""))
+    return "".join(
+        part if index % 2 else normalize_concept_text(part)
+        for index, part in enumerate(parts)
+    )
 
 
 def common_spelling_issues(text: str) -> list[str]:
@@ -3134,7 +3165,29 @@ def unquoted_text(text: str) -> str:
 
 
 NEGATIVE_CONSTRAINT_PATTERN = re.compile(
-    r"(?i)\b(?:no|without|avoid|exclude|never|do\s+not|don't)\b[^,.!?;\n]*"
+    r"(?i)\b(?:no|without|avoid|exclude|never|do\s+not|don't)\b"
+    r"(?:(?!\b(?:but|while|yet|although|though|except)\b)[^,.!?;\n])*"
+)
+
+# Only explicit constraint grammar is allowed to create a hard exclusion.
+# NEGATIVE_CONSTRAINT_PATTERN intentionally remains broader because it also
+# naturalizes negative prose for generators that expect positive prompting.
+# Keeping these two jobs separate prevents ordinary descriptions such as
+# "she has no fear in her eyes" or "do not crop her face" from becoming
+# inferred bans on eyes or faces.
+EXPLICIT_EXCLUSION_PATTERN = re.compile(
+    r"(?ix)"
+    r"(?:"
+    r"(?:^|(?<=[,.;:\n]))\s*no\s+"
+    r"|\bwith\s+no\s+"
+    r"|\bwithout\s+"
+    r"|\b(?:avoid|exclude)\s+(?:(?:add|include|show|depict|use|introduce)\s+)?"
+    r"|\b(?:do\s+not|don't|never)\s+"
+    r"(?:add|include|show|depict|use|introduce)\s+"
+    r")"
+    r"(?P<body>"
+    r"(?:(?!\b(?:but|while|yet|although|though|except)\b)[^,.!?;\n])+"
+    r")"
 )
 
 
@@ -4007,9 +4060,26 @@ def flux_structured_to_natural_prompt(prompt: str) -> str:
 
 
 def resolve_unambiguous_multi_person_pronouns(prompt: str) -> str:
-    """Keep natural pronouns; validation rejects only genuinely ambiguous ones."""
+    """Backward-compatible wrapper for all clear entity references."""
 
-    return prompt
+    return resolve_unambiguous_entity_references(prompt)
+
+
+def resolve_unambiguous_entity_references(prompt: str) -> str:
+    """Expand clear it/its/this/that references without guessing."""
+
+    return rewrite_high_confidence_references(prompt)
+
+
+def unresolved_entity_reference_issues(prompt: str) -> list[str]:
+    """Return graph-backed references that have no single safe antecedent."""
+
+    contract = compile_typed_prompt_contract({"Candidate": str(prompt or "")})
+    return [
+        str(issue)
+        for issue in contract.issues
+        if issue.code == "reference.ambiguous"
+    ]
 
 
 def gender_identity_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
@@ -5077,6 +5147,8 @@ def classify_prompt_parts(prompt: str) -> dict[str, list[str]]:
 DIRECTIVE_ANCHOR_STOP_WORDS = PANEL_BEAT_STOP_WORDS | {
     "always",
     "correct",
+    "change",
+    "delete",
     "ensure",
     "focus",
     "image",
@@ -5090,9 +5162,14 @@ DIRECTIVE_ANCHOR_STOP_WORDS = PANEL_BEAT_STOP_WORDS | {
     "preserve",
     "prioritize",
     "prompt",
+    "remove",
+    "replace",
     "request",
     "should",
     "sure",
+    "style",
+    "switch",
+    "turn",
     "use",
 }
 
@@ -5295,6 +5372,16 @@ COUNT_CONTRACT_PATTERN = re.compile(
     r"on|in|at|with|beside|near|under|above|below|behind|before|after|facing|"
     r"positioned|placed|visible|shown|appear|appears)\b|[,.;])"
 )
+EXPLICIT_COUNT_CONTRACT_PATTERN = re.compile(
+    rf"(?i)\b(?:"
+    rf"(?:(?:exactly|only)\s+(?P<count>{NUMBER_TOKEN_PATTERN}))"
+    rf"|(?:(?:a\s+)?single)"
+    rf")\s+"
+    r"(?P<object>[A-Za-z][A-Za-z-]*(?:\s+[A-Za-z][A-Za-z-]*){0,3}?)"
+    r"(?=\s+(?:sit|sits|stand|stands|lie|lies|rest|rests|are|is|remain|remains|"
+    r"on|in|at|with|beside|near|under|above|below|behind|before|after|facing|"
+    r"positioned|placed|visible|shown|appear|appears)\b|[,.;])"
+)
 SPATIAL_MARKER_PATTERNS = (
     ("far left", r"\b(?:on\s+the\s+)?far\s+left\b"),
     ("far right", r"\b(?:on\s+the\s+)?far\s+right\b"),
@@ -5313,7 +5400,11 @@ SPATIAL_MARKER_PATTERNS = (
     ("in front of", r"\bin\s+front\s+of\b"),
     ("above", r"\babove\b"),
     ("below", r"\bbelow\b"),
-    ("through", r"\bthrough\b"),
+    # Bare "through" is commonly instrumental or figurative ("shown through
+    # posture", "claiming him through pressure"). A determiner or possessive
+    # is a conservative signal for a concrete passage/occlusion relation such
+    # as "through the gate" or "through a window".
+    ("through", r"\bthrough\s+(?=(?:the|an?|his|her|their)\b)"),
     ("inside", r"\b(?:inside|within)\b"),
     ("outside", r"\boutside\b"),
 )
@@ -5367,10 +5458,52 @@ def extract_count_contracts(text: str) -> list[tuple[int, str, str]]:
             " ",
             canonical_validation_text(match.group("object")),
         ).strip().lower()
+        object_words = object_phrase.split()
+        if not object_words or object_words[0] == "of":
+            continue
+        if object_words[0] in {
+            "mm", "cm", "meter", "meters", "metre", "metres", "inch", "inches",
+            "foot", "feet", "second", "seconds", "minute", "minutes",
+        }:
+            continue
         head = object_phrase.split()[-1].rstrip("s")
         if head in {"panel", "frame", "variation"}:
             continue
         contract = (_number_value(match.group("count")), head, match.group(0).strip())
+        if contract[:2] not in [item[:2] for item in contracts]:
+            contracts.append(contract)
+    return contracts
+
+
+def extract_explicit_count_contracts(text: str) -> list[tuple[int, str, str]]:
+    """Extract counts that the user explicitly marked as exact.
+
+    These are suitable for contradiction preflight. Ordinary narrative number
+    phrases remain fidelity evidence but are not strong enough to stop a model
+    request before correction.
+    """
+
+    contracts: list[tuple[int, str, str]] = []
+    for match in EXPLICIT_COUNT_CONTRACT_PATTERN.finditer(
+        normalize_concept_text(text)
+    ):
+        object_phrase = re.sub(
+            r"\s+",
+            " ",
+            canonical_validation_text(match.group("object")),
+        ).strip().lower()
+        object_words = object_phrase.split()
+        if not object_words or object_words[0] == "of":
+            continue
+        count_token = match.group("count")
+        count = _number_value(count_token) if count_token else 1
+        last = object_words[-1]
+        if last.endswith("ies") and len(last) > 3:
+            object_words[-1] = last[:-3] + "y"
+        elif last.endswith("s") and not last.endswith("ss") and len(last) > 3:
+            object_words[-1] = last[:-1]
+        entity = " ".join(object_words)
+        contract = (count, entity, match.group(0).strip())
         if contract[:2] not in [item[:2] for item in contracts]:
             contracts.append(contract)
     return contracts
@@ -5431,11 +5564,19 @@ def count_contract_issues(final_prompt: str, original_prompt: str) -> list[str]:
 
 
 def _spatial_anchors(text: str) -> set[str]:
-    return {
-        _panel_term_key(word)
-        for word in significant_words(canonical_validation_text(text))
-        if word not in RELATION_GENERIC_WORDS and len(word) >= 3
-    }
+    anchors: set[str] = set()
+    for word in significant_words(canonical_validation_text(text)):
+        if word in RELATION_GENERIC_WORDS or len(word) < 3:
+            continue
+        key = _panel_term_key(word)
+        if key.endswith("ies") and len(key) > 4:
+            key = key[:-3] + "y"
+        elif key.endswith("es") and len(key) > 4 and not key.endswith("ses"):
+            key = key[:-2]
+        elif key.endswith("s") and len(key) > 3 and not key.endswith("ss"):
+            key = key[:-1]
+        anchors.add(key)
+    return anchors
 
 
 def extract_spatial_contracts(text: str) -> list[tuple[str, set[str], set[str], str]]:
@@ -5499,12 +5640,26 @@ def spatial_contract_issues(final_prompt: str, original_prompt: str) -> list[str
 
 
 def extract_excluded_terms(text: str) -> list[str]:
+    """Return only high-confidence, explicitly authored exclusions.
+
+    Negative prose is not automatically an exclusion contract.  This parser
+    deliberately accepts constraint/list grammar and rejects arbitrary negated
+    predicates; the broader negative parser is still used for positive-prompt
+    naturalization.
+    """
+
     excluded: list[str] = []
-    for match in NEGATIVE_CONSTRAINT_PATTERN.finditer(normalize_concept_text(text)):
-        clause = match.group(0)
+    for match in EXPLICIT_EXCLUSION_PATTERN.finditer(
+        normalize_concept_text(unquoted_text(text))
+    ):
+        clause = match.group("body")
+        if re.match(r"(?i)\s*with\s+no\b", match.group(0)) and re.search(
+            r"(?i)\b(?:in|on|of|for|about|from|to)\b",
+            clause,
+        ):
+            continue
         tail = re.sub(
-            r"(?i)^\s*(?:no|without|avoid|exclude|never|do\s+not|don't)\s*"
-            r"(?:add|include|show|depict|use|introduce)?\s*",
+            r"(?i)^\s*(?:add|include|show|depict|use|introduce)\s+",
             "",
             clause,
         )
@@ -5605,12 +5760,40 @@ def naturalize_flux_positive_framing(text: str) -> str:
             lambda match: "driven by " + match.group(1).strip(),
             part,
         )
+        part = re.sub(
+            r"(?i)\bwithout\s+casting\s+shadows?\s*"
+            r"(?:,|\bor\b|\band\b)\s*(?:no\s+)?distractions?\b",
+            "with soft, even shadowless illumination and an uncluttered composition",
+            part,
+        )
+        part = re.sub(
+            r"(?i)\bNo\s+shadows?\s*"
+            r"(?:,|\bor\b|\band\b)\s*(?:no\s+)?distractions?\b",
+            (
+                "Soft, even shadowless illumination and an uncluttered composition "
+                "keep attention on the main subject"
+            ),
+            part,
+        )
         replacements = (
             (r"(?i)\bNo\s+adornments?\s+distract\b", "The setting is visually uncluttered"),
             (r"(?i)\b(?:No|without)\s+(?:background\s+)?clutter\b", "an uncluttered background"),
             (r"(?i)\b(?:No|without)\s+blur\b", "sharp focus throughout"),
             (r"(?i)\b(?:No|without)\s+(?:visible\s+)?(?:text|lettering)\b", "clean unmarked surfaces"),
             (r"(?i)\b(?:No|without)\s+(?:logos?|watermarks?)\b", "clean unbranded surfaces"),
+            (r"(?i)\bwithout\s+casting\s+shadows?\b", "with soft, even shadowless illumination"),
+            (r"(?i)\bwithout\s+shadows?\b", "with soft, even shadowless illumination"),
+            (r"(?i)\bNo\s+shadows?\b", "soft, even shadowless illumination"),
+            (r"(?i)\bwithout\s+distractions?\b", "with an uncluttered composition"),
+            (r"(?i)\bNo\s+distractions?\b", "an uncluttered composition"),
+            (
+                r"(?i)\bNo\s+human\s+skin\s+or\s+eyes?\s+visible\b",
+                "exclusive focus on nonhuman, eyeless surface detail",
+            ),
+            (
+                r"(?i)\bNo\s+other\s+figures?\s+or\s+objects?\s+present\b",
+                "the sole intended subject isolated in an otherwise empty setting",
+            ),
         )
         for pattern, replacement in replacements:
             part = re.sub(pattern, replacement, part)
@@ -5789,12 +5972,14 @@ def rendered_text_issues(prompt: str, original_prompt: str = "") -> list[str]:
 
 
 def style_conflict_issues(prompt: str, original_prompt: str = "") -> list[str]:
-    lowered = prompt.lower()
-    source = original_prompt.lower()
     issues: list[str] = []
     for group in STYLE_CONFLICT_GROUPS:
-        found = [term for term in group if term in lowered]
-        source_found = [term for term in group if term in source]
+        found = [term for term in group if _semantic_phrase_present(term, prompt)]
+        source_found = [
+            term
+            for term in group
+            if _semantic_phrase_present(term, original_prompt)
+        ]
         if len(found) > 1 and not set(found).issubset(source_found):
             issues.append("Potential style/framing conflict: " + " / ".join(found))
     return issues
@@ -5969,7 +6154,8 @@ def intent_lock_issues(original_prompt: str, final_prompt: str, goal_headline: s
         return []
     excluded = {
         "wrong", "bad", "watermark", "minimal", "chaotic", "clutter",
-        "everywhere", "ultra", "detailed", "detail",
+        "everywhere", "ultra", "detailed", "detail", "change", "delete",
+        "instead", "make", "remove", "replace", "style", "switch", "turn",
     }
     if not goal_headline.strip():
         excluded |= INTENT_NONCONTENT_WORDS
@@ -6422,23 +6608,68 @@ def forbidden_syntax_issues(prompt: str) -> list[str]:
     return issues
 
 
+CONTEXTUAL_STATE_NOUNS = {
+    "running": (
+        "engine",
+        "engines",
+        "equipment",
+        "lights",
+        "light",
+        "machine",
+        "machines",
+        "motor",
+        "motors",
+        "shoes",
+        "shoe",
+        "text",
+        "time",
+        "total",
+        "water",
+    ),
+    "standing": (
+        "desk",
+        "desks",
+        "lamp",
+        "lamps",
+        "mirror",
+        "mirrors",
+        "order",
+        "orders",
+        "water",
+    ),
+}
+
+
+def _contradiction_term_present(term: str, text: str) -> bool:
+    """Match a contradiction term without confusing common noun phrases."""
+
+    escaped = re.escape(term).replace(r"\ ", r"\s+")
+    pattern = re.compile(rf"(?<!\w){escaped}(?!\w)", re.IGNORECASE)
+    contextual_nouns = CONTEXTUAL_STATE_NOUNS.get(term, ())
+    for match in pattern.finditer(str(text or "")):
+        if contextual_nouns:
+            suffix = str(text or "")[match.end() : match.end() + 32]
+            if re.match(
+                r"\s+(?:" + "|".join(map(re.escape, contextual_nouns)) + r")\b",
+                suffix,
+                flags=re.IGNORECASE,
+            ):
+                continue
+        return True
+    return False
+
+
 def contradiction_issues(prompt: str, original_prompt: str = "") -> list[str]:
-    lowered = prompt.lower()
-    source = original_prompt.lower()
     issues: list[str] = []
     for left, right in CONTRADICTION_GROUPS:
-        left_escaped = re.escape(left).replace(r"\ ", r"\s+")
-        right_escaped = re.escape(right).replace(r"\ ", r"\s+")
-        left_pattern = rf"(?<!\w){left_escaped}(?!\w)"
-        right_pattern = rf"(?<!\w){right_escaped}(?!\w)"
         candidate_has_both = (
-            re.search(left_pattern, lowered)
-            and re.search(right_pattern, lowered)
+            _contradiction_term_present(left, prompt)
+            and _contradiction_term_present(right, prompt)
         )
         source_has_both = (
-            source
-            and re.search(left_pattern, source)
-            and re.search(right_pattern, source)
+            original_prompt
+            and _contradiction_term_present(left, original_prompt)
+            and _contradiction_term_present(right, original_prompt)
         )
         if candidate_has_both and not source_has_both:
             issues.append(f"Contradictory terms: {left} / {right}")
@@ -6470,6 +6701,59 @@ def hand_use_contradiction_issues(prompt: str) -> list[str]:
         ]
     return []
 
+
+INPUT_SPATIAL_OPPOSITES = (
+    (
+        {"far left", "left side", "left"},
+        {"far right", "right side", "right"},
+        False,
+    ),
+    ({"facing left"}, {"facing right"}, False),
+    ({"above"}, {"below"}, True),
+    ({"behind"}, {"in front of"}, True),
+    ({"inside"}, {"outside"}, True),
+    ({"foreground"}, {"background"}, False),
+)
+SPATIAL_IDENTITY_GENERIC_WORDS = set(NUMBER_VALUES) | {
+    "sit", "stand", "lie", "rest", "remain", "appear", "show", "position",
+    "place", "visible", "exactly", "only", "single",
+}
+
+
+def input_contract_conflict_issues(
+    original_prompt: str,
+    *,
+    story_elements: str = "",
+    concept_keywords: str = "",
+    goal_headline: str = "",
+    focus: str = "",
+    model_instructions: str = "",
+    weighted_terms: str = "",
+    generation_feedback: str = "",
+    visual_direction: str = "",
+    camera_direction: str = "",
+    content_format: str = "Single Image",
+) -> list[str]:
+    """Find mutually incompatible hard requirements before model inference."""
+
+    fields = [
+        ("Draft", str(original_prompt or "").strip()),
+        ("Story", str(story_elements or "").strip()),
+        ("Concepts", str(concept_keywords or "").strip()),
+        ("Goal", str(goal_headline or "").strip()),
+        ("Focus", str(focus or "").strip()),
+        ("Instructions", str(model_instructions or "").strip()),
+        ("Weighted terms", str(weighted_terms or "").strip()),
+        ("Feedback", str(generation_feedback or "").strip()),
+        ("Visual direction", str(visual_direction or "").strip()),
+        ("Camera", str(camera_direction or "").strip()),
+    ]
+    fields = [(label, value) for label, value in fields if value]
+    typed_contract = compile_typed_prompt_contract(fields)
+    typed_issues = preflight_contract_issues(typed_contract)
+    # IssueText remains fully string-compatible while carrying stable code,
+    # severity, field, and span metadata for GUI and CLI consumers.
+    return [issue_text(issue) for issue in typed_issues]
 
 def focus_issue(prompt: str, focus: str) -> str | None:
     if not significant_words(canonical_validation_text(focus)):
@@ -6750,10 +7034,46 @@ def final_compliance_issues(
     safe_for_work: bool = False,
     explicit_nsfw: bool = False,
     additional_script_context: str = "",
+    generation_feedback: str = "",
+    visual_direction: str = "",
+    camera_direction: str = "",
     krea_official: bool = False,
 ) -> list[str]:
     cleaned = normalize_final_prompt_text(final_prompt)
     normalized_format = normalize_content_format(content_format)
+    typed_source = compile_typed_prompt_contract(
+        [
+            ("Draft", original_prompt),
+            ("Story", story_elements),
+            ("Concepts", concept_keywords),
+            ("Goal", goal_headline),
+            ("Focus", focus),
+            ("Instructions", model_instructions),
+            ("Weighted terms", weighted_terms),
+            ("Feedback", generation_feedback),
+            ("Visual direction", visual_direction),
+            ("Camera", camera_direction),
+        ]
+    )
+    active_original_prompt = apply_contract_revisions(
+        original_prompt,
+        typed_source,
+    )
+    contract_source_context = "\n".join(
+        value
+        for value in (
+            active_original_prompt,
+            story_elements,
+            concept_keywords,
+            goal_headline,
+            focus,
+            model_instructions,
+            weighted_terms,
+            generation_feedback,
+            visual_direction,
+        )
+        if value.strip()
+    )
     issues: list[str] = []
     if not cleaned:
         issues.append("Final prompt is empty")
@@ -6781,14 +7101,45 @@ def final_compliance_issues(
                 "FLUX.2 Klein positive-prompt contract: "
                 + ", ".join(flux_rule_issues)
             )
-    issues.extend(contradiction_issues(cleaned, original_prompt))
+    issues.extend(contradiction_issues(cleaned, contract_source_context))
     issues.extend(hand_use_contradiction_issues(cleaned))
-    issues.extend(intent_lock_issues(original_prompt, cleaned, goal_headline))
-    issues.extend(requested_medium_issues(cleaned, original_prompt))
-    issues.extend(explicit_instruction_issues(cleaned, original_prompt, model_instructions))
-    issues.extend(count_contract_issues(cleaned, original_prompt))
-    issues.extend(spatial_contract_issues(cleaned, original_prompt))
-    issues.extend(exclusion_contract_issues(cleaned, original_prompt))
+    issues.extend(intent_lock_issues(active_original_prompt, cleaned, goal_headline))
+    medium_source = active_original_prompt
+    medium_revision_context = "\n".join(
+        value
+        for value in (
+            goal_headline,
+            model_instructions,
+            generation_feedback,
+            visual_direction,
+        )
+        if value.strip()
+    )
+    revised_media = requested_medium_families(medium_revision_context)
+    if revised_media and re.search(
+        r"(?i)\b(?:change|replace|switch|turn|convert)\b[^.!?;]{0,80}"
+        r"\b(?:style|medium|look|to|into|with)\b",
+        medium_revision_context,
+    ):
+        medium_source = " ".join(sorted(revised_media))
+    issues.extend(requested_medium_issues(cleaned, medium_source))
+    issues.extend(
+        explicit_instruction_issues(
+            cleaned,
+            active_original_prompt,
+            model_instructions,
+        )
+    )
+    revised_dimensions = {
+        fact.dimension
+        for fact in typed_source.active_facts()
+        if fact.polarity == "replaced"
+    }
+    if "count" not in revised_dimensions:
+        issues.extend(count_contract_issues(cleaned, contract_source_context))
+    if "position" not in revised_dimensions:
+        issues.extend(spatial_contract_issues(cleaned, contract_source_context))
+    issues.extend(exclusion_contract_issues(cleaned, contract_source_context))
     script_context = "\n".join(
         value
         for value in (
@@ -6834,7 +7185,7 @@ def final_compliance_issues(
             ]
         if encoder_risks:
             issues.append("Risky phrasing for altered text encoder: " + ", ".join(encoder_risks))
-    style_issues = style_conflict_issues(cleaned, original_prompt)
+    style_issues = style_conflict_issues(cleaned, contract_source_context)
     if style_issues:
         issues.extend(style_issues)
     issues.extend(style_mode_issues(cleaned, mode))
@@ -6875,20 +7226,28 @@ def final_compliance_issues(
                 if value.strip()
             )
         )
-        source_issue_kinds = {
-            issue.partition(":")[0]
-            for issue in source_role_issues
-        }
-        new_role_issues = [
-            issue
-            for issue in role_issues
-            if issue.partition(":")[0] not in source_issue_kinds
-        ]
-        preserved_role_issues = [
-            issue
-            for issue in role_issues
-            if issue.partition(":")[0] in source_issue_kinds
-        ]
+        # Compare the amount/type of uncertainty, not the literal pronoun.
+        # Otherwise a model changing inherited "her" to "them" creates a fake
+        # new hard failure even though it did not worsen the source ambiguity.
+        source_budget: dict[str, int] = {}
+        for issue in source_role_issues:
+            category = issue.partition(":")[0].casefold()
+            source_budget[category] = source_budget.get(category, 0) + 1
+        new_role_issues: list[str] = []
+        preserved_role_issues: list[str] = []
+        consumed: dict[str, int] = {}
+        for issue in role_issues:
+            category = issue.partition(":")[0].casefold()
+            used = consumed.get(category, 0)
+            introduces_anonymous_person = (
+                "someone" in issue.casefold()
+                and not any("someone" in source.casefold() for source in source_role_issues)
+            )
+            if used < source_budget.get(category, 0) and not introduces_anonymous_person:
+                preserved_role_issues.append(issue)
+                consumed[category] = used + 1
+            else:
+                new_role_issues.append(issue)
         if new_role_issues:
             issues.append(
                 "Multi-person role ambiguity: " + ", ".join(new_role_issues)
@@ -6900,13 +7259,13 @@ def final_compliance_issues(
             )
     gender_issues = gender_identity_contract_issues(
         cleaned,
-        f"{original_prompt}\n{story_elements}",
+        contract_source_context,
     )
     if gender_issues:
         issues.append("Gender identity contract: " + ", ".join(gender_issues))
     ownership_issues = body_part_ownership_contract_issues(
         cleaned,
-        f"{original_prompt}\n{story_elements}",
+        contract_source_context,
     )
     if ownership_issues:
         issues.append(
@@ -6982,6 +7341,14 @@ def final_compliance_issues(
                 "Penile ventral orientation contract: "
                 + ", ".join(penile_orientation_issues)
             )
+        semen_origin_issues = semen_tip_origin_issues(
+            cleaned,
+            contract_source_context,
+        )
+        if semen_origin_issues:
+            issues.append(
+                "Semen origin contract: " + ", ".join(semen_origin_issues)
+            )
         trait_issues = unrequested_gender_trait_issues(
             cleaned,
             "\n".join(
@@ -7010,9 +7377,23 @@ def final_compliance_issues(
             ),
         )
         issues.extend(participant_issues)
+        adult_source_context = "\n".join(
+            value
+            for value in (
+                original_prompt,
+                story_elements,
+                concept_keywords,
+                goal_headline,
+                focus,
+                model_instructions,
+                weighted_terms,
+                additional_script_context,
+            )
+            if value.strip()
+        )
         adult_scene_issues = nsfw_scene_contract_issues(
             cleaned,
-            f"{original_prompt}\n{story_elements}",
+            adult_source_context,
             content_format=normalized_format,
         )
         if adult_scene_issues:
@@ -7097,7 +7478,8 @@ def final_compliance_issues(
     )
     if settings_problems:
         issues.append("Krea settings: " + ", ".join(settings_problems))
-    return issues
+    issues.extend(candidate_delta_issues(typed_source, cleaned))
+    return structure_legacy_issues(issues)
 
 
 SFW_NEGATED_SAFETY_REPLACEMENTS: tuple[tuple[str, str], ...] = (
@@ -7375,59 +7757,11 @@ def validate_no_minor_sexual_content(text: str) -> None:
         )
 
 
-HARD_COMPLIANCE_PREFIXES = (
-    "Final prompt is empty",
-    "Final prompt contains multiple lines",
-    "Visible prompt format",
-    "Camera viewpoint conflict",
-    "Internal prompt guidance leaked",
-    "Forbidden syntax matched",
-    "FLUX.2 Klein positive-prompt contract",
-    "Contradictory terms",
-    "Hand-use contradiction",
-    "Selected visual mode missing or changed",
-    "Requested medium missing or changed",
-    "Intent drift risk",
-    "Explicit user directives missing",
-    "Count contract",
-    "Spatial contract",
-    "Excluded content appears positively",
-    "Unexpected output language/script",
-    "Multi-panel story structure",
-    "Missing required concepts",
-    "Missing weighted visual emphasis",
-    "Missing quoted rendered text",
-    "Requested focus not represented",
-    "Story element contract",
-    "Creative development contract",
-    "Variation structure",
-    "Krea settings",
-    "Krea controls",
-    "Generator controls",
-    "Content format",
-    "Safe-for-work contract violated",
-    "Multi-person role ambiguity",
-    "Source multi-person ambiguity preserved",
-    "Gender identity contract",
-    "Person/body ownership contract",
-    "Adult toy object contract",
-    "Inserted object/body contact contract",
-    "FLUX cross-subject anatomy binding contract",
-    "Penile ventral orientation contract",
-    "Unrequested gender/anatomy traits",
-    "Explicit support participant contract",
-    "Untranslated explicit adult slang",
-    "Explicit adult grammar contract",
-    "NSFW scene fidelity contract",
-    "Sexual content involving an underage or ambiguous-age subject",
-    "Krea Official unsupported main addition",
-    "Krea Official detailed-input contract",
-)
-
-
 def is_hard_compliance_issue(issue: str) -> bool:
-    normalized = re.sub(r"^Variation\s+\d+\s*:\s*", "", issue)
-    return normalized.startswith(HARD_COMPLIANCE_PREFIXES)
+    typed = issue_is_hard(issue)
+    if typed is not None:
+        return typed
+    return legacy_compliance_issue(str(issue)).severity in {"blocker", "hard"}
 
 
 def split_compliance_issues(issues: list[str]) -> tuple[list[str], list[str]]:
@@ -7712,6 +8046,55 @@ def append_creative_continuation(
     return normalize_final_prompt_text(
         base.rstrip(" .") + ". " + addition.lstrip(" .")
     )
+
+
+def sanitize_immutable_creative_continuation(
+    fidelity_base: str,
+    continuation: str,
+    *,
+    original_prompt: str,
+    explicit_nsfw: bool,
+) -> str:
+    """Drop continuation sentences that violate immutable-base boundaries.
+
+    The fidelity base already contains every user-authored person, action, and
+    reaction. Creative continuation may add visual development, but small
+    models sometimes add an ambiguous ``someone`` or a floating adult
+    reaction. Removing only those added sentences is safer than rejecting or
+    rewriting the intact fidelity base.
+    """
+
+    base = normalize_final_prompt_text(fidelity_base)
+    addition = normalize_final_prompt_text(continuation)
+    if not addition:
+        return ""
+
+    baseline_role_issues = set(multi_person_role_issues(base))
+    participant_count: int | None = None
+    if explicit_nsfw:
+        extracted_count = extract_nsfw_scene_contract(original_prompt).get(
+            "participant_count"
+        )
+        if isinstance(extracted_count, int):
+            participant_count = extracted_count
+
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", addition):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        combined_role_issues = set(
+            multi_person_role_issues((base + " " + sentence).strip())
+        )
+        if combined_role_issues - baseline_role_issues:
+            continue
+        if explicit_nsfw and reaction_binding_issues(
+            sentence,
+            participant_count=participant_count,
+        ):
+            continue
+        kept.append(sentence)
+    return normalize_final_prompt_text(" ".join(kept))
 
 
 def normalize_research_context(context: str) -> str:
@@ -10130,6 +10513,7 @@ Rules:
 - Open with one compact visual thesis: a defining medium or composition-critical shot when supplied, then the main subject, core action or state, and immediate setting. Never delay the core subject-action relationship behind secondary detail.
 - After the opening, group each subject or object with its attributes, position, action, contact, and relationships. Then describe the wider environment, remaining composition or camera facts, global lighting and palette, and material or rendering finish.
 - For individually tracked people, assign each person a short stable identity-or-role plus position label at first mention. Repeat it only where needed to prevent ambiguous action, ownership, contact, or spatial relationships; use a pronoun when its referent is unambiguous. Preserve female, male, and nonbinary identities. A couple, crowd, or group acting only collectively may keep its collective label.
+- Use it, its, this, or that for objects only with one clear antecedent; otherwise repeat the exact noun.
 - Preserve negative constraints as clear absence statements. Never turn excluded content into positive content.
 - Keep left/right, foreground/background, inside/outside, above/below, facing direction, source direction, and object counts exact.
 - For panels, keep the requested count, order, distinct beats, identity continuity, layout, and exact dialogue.
@@ -10267,6 +10651,7 @@ def build_small_model_user_message(
     generator_target: str,
     content_format: str,
     visual_direction: str = "",
+    camera_direction: str = "",
     story_elements: str = "",
     goal_headline: str = "",
     focus: str = "",
@@ -10346,6 +10731,7 @@ def build_small_model_audit_system_prompt(generator_target: str, content_format:
     return f"""You are a compact {target} prompt compliance auditor.
 Compare the source contract with the candidate. Repair only concrete failures: dropped facts, wrong counts or positions, ambiguous subject-action binding, incoherent action-critical joints or contact, comic layout or continuity loss, and incompatible syntax.
 For individually tracked people, preserve every explicit female, male, and nonbinary identity. Establish a short stable identity-or-role plus position label, and repeat it only when needed to resolve ambiguous action, ownership, contact, or position. Natural pronouns are allowed when unambiguous. Keep purely collective couples, crowds, and groups collective.
+For objects, animals, and body parts, replace ambiguous it, its, this, or that with the exact noun. Never choose an antecedent by guessing.
 {structure_rule}
 Return only the repaired {normalize_content_format(content_format)} prompt. Do not output a score, notes, or reasoning."""
 
@@ -10662,12 +11048,13 @@ Rules:
 - Translate slang, memes, social-media shorthand, and vague mood words into concrete visual language that {target} can render. For example, rewrite "drip" as fashionable clothing and polished accessories, "rizz" as charismatic expression, and "vibes" as a specific atmosphere, lighting, palette, or setting.
 - Interpret feelings visually. Do not leave emotions as only abstract labels like sad, angry, lonely, romantic, tense, or confident. Convert them into visible facial expression, gaze, posture, gesture, body tension, interpersonal spacing, lighting, color palette, framing, and environment cues while preserving the user's intended emotion.
 - Build visual storytelling when story elements are provided or implied. For a normal single-image request, show one decisive action beat with clear cause and effect, character intention, reaction, prop interaction, environmental response, and foreground/background staging. If the user requests a comic page, comic strip, storyboard, diptych, triptych, sequential art, or multiple panels, preserve that format instead of collapsing it into one scene. State the overall page layout and reading order, identify every panel explicitly, assign one clear visual beat to each panel, and keep recurring characters, wardrobe, props, environment, lighting progression, screen direction, and quoted dialogue consistent across the sequence. Separate simultaneous details from events that happen in later panels. Do not blend different moments into one accidental composite scene.
-- Treat every explicitly labelled panel description as a hard content contract, not optional inspiration. Preserve its subject, action, important objects, setting, outcome, and exact quoted dialogue in that same numbered panel. You may improve and expand a panel, but never replace its requested beat, move it to another panel, merge it with another beat, or let invented story material displace it.
+- Treat every explicitly labelled panel description as a hard content contract, not optional inspiration. Preserve the panel's subject, action, important objects, setting, outcome, and exact quoted dialogue in that same numbered panel. You may improve and expand a panel, but never replace the requested beat, move the beat to another panel, merge the beat with another beat, or let invented story material displace the required content.
 - Rewrite weak or vague phrasing into direct visual phrasing. In altered text encoder mode, explicit phrases such as "generate an image of" are allowed if they help clarity. Remove polite filler and vague words such as "please", "I want", "kind of", "sort of", "stuff", and "things" unless quoted as rendered text. Replace weak wording with concrete subject, action, setting, composition, lighting, color, camera, and style details.
 - Analyze vague requests before expanding them. If the draft is underspecified, identify the missing visual decisions internally and make conservative concrete choices that fit the user's stated subject, mode, focus, concepts, and research context. Do not leave generic words as the main content.
 - Run a plausibility check before final output: remove accidental AI-artifact wording, impossible body states, impossible camera combinations, unclear subject/action bindings, and visually incoherent object mixtures unless the draft clearly requests surreal, fantasy, symbolic, dreamlike, or abstract imagery.
 - Keep body orientation viewpoint-aware. Anatomical left and right always mean the subject's own left and right; use image-left, image-right, screen-left, or screen-right only for placement in the frame. For every visible action-critical body part, make torso and head facing, gaze, shoulder and hip alignment, elbow and knee bend, palm or paw direction, grip, feet or toes, weight bearing, and prop contact mutually consistent with the camera view. Do not mirror, swap, or disconnect limbs or other connected anatomy. Add only orientation details that help the requested pose or action.
 - For individually tracked people, bind every person explicitly. Give each person a short stable identity-or-role plus position label, such as the woman in the red coat on image-left, the nonbinary doctor at center, the bearded man in the blue shirt on image-right, or the second guard in the background. Repeat that label only when needed to prevent ambiguous action, pose, gaze, clothing ownership, body-part ownership, contact, or spatial relationships. Use natural pronouns when the referent is unambiguous. Preserve female, male, and nonbinary identities without swapping, merging, generalizing, or dropping them. A couple, crowd, or group acting only collectively may keep one collective label.
+- For objects, animals, and body parts, use it, its, this, or that only with one unmistakable antecedent. If two entities could fit, repeat the exact noun instead of using a pronoun.
 - Remove duplicate ideas, repeated descriptors, contradictions, filler, prompt chatter, and irrelevant instructions.
 - {semantic_grouping_rule}
 - Use strong composition and camera language when helpful: close-up, low angle, wide angle, macro, high-angle perspective, shallow depth of field, dynamic composition.
@@ -11138,6 +11525,7 @@ Audit the corrected prompt against these {target} expectations:
 - No unresolved vague request content. Generic words such as nice, cool, aesthetic, scene, something, stuff, or things must be replaced with concrete visual decisions.
 - No accidental AI-failure wording, impossible body states, impossible camera combinations, unclear subject/action bindings, or visually incoherent object mixtures unless intentionally surreal/fantasy/abstract.
 - Every individually tracked person has a short stable identity-or-role plus position label. It is repeated only where needed to prevent ambiguous action, ownership, contact, or position. Clear natural pronouns may remain, while explicit female, male, and nonbinary identities are never swapped, merged, generalized, or dropped. Purely collective couples, crowds, and groups may remain collective.
+- Every it, its, this, or that reference to an object, animal, or body part has exactly one antecedent. Replace ambiguous references with the exact noun and do not guess.
 - Body-part orientation is anatomically and spatially coherent from the stated camera view. The subject's anatomical left and right are not confused with image-left and image-right, and visible action-critical anatomy has consistent facing, joint bends, palm or paw direction, grip, foot direction, weight bearing, and prop contact. Repair mirrored, swapped, twisted, or disconnected anatomy instead of repeating generic "correct anatomy" wording.
 - No unsupported sampler, CFG, step, seed, LoRA, model, or negative-prompt boilerplate inside the prompt.
 - Avoidance constraints are folded into the main prompt naturally.
@@ -11421,6 +11809,7 @@ Allow explicit direct phrasing when useful for altered text encoder clarity, but
 Resolve vague requests by making conservative concrete visual choices grounded in the original intent, focus, concepts, and research context.
 Repair plausibility risks such as accidental artifact wording, impossible poses, impossible framing, or incoherent subject/action bindings.
 For every individually tracked person, preserve each explicit female, male, and nonbinary identity and assign a short stable identity-or-role plus position label. Repeat the label only where needed to prevent ambiguous action, ownership, contact, or position. Replace ambiguous pronouns with those labels and keep clear natural pronouns. Never swap, merge, generalize, or drop gender identities. Keep purely collective couples, crowds, and groups collective.
+For objects, animals, and body parts, replace ambiguous it, its, this, or that with the exact noun. Keep an object pronoun only when its antecedent is unmistakable; never guess.
 Repair body-part orientation with explicit, viewpoint-aware anatomy where the pose or action needs it. Keep the subject's anatomical left and right distinct from image-left and image-right, and make facing, joint bends, palm or paw direction, grip, foot direction, weight bearing, and prop contact mutually consistent. Replace generic "correct anatomy" wording with a small number of concrete orientation cues tied to the visible action.
 Regroup related visual details into entity-centered clusters. Keep every object next to its attributes, material, action, position, and direct effects, and keep a light source next to its emitted light, affected surfaces, shadows, and reflections. Order clusters by visual hierarchy rather than preserving a scrambled draft order.
 Open with a compact visual thesis containing a defining medium or composition-critical shot when supplied, then the main subject, core action or state, and immediate setting. Follow with subject and interaction clusters, environment, remaining camera/composition, lighting/palette, then texture or rendering finish. Remove workflow labels such as "Camera framing and viewpoint:", "Visual direction:", and "Visible action details:" by integrating their content naturally.
@@ -12762,6 +13151,23 @@ def creative_field_seed_instruction(field_label: str, current_value: str) -> str
     )
 
 
+def invent_reference_clarity_instruction(field: str) -> str:
+    """Prevent full-scene Invent output from creating ambiguous references."""
+
+    normalized_field = str(field).strip().casefold()
+    if normalized_field not in {"draft", "premise", "scene"} and not re.fullmatch(
+        r"panel_\d+",
+        normalized_field,
+    ):
+        return ""
+    return (
+        "Every pronoun and possessive must have exactly one clear antecedent. "
+        "When two or more people, objects, animals, or body parts could match a "
+        "reference, repeat the exact role, identity, or noun instead of using an "
+        "ambiguous she, her, he, him, they, them, their, it, its, this, or that. "
+    )
+
+
 def build_single_image_field_suggestion_messages(
     *,
     field: str,
@@ -12837,6 +13243,7 @@ def build_single_image_field_suggestion_messages(
         f"{field_rule} Use at most {word_limit} words. "
         "Use every supplied field as context and keep the concept internally consistent. "
         + creative_field_seed_instruction(field_label, current_value)
+        + invent_reference_clarity_instruction(normalized_field)
         + camera_rule
         + research_rule
         + seed_format_rule
@@ -13145,6 +13552,7 @@ def build_comic_field_suggestion_messages(
         "Use every supplied field and panel as context. Preserve established continuity and "
         "do not rewrite other fields. "
         + creative_field_seed_instruction(field_label, current_value)
+        + invent_reference_clarity_instruction(normalized_field)
         + dialogue_rule
         + concept_rule
         + research_rule
@@ -13280,6 +13688,7 @@ def build_all_comic_panels_suggestion_messages(
         "naturally. Repeat concrete identity, wardrobe, prop, setting, and screen-direction anchors where "
         "needed for continuity. Give each panel one renderable still moment with subject, action or reaction, "
         "setting, and framing. Do not describe a panel slot that does not exist. "
+        + invent_reference_clarity_instruction("panel_1")
         + dialogue_rule
         + concept_rule
         + research_rule
@@ -13568,6 +13977,7 @@ def build_meme_field_suggestion_messages(
             field_label,
             "" if current_target == "blank" else current_target,
         )
+        + invent_reference_clarity_instruction(normalized_field)
         + camera_rule
         + (
             ARTISTIC_DETAIL_FREEDOM_INSTRUCTION + " "
@@ -13761,6 +14171,23 @@ def invent_field_issues(
     ):
         issues.append("Meme visual field invents extra visible text")
 
+    # Full-scene Invent output becomes the next correction pass's source
+    # contract. Do not save unresolved person, object, animal, or body-part
+    # references which the stricter correction gate would reject later.
+    if normalized_field in {"draft", "premise", "scene"} or re.fullmatch(
+        r"panel_\d+", normalized_field
+    ):
+        reference_issues = [
+            issue
+            for issue in compile_typed_prompt_contract({"Candidate": cleaned}).issues
+            if issue.code == "reference.ambiguous"
+        ]
+        if reference_issues:
+            issues.append(
+                "Invented scene has unresolved entity references: "
+                + ", ".join(str(issue) for issue in reference_issues[:4])
+            )
+
     if normalized_field == "concepts":
         concepts = [item.strip() for item in cleaned.split(",") if item.strip()]
         if not 3 <= len(concepts) <= 6:
@@ -13860,7 +14287,7 @@ def normalize_invent_candidate(
         )
     else:
         return ""
-    return value
+    return correct_common_spelling(value)
 
 
 def preserve_invent_seed_value(
@@ -14046,6 +14473,107 @@ def recover_invent_length_overflow(
     return shortened
 
 
+def recover_invent_reference_ambiguity(
+    workspace: str,
+    field: str,
+    value: str,
+    *,
+    seed_value: str = "",
+) -> str:
+    """Recover a reference-only Invent failure without choosing an antecedent."""
+
+    normalized_workspace = str(workspace).strip().casefold()
+    normalized_field = str(field).strip().casefold()
+    candidate = preserve_invent_seed_value(
+        normalized_workspace,
+        normalized_field,
+        normalize_invent_candidate(normalized_workspace, normalized_field, value),
+        seed_value=seed_value,
+    )
+    reference_issue_prefix = "Invented scene has unresolved entity references:"
+    current_issues = invent_field_issues(
+        normalized_workspace,
+        normalized_field,
+        candidate,
+        seed_value=seed_value,
+    )
+    if not current_issues or any(
+        not issue.startswith(reference_issue_prefix) for issue in current_issues
+    ):
+        return candidate
+
+    # Object references such as it/its can sometimes be expanded from one
+    # proven graph antecedent. Person pronouns are never guessed here.
+    rewritten = preserve_invent_seed_value(
+        normalized_workspace,
+        normalized_field,
+        normalize_invent_candidate(
+            normalized_workspace,
+            normalized_field,
+            rewrite_high_confidence_references(candidate, "Candidate"),
+        ),
+        seed_value=seed_value,
+    )
+    if not invent_field_issues(
+        normalized_workspace,
+        normalized_field,
+        rewritten,
+        seed_value=seed_value,
+    ):
+        return rewritten
+
+    ambiguous_spans = [
+        issue.span
+        for issue in compile_typed_prompt_contract({"Candidate": rewritten}).issues
+        if issue.code == "reference.ambiguous" and issue.span is not None
+    ]
+    sentence_matches = list(re.finditer(r"[^.!?]+(?:[.!?]+|$)", rewritten))
+    if ambiguous_spans and sentence_matches:
+        safe_sentences = [
+            match.group(0).strip()
+            for match in sentence_matches
+            if match.group(0).strip()
+            and not any(
+                match.start() < issue_end and issue_start < match.end()
+                for issue_start, issue_end in ambiguous_spans
+            )
+        ]
+        salvaged = preserve_invent_seed_value(
+            normalized_workspace,
+            normalized_field,
+            normalize_invent_candidate(
+                normalized_workspace,
+                normalized_field,
+                " ".join(safe_sentences),
+            ),
+            seed_value=seed_value,
+        )
+        if salvaged and not invent_field_issues(
+            normalized_workspace,
+            normalized_field,
+            salvaged,
+            seed_value=seed_value,
+        ):
+            return salvaged
+
+    # A nonblank Invent seed is user-authored and already contains the idea the
+    # operation must preserve. Returning a valid seed is safer than assigning a
+    # genuinely ambiguous reference or discarding the user's input.
+    safe_seed = normalize_invent_candidate(
+        normalized_workspace,
+        normalized_field,
+        seed_value,
+    )
+    if safe_seed and not invent_field_issues(
+        normalized_workspace,
+        normalized_field,
+        safe_seed,
+        seed_value=seed_value,
+    ):
+        return safe_seed
+    return rewritten
+
+
 def invent_field_contract_text(workspace: str, field: str) -> str:
     """Return the authoritative repair contract for one Invent field."""
 
@@ -14080,7 +14608,11 @@ def invent_field_contract_text(workspace: str, field: str) -> str:
     return (
         f"Field: {rule[0]}. {rule[1]} Hard maximum: {word_limit} words. "
         "Return one complete value only. Do not add labels, alternatives, notes, "
-        "Markdown, internal priority descriptions, or unfinished phrases."
+        "Markdown, internal priority descriptions, or unfinished phrases. "
+        "In a scene with multiple people, bind each action and possessive to an "
+        "explicit role or identity; do not leave her, him, they, their, or them "
+        "with more than one possible referent. For objects, animals, and body parts, "
+        "replace ambiguous it, its, this, or that with the exact noun."
     )
 
 
@@ -14406,6 +14938,7 @@ def post_chat_completion(
     seed: int | None = None,
     mode: str = "Auto",
     visual_direction: str = "",
+    camera_direction: str = "",
     detail_level: str = "Detailed",
     output_length: str = "Balanced",
     output_min_words: int | None = None,
@@ -14488,6 +15021,62 @@ def post_chat_completion(
     if explicit_nsfw:
         validate_explicit_adult_mode(source_request)
     normalized_format = normalize_content_format(content_format)
+    input_conflicts = input_contract_conflict_issues(
+        prompt,
+        story_elements=story_elements,
+        concept_keywords=concept_keywords,
+        goal_headline=goal_headline,
+        focus=focus,
+        model_instructions=model_instructions,
+        weighted_terms=weighted_terms,
+        generation_feedback=generation_feedback,
+        visual_direction=visual_direction,
+        camera_direction=camera_direction,
+        content_format=normalized_format,
+    )
+    if input_conflicts:
+        report_diagnostic(
+            "Input contract preflight stopped correction before model inference: "
+            + "; ".join(input_conflicts)
+        )
+        raise RuntimeError("Input contract conflict: " + "; ".join(input_conflicts))
+    active_source_contract = compile_typed_prompt_contract(
+        [
+            ("Draft", prompt),
+            ("Story", story_elements),
+            ("Concepts", concept_keywords),
+            ("Goal", goal_headline),
+            ("Focus", focus),
+            ("Instructions", model_instructions),
+            ("Weighted terms", weighted_terms),
+            ("Feedback", generation_feedback),
+            ("Visual direction", visual_direction),
+            ("Camera", camera_direction),
+        ]
+    )
+    for resolution in revision_resolution_messages(active_source_contract):
+        report_diagnostic("Revision resolved: " + resolution)
+    immutable_source_base = apply_contract_revisions(
+        deterministic_fidelity_fallback(
+            prompt,
+            story_elements,
+            model_instructions,
+            concept_keywords=concept_keywords,
+            goal_headline=goal_headline,
+            focus=focus,
+            weighted_terms=weighted_terms,
+        ),
+        active_source_contract,
+    )
+    immutable_base_deltas = candidate_delta_issues(
+        active_source_contract,
+        immutable_source_base,
+    )
+    if immutable_base_deltas:
+        report_diagnostic(
+            "Immutable source base compiled with structured validation deltas: "
+            + "; ".join(str(issue) for issue in immutable_base_deltas[:4])
+        )
     official_contract_active = (
         bool(krea_official)
         and normalize_generator_target(generator_target) == "Krea 2"
@@ -14558,6 +15147,12 @@ def post_chat_completion(
                 correction_model_instructions = (
                     f"{correction_model_instructions.strip()}\n"
                     f"{penile_orientation_instruction}"
+                )
+            semen_origin_instruction = semen_tip_origin_instruction(source_request)
+            if semen_origin_instruction:
+                correction_model_instructions = (
+                    f"{correction_model_instructions.strip()}\n"
+                    f"{semen_origin_instruction}"
                 )
     if official_contract_active:
         correction_model_instructions = (
@@ -14852,6 +15447,10 @@ def post_chat_completion(
                     candidate,
                     source_request,
                 )
+                candidate = enforce_semen_tip_origin_contract(
+                    candidate,
+                    source_request,
+                )
                 candidate = enforce_reaction_binding(
                     candidate,
                     source_request,
@@ -14920,10 +15519,33 @@ def post_chat_completion(
                     )
                     if value.strip()
                 ),
+                generation_feedback=generation_feedback,
+                visual_direction=visual_direction,
+                camera_direction=camera_direction,
                 krea_official=official_contract_active,
             ),
             rule_strength,
         )
+
+    fallback_candidate_cache = ""
+    fallback_candidate_built = False
+
+    def fidelity_fallback_candidate() -> str:
+        """Build the source-preserving candidate once for this request."""
+
+        nonlocal fallback_candidate_cache, fallback_candidate_built
+        if not fallback_candidate_built:
+            fallback_candidate_cache = enforce_mechanical_contracts(
+                extend_short_fidelity_fallback(
+                    immutable_source_base,
+                    story_elements,
+                    output_length=output_length,
+                    output_min_words=output_min_words,
+                    output_max_words=output_max_words,
+                )
+            )
+            fallback_candidate_built = True
+        return fallback_candidate_cache
 
     initial_candidate = enforce_mechanical_contracts(
         normalize_final_prompt_text(corrected)
@@ -14935,23 +15557,7 @@ def post_chat_completion(
         initial_issues,
     )
     if exact_fidelity:
-        fidelity_fallback = enforce_mechanical_contracts(
-            extend_short_fidelity_fallback(
-                deterministic_fidelity_fallback(
-                    prompt,
-                    story_elements,
-                    model_instructions,
-                    concept_keywords=concept_keywords,
-                    goal_headline=goal_headline,
-                    focus=focus,
-                    weighted_terms=weighted_terms,
-                ),
-                story_elements,
-                output_length=output_length,
-                output_min_words=output_min_words,
-                output_max_words=output_max_words,
-            )
-        )
+        fidelity_fallback = fidelity_fallback_candidate()
         candidates.append(fidelity_fallback)
         report_issue_summary(
             "Deterministic exact-fidelity candidate",
@@ -15107,23 +15713,58 @@ def post_chat_completion(
 
     final_prompt = min(candidates, key=candidate_rank)
     issues = compliance_issues(final_prompt)
+
+    # Whenever the selected model candidate fails hard facts, prefer the
+    # validated immutable source base before asking for another whole-prompt
+    # rewrite. This protection is independent of the optional Audit setting.
+    if issues and final_gate_repair and not exact_fidelity:
+        hard_issues, _soft_issues = split_compliance_issues(issues)
+        fidelity_hard_issues = [
+            issue
+            for issue in hard_issues
+            if "Creative development contract" not in issue
+            and "Prompt too short for Expanded" not in issue
+        ]
+        if fidelity_hard_issues:
+            fallback = fidelity_fallback_candidate()
+            fallback_issues = compliance_issues(fallback) if fallback else []
+            fallback_hard_issues, _fallback_soft_issues = split_compliance_issues(
+                fallback_issues
+            )
+            if fallback and not fallback_hard_issues:
+                candidates.append(fallback)
+                final_prompt = min(candidates, key=candidate_rank)
+                selected_hard, _selected_soft = split_compliance_issues(
+                    compliance_issues(final_prompt)
+                )
+                if final_prompt == fallback and not selected_hard:
+                    if fallback_issues:
+                        report_diagnostic(
+                            "Deterministic fidelity fallback satisfied every hard "
+                            "contract and was selected with advisory issues: "
+                            + "; ".join(fallback_issues[:4])
+                        )
+                    else:
+                        report_diagnostic(
+                            "Deterministic fidelity fallback passed validation and "
+                            "was selected."
+                        )
+                    return final_prompt
     if not issues or not final_gate_repair:
         if final_prompt:
             return final_prompt
         raise RuntimeError(f"{model_server_name(base_url)} returned no usable final prompt.")
 
-    if small_model:
-        repair_issues, soft_issues = split_compliance_issues(issues)
-        if output_length == "Expanded":
-            repair_issues.extend(
-                issue for issue in soft_issues if "Prompt too short for Expanded" in issue
-            )
-        # The compact audit already checks most soft quality concerns. Expanded
-        # is the exception: one targeted repair makes its minimum meaningful.
-        if not repair_issues:
-            return final_prompt
-    else:
-        repair_issues = issues
+    repair_issues, soft_issues = split_compliance_issues(issues)
+    if output_length == "Expanded":
+        repair_issues.extend(
+            issue for issue in soft_issues if "Prompt too short for Expanded" in issue
+        )
+    # Advisory polish must never trigger another whole-prompt rewrite. Expanded
+    # length is the sole opt-in exception because it is an explicit output-size
+    # request rather than a heuristic quality preference.
+    if not repair_issues:
+        return final_prompt
 
     base_repair_system = (build_small_model_system_prompt(
         generator_target=generator_target,
@@ -15293,23 +15934,7 @@ def post_chat_completion(
                 "deterministic fidelity fallback. Remaining issues: "
                 + "; ".join(hard_issues[:6])
             )
-            fallback = enforce_mechanical_contracts(
-                extend_short_fidelity_fallback(
-                    deterministic_fidelity_fallback(
-                        prompt,
-                        story_elements,
-                        model_instructions,
-                        concept_keywords=concept_keywords,
-                        goal_headline=goal_headline,
-                        focus=focus,
-                        weighted_terms=weighted_terms,
-                    ),
-                    story_elements,
-                    output_length=output_length,
-                    output_min_words=output_min_words,
-                    output_max_words=output_max_words,
-                )
-            )
+            fallback = fidelity_fallback_candidate()
             fallback_issues: list[str] = []
             if fallback:
                 candidates.append(fallback)
@@ -15433,6 +16058,43 @@ def post_chat_completion(
                         "Immutable-base creative expansion failed: " + str(exc)
                     )
                 else:
+                    raw_expansion_word_count = word_count(
+                        normalize_final_prompt_text(expanded_fallback_response)
+                    )
+                    expanded_fallback_response = (
+                        sanitize_immutable_creative_continuation(
+                            fallback,
+                            expanded_fallback_response,
+                            original_prompt=source_request,
+                            explicit_nsfw=explicit_nsfw,
+                        )
+                    )
+                    expanded_fallback_response, continuation_rejections = (
+                        validate_continuation_sentences(
+                            fallback,
+                            expanded_fallback_response,
+                            active_source_contract,
+                        )
+                    )
+                    if continuation_rejections:
+                        report_diagnostic(
+                            "Immutable-base creative expansion discarded unsafe "
+                            "sentences: "
+                            + "; ".join(
+                                issue.message for issue in continuation_rejections[:4]
+                            )
+                        )
+                    discarded_expansion_words = max(
+                        0,
+                        raw_expansion_word_count
+                        - word_count(expanded_fallback_response),
+                    )
+                    if discarded_expansion_words:
+                        report_diagnostic(
+                            "Immutable-base creative expansion discarded "
+                            f"{discarded_expansion_words} added words that introduced "
+                            "ambiguous people or unbound reactions."
+                        )
                     expanded_fallback = enforce_mechanical_contracts(
                         append_creative_continuation(
                             fallback,
@@ -15475,6 +16137,17 @@ def post_chat_completion(
                                 "hard contract and was selected with advisory issues: "
                                 + "; ".join(expanded_fallback_issues[:4])
                             )
+        if hard_issues and all(
+            "Creative development contract" in issue
+            or "Prompt too short for Expanded" in issue
+            for issue in hard_issues
+        ):
+            report_diagnostic(
+                "Automatic recovery preserved every fidelity and safety contract; "
+                "remaining creative-depth issues are advisory: "
+                + "; ".join(hard_issues[:4])
+            )
+            return final_prompt
         if hard_issues:
             summary = "; ".join(hard_issues[:4])
             report_diagnostic(

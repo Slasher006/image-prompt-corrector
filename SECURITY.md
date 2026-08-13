@@ -25,7 +25,8 @@ network requests:
 - Grounded research sends search terms to the selected public search and image
   providers.
 - ComfyUI handoff sends the corrected prompt and selected API workflow to the
-  configured ComfyUI server.
+  configured ComfyUI server. FLUX edit references and MiniMax H3 I2V keyframes
+  are uploaded only when their dedicated workspace Send action is used.
 
 The app stores drafts, results, chat history, prompt history, presets, connection
 settings, and local reference paths in `promptcorrector_settings.json`. Workbench

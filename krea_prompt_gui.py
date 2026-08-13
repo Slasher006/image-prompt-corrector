@@ -86,6 +86,7 @@ from krea_prompt_corrector import (
     concept_mix_groups_instruction,
     concept_mix_groups_to_concepts,
     concept_mix_groups_to_weighted_terms,
+    correct_common_spelling,
     build_all_comic_panels_suggestion_messages,
     build_comic_field_suggestion_messages,
     build_invent_field_repair_messages,
@@ -104,6 +105,7 @@ from krea_prompt_corrector import (
     fetch_image_data_url,
     format_generator_recommendation,
     flux_encoder_is_abliterated,
+    input_contract_conflict_issues,
     list_local_models,
     is_small_model,
     krea_guideline_status,
@@ -111,6 +113,7 @@ from krea_prompt_corrector import (
     normalize_invent_candidate,
     preserve_invent_seed_value,
     recover_invent_length_overflow,
+    recover_invent_reference_ambiguity,
     canonicalize_saved_invent_value,
     normalize_model_base_url,
     natural_visual_direction,
@@ -126,12 +129,14 @@ from krea_prompt_corrector import (
     prompt_research_targets,
     reconcile_model_knowledge_with_web,
     resolve_comic_layout,
+    resolve_unambiguous_entity_references,
     rule_strength_value,
     slider_value,
     strip_unexpected_scripts,
     strip_private_prompt_guidance,
     unload_local_model,
     unload_lm_studio_model,
+    unresolved_entity_reference_issues,
     vague_prompt_issues,
     vague_prompt_needs_clarification_research,
 )
@@ -184,10 +189,20 @@ from visual_direction_presets import (
     visual_direction_preset_catalog,
     visual_preset_key,
 )
-from nsfw_scene_contract import nsfw_preset_compatibility_issues
+from nsfw_scene_contract import (
+    enforce_semen_tip_origin_contract,
+    nsfw_preset_compatibility_issues,
+    semen_tip_origin_instruction,
+)
 from flux_image_edit_gui import (
     FluxImageEditWidget,
     normalize_flux_image_edit_state,
+)
+from minimax_h3_i2v_gui import (
+    MiniMaxH3I2VWidget,
+    enforce_minimax_h3_i2v_prompt_contract,
+    minimax_h3_i2v_prompt_issues,
+    normalize_minimax_h3_i2v_state,
 )
 from prompt_workbench import upload_comfyui_image
 from workbench_gui import PromptWorkbench
@@ -199,6 +214,7 @@ COMFYUI_BRIDGE_WORKSPACES = (
     "Comic Story",
     "Meme Creator",
     "FLUX Image Edit",
+    "MiniMax H3 I2V",
 )
 
 
@@ -209,6 +225,7 @@ def push_prompt_to_comfyui_bridge(
     workspace: str,
     queue_after_send: bool = False,
     reference_image_paths: list[str] | tuple[str, ...] = (),
+    parameters: dict[str, object] | None = None,
     timeout: float = 5.0,
 ) -> dict[str, object]:
     """Push one visible result to the installed ComfyUI bridge."""
@@ -229,17 +246,24 @@ def push_prompt_to_comfyui_bridge(
         "prompt": cleaned_prompt,
         "workspace": workspace,
     }
+    upload_prefix = (
+        "promptcorrector_minimax_h3_frame"
+        if workspace == "MiniMax H3 I2V"
+        else "promptcorrector_flux_ref"
+    )
     uploaded_references = [
         upload_comfyui_image(
             server_url=server_url,
             path=path,
-            upload_name=f"promptcorrector_flux_ref_{index}_{Path(path).name}",
+            upload_name=f"{upload_prefix}_{index}_{Path(path).name}",
             timeout=max(timeout, 30.0),
         )
         for index, path in enumerate(reference_image_paths, start=1)
     ]
     if uploaded_references:
         payload_data["reference_images"] = uploaded_references
+    if parameters:
+        payload_data["parameters"] = dict(parameters)
     if queue_after_send:
         payload_data["queue_after_send"] = True
     payload = json.dumps(payload_data).encode("utf-8")
@@ -299,16 +323,19 @@ def build_flux_image_edit_llm_messages(
         )
         for index, role in enumerate(roles, start=1)
     )
-    instruction = str(state.get("instruction", "")).strip()
-    preserve = str(state.get("preserve", "")).strip()
-    analysis = str(state.get("analysis", "")).strip()[:8000]
-    prepared = str(state.get("prepared_prompt", "")).strip()
+    instruction = correct_common_spelling(str(state.get("instruction", "")).strip())
+    preserve = correct_common_spelling(str(state.get("preserve", "")).strip())
+    analysis = correct_common_spelling(str(state.get("analysis", "")).strip())[:8000]
+    prepared = correct_common_spelling(str(state.get("prepared_prompt", "")).strip())
     orientation_guidance = penis_ventral_orientation_instruction(
         "\n".join(
             value
             for value in (instruction, prepared, analysis)
             if value.strip()
         )
+    )
+    semen_origin_guidance = semen_tip_origin_instruction(
+        "\n".join(value for value in (instruction, prepared, analysis) if value.strip())
     )
     task_instructions = {
         "analyze": (
@@ -349,6 +376,11 @@ def build_flux_image_edit_llm_messages(
             if orientation_guidance
             else ""
         )
+        + (
+            "\n\nRequired semen origin:\n" + semen_origin_guidance
+            if semen_origin_guidance
+            else ""
+        )
     )
     content: list[dict[str, object]] = [{"type": "text", "text": text}]
     for index, data_url in enumerate(image_data_urls, start=1):
@@ -368,7 +400,12 @@ def build_flux_image_edit_llm_messages(
                 "orientation as a dorsal/ventral relationship rather than image-left "
                 "or image-right. When the underside is visibly relevant, the frenulum "
                 "belongs on the ventral midline beneath the glans, never on the dorsal "
-                "or top surface. Mention this only when requested or visibly relevant."
+                "or top surface. Mention this only when requested or visibly relevant. "
+                "In multi-person output, bind actions and ownership to explicit role "
+                "or identity nouns; never leave her, him, they, their, or them with "
+                "more than one possible referent. For objects, animals, and body parts, "
+                "use it, its, this, or that only with one unmistakable antecedent; "
+                "otherwise repeat the exact noun."
             ),
         },
         {"role": "user", "content": content},
@@ -389,6 +426,118 @@ def clean_flux_image_edit_llm_result(action: str, text: str) -> str:
         ).strip()
     if not cleaned:
         raise RuntimeError("The selected model returned an empty image-edit result.")
+    return cleaned
+
+
+def build_minimax_h3_i2v_llm_messages(
+    *,
+    action: str,
+    state: dict[str, object],
+    image_data_urls: list[str],
+) -> list[dict[str, object]]:
+    """Build a grounded local-vision request for H3 motion/audio prompting."""
+
+    if action not in {"invent", "correct"}:
+        raise ValueError(f"Unsupported MiniMax H3 I2V LLM action: {action}")
+    first_supplied = bool(image_data_urls)
+    last_supplied = len(image_data_urls) > 1
+    scene = correct_common_spelling(str(state.get("scene", "")).strip())
+    motion = correct_common_spelling(str(state.get("motion", "")).strip())
+    audio_direction = correct_common_spelling(str(state.get("audio", "")).strip())
+    prepared = correct_common_spelling(str(state.get("prepared_prompt", "")).strip())
+    duration = float(state.get("duration", 5.0) or 5.0)
+    task = (
+        "Invent a coherent MiniMax H3 image-to-video prompt grounded in the supplied keyframe image or images."
+        if action == "invent"
+        else "Correct the supplied MiniMax H3 image-to-video prompt without changing the intended scene or action."
+    )
+    text = (
+        f"Task: {task}\n\n"
+        f"Duration: {duration:g} seconds at 24 fps.\n"
+        f"First frame supplied: {'yes' if first_supplied else 'no'}.\n"
+        f"Last frame supplied: {'yes' if last_supplied else 'no'}.\n\n"
+        f"Scene continuity:\n{scene or '(infer conservatively from Picture 1)'}\n\n"
+        f"Motion and camera intent:\n{motion or '(invent one coherent motion arc)'}\n\n"
+        f"Audio direction:\n{audio_direction or '(no explicit audio direction)'}\n\n"
+        f"Current H3 prompt:\n{prepared or '(none yet)'}"
+    )
+    content: list[dict[str, object]] = [{"type": "text", "text": text}]
+    for index, data_url in enumerate(image_data_urls, start=1):
+        label = "exact first frame" if index == 1 else "optional exact final frame"
+        content.append({"type": "text", "text": f"Picture {index}: {label}"})
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a precise MiniMax H3 video director. Return one natural-language "
+                "prompt only, with no Markdown, labels outside the prompt, JSON, negative "
+                "prompt, CFG, sampler, steps, or denoise controls. Bind <Picture 1> as the "
+                "exact opening frame. If Picture 2 is supplied, bind it as the exact final "
+                "frame. Describe temporal subject motion, camera motion, shot changes, "
+                "continuity, and optional native stereo dialogue, ambience, sound effects, "
+                "or music. Do not describe a static composition as if it were motion. Keep "
+                "identity, anatomy, ownership, wardrobe, objects, and environment stable "
+                "unless the user explicitly asks for a transformation. Use it, its, this, "
+                "or that only with one unmistakable object, animal, or body-part antecedent; "
+                "otherwise repeat the exact noun."
+            ),
+        },
+        {"role": "user", "content": content},
+    ]
+
+
+def build_entity_reference_repair_messages(
+    messages: list[dict[str, object]],
+    *,
+    candidate: str,
+    issues: list[str],
+    output_kind: str,
+) -> list[dict[str, object]]:
+    """Append one narrow reference-only repair turn to a grounded request."""
+
+    return [
+        *messages,
+        {"role": "assistant", "content": str(candidate or "").strip()},
+        {
+            "role": "user",
+            "content": (
+                "Repair only the unresolved entity references listed below. Replace each "
+                "ambiguous person pronoun or it, its, this, or that by repeating the exact "
+                "existing role or noun. Do not add, remove, merge, or change any subject, object, "
+                "body part, action, ownership, image binding, camera move, timing, or audio. "
+                f"Return only the repaired {output_kind}.\n\nFailures:\n- "
+                + "\n- ".join(issues)
+            ),
+        },
+    ]
+
+
+def clean_minimax_h3_i2v_llm_result(text: str, *, has_last_frame: bool) -> str:
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:text|markdown)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    cleaned = re.sub(
+        r"(?i)^\s*(?:final\s+)?(?:minimax\s+h3\s+)?(?:i2v\s+)?prompt\s*:\s*",
+        "",
+        cleaned,
+    ).strip()
+    cleaned = correct_common_spelling(cleaned)
+    cleaned = enforce_minimax_h3_i2v_prompt_contract(
+        cleaned,
+        has_last_frame=has_last_frame,
+    )
+    if not cleaned:
+        raise RuntimeError("The selected model returned an empty MiniMax H3 prompt.")
+    # Entity ambiguity receives one grounded repair turn in the worker below;
+    # validate H3 syntax here without pre-empting that bounded recovery.
+    issues = minimax_h3_i2v_prompt_issues(
+        cleaned,
+        has_last_frame=has_last_frame,
+        check_references=False,
+    )
+    if issues:
+        raise RuntimeError("MiniMax H3 prompt validation failed: " + "; ".join(issues))
     return cleaned
 
 
@@ -1213,11 +1362,27 @@ def classify_workflow_error(
                 "The input is preserved. Review the named object/contact issue in Activity, "
                 "make the item, orientation, and body-contact point explicit, then retry."
             )
+        elif (
+            "nsfw scene fidelity contract" in lowered
+            and "excluded content appears positively" in lowered
+        ):
+            next_step = (
+                "The input is preserved. First remove the named excluded term from "
+                "any positive draft, goal, concept, or focus wording. Then make only "
+                "the named adult role/reaction explicit and either authorize the named "
+                "fluid/outcome in the input or remove it from the requested result, then retry."
+            )
         elif "nsfw scene fidelity contract" in lowered:
             next_step = (
                 "The input is preserved. Review the named adult-scene issue in Activity, "
                 "make only the disputed actor, action, reaction, participant, or contact "
                 "wording explicit, then retry."
+            )
+        elif "flux.2 klein positive-prompt contract" in lowered:
+            next_step = (
+                "The input is preserved. Review the named negative phrase in Activity and "
+                "state its desired visible result positively, such as soft shadowless light "
+                "or an uncluttered composition, then retry."
             )
         else:
             next_step = (
@@ -1251,6 +1416,7 @@ def classify_workflow_error(
         "not allowed",
         "requires unambiguously adult",
         "safe for work and explicit adult",
+        "input contract conflict",
         "incomplete comic",
         "incomplete meme",
         "single image format accepts",
@@ -1676,6 +1842,7 @@ class PromptCorrectorApp:
         self.progress_stage_started_at = 0.0
         self.weighted_highlight_after_id: QTimer | None = None
         self.ambiguity_highlight_spans: list[tuple[int, int]] = []
+        self.contract_blocker_highlight_spans: list[tuple[int, int]] = []
         self.cancel_event = threading.Event()
         self.active_request_id = 0
         self.active_request_workspace = "system"
@@ -1708,6 +1875,7 @@ class PromptCorrectorApp:
         self.recovered_workbench_project: dict[str, object] | None = None
         self.recovered_generator_profiles: dict[str, dict[str, object]] | None = None
         self.recovered_flux_image_edit_state = normalize_flux_image_edit_state(None)
+        self.recovered_minimax_h3_i2v_state = normalize_minimax_h3_i2v_state(None)
         self.local_reference_paths: list[str] = []
         self.comic_reference_paths: list[str] = []
         self.meme_reference_paths: list[str] = []
@@ -1790,6 +1958,8 @@ class PromptCorrectorApp:
         self.workbench_widget: PromptWorkbench | None = None
         self.flux_image_edit_window: FluxImageEditWidget | None = None
         self.flux_image_edit_tab_index: int | None = None
+        self.minimax_h3_i2v_window: MiniMaxH3I2VWidget | None = None
+        self.minimax_h3_i2v_tab_index: int | None = None
         self.rule_equalizer_dialog: QDialog | None = None
         self.request_in_progress = False
         self.dispatcher = UiDispatcher()
@@ -1958,6 +2128,11 @@ class PromptCorrectorApp:
                 self.flux_image_edit_window.snapshot()
                 if self.flux_image_edit_window is not None
                 else self.recovered_flux_image_edit_state
+            ),
+            "minimax_h3_i2v": (
+                self.minimax_h3_i2v_window.snapshot()
+                if self.minimax_h3_i2v_window is not None
+                else self.recovered_minimax_h3_i2v_state
             ),
             "simple_mode": self.simple_mode_var.get(),
             "workbench": workbench_state,
@@ -2225,6 +2400,9 @@ class PromptCorrectorApp:
                 self.recovered_generator_profiles = profiles
         self.recovered_flux_image_edit_state = normalize_flux_image_edit_state(
             settings.get("flux_image_edit")
+        )
+        self.recovered_minimax_h3_i2v_state = normalize_minimax_h3_i2v_state(
+            settings.get("minimax_h3_i2v")
         )
         stored_workspace_paths = settings.get("workspace_reference_paths", {})
         if not isinstance(stored_workspace_paths, dict):
@@ -2953,6 +3131,7 @@ class PromptCorrectorApp:
         # Ambiguity offsets describe the previous submitted text. Remove them
         # as soon as the user edits, then recompute on the next correction.
         self.ambiguity_highlight_spans = []
+        self.contract_blocker_highlight_spans = []
         self._schedule_weighted_highlights()
         self._update_text_counters()
         self._update_diff_view(self.draft_text.toPlainText(), self.corrected_text.toPlainText())
@@ -3065,8 +3244,20 @@ class PromptCorrectorApp:
             if start < 0 or end <= start or end > len(document_text):
                 continue
             selection = QTextEdit.ExtraSelection()
+            selection.format.setForeground(QColor("#ffbf69"))
+            selection.format.setBackground(QColor("#4a3820"))
+            selection.format.setFontUnderline(True)
+            cursor = self.draft_text.textCursor()
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+            selection.cursor = cursor
+            selections.append(selection)
+        for start, end in self.contract_blocker_highlight_spans:
+            if start < 0 or end <= start or end > len(document_text):
+                continue
+            selection = QTextEdit.ExtraSelection()
             selection.format.setForeground(QColor("#ff6677"))
-            selection.format.setBackground(QColor("#4b2029"))
+            selection.format.setBackground(QColor("#4b2028"))
             selection.format.setFontUnderline(True)
             cursor = self.draft_text.textCursor()
             cursor.setPosition(start)
@@ -6323,6 +6514,18 @@ class PromptCorrectorApp:
             self.flux_image_edit_window,
             "FLUX Image Edit",
         )
+        self.minimax_h3_i2v_window = MiniMaxH3I2VWidget(
+            state=self.recovered_minimax_h3_i2v_state,
+            current_prompt=lambda: self.corrected_text.toPlainText(),
+            send_to_comfyui=self.send_minimax_h3_i2v_to_comfyui,
+            run_llm=self.start_minimax_h3_i2v_llm,
+            stop_llm=self.stop_current_request,
+            save_state=self._save_settings,
+        )
+        self.minimax_h3_i2v_tab_index = self.mode_tabs.addTab(
+            self.minimax_h3_i2v_window,
+            "MiniMax H3 I2V",
+        )
         self.workbench_widget = PromptWorkbench(self)
         self.mode_tabs.addTab(self.workbench_widget, "Workbench")
         self.mode_tabs.currentChanged.connect(self._on_workspace_changed)
@@ -7610,17 +7813,17 @@ class PromptCorrectorApp:
             private_mix_guidance,
         ) = self._effective_mix_inputs()
         return {
-            "draft": draft,
-            "concepts": effective_concepts,
-            "concept_mix": self.concept_mix_var.get().strip(),
-            "concept_mix_guidance": private_mix_guidance,
-            "visual_direction": self.visual_direction_var.get().strip(),
-            "goal_headline": self.goal_headline_var.get().strip(),
-            "focus": self.focus_var.get().strip(),
-            "story_elements": self.story_elements_var.get().strip(),
-            "weighted_terms": effective_weighted_terms,
-            "model_instructions": self.model_instructions_var.get().strip(),
-            "generation_feedback": self.generation_feedback_var.get().strip(),
+            "draft": correct_common_spelling(draft),
+            "concepts": correct_common_spelling(effective_concepts),
+            "concept_mix": correct_common_spelling(self.concept_mix_var.get().strip()),
+            "concept_mix_guidance": correct_common_spelling(private_mix_guidance),
+            "visual_direction": correct_common_spelling(self.visual_direction_var.get().strip()),
+            "goal_headline": correct_common_spelling(self.goal_headline_var.get().strip()),
+            "focus": correct_common_spelling(self.focus_var.get().strip()),
+            "story_elements": correct_common_spelling(self.story_elements_var.get().strip()),
+            "weighted_terms": correct_common_spelling(effective_weighted_terms),
+            "model_instructions": correct_common_spelling(self.model_instructions_var.get().strip()),
+            "generation_feedback": correct_common_spelling(self.generation_feedback_var.get().strip()),
             "mode": self.mode_var.get().strip(),
             "generator_target": self.generator_target_var.get().strip(),
             "camera_direction": self._camera_direction(),
@@ -7946,6 +8149,33 @@ class PromptCorrectorApp:
                     "preserved input."
                 )
                 return shortened_candidate
+        reference_recovered = recover_invent_reference_ambiguity(
+            workspace,
+            field,
+            repaired_candidate,
+            seed_value=seed_value,
+        )
+        if reference_recovered != repaired_candidate and not invent_field_issues(
+            workspace,
+            field,
+            reference_recovered,
+            seed_value=seed_value,
+        ):
+            normalized_seed = normalize_invent_candidate(
+                workspace,
+                field,
+                seed_value,
+            )
+            recovery_detail = (
+                "returned the preserved input instead of guessing an antecedent."
+                if normalized_seed and reference_recovered == normalized_seed
+                else "removed only sentences with genuinely ambiguous references."
+            )
+            self._log_activity_threadsafe(
+                f"Invent repair for {field_name} still had unresolved entity "
+                f"references; {recovery_detail}"
+            )
+            return reference_recovered
         if repaired_issues:
             self._log_activity_threadsafe(
                 f"Invent repair rejected for {field_name}: "
@@ -8366,14 +8596,14 @@ class PromptCorrectorApp:
     def _comic_field_context(self) -> dict[str, object]:
         count = max(2, min(12, int(self.comic_panel_count_var.get())))
         return {
-            "title": self.comic_title_var.get().strip(),
-            "premise": self.comic_premise_var.get().strip(),
-            "continuity": self.comic_continuity_var.get().strip(),
-            "concepts": self.comic_concepts_var.get().strip(),
-            "visual_direction": self.comic_visual_direction_var.get().strip(),
-            "dialogue_direction": self.comic_dialogue_direction_var.get().strip(),
+            "title": correct_common_spelling(self.comic_title_var.get().strip()),
+            "premise": correct_common_spelling(self.comic_premise_var.get().strip()),
+            "continuity": correct_common_spelling(self.comic_continuity_var.get().strip()),
+            "concepts": correct_common_spelling(self.comic_concepts_var.get().strip()),
+            "visual_direction": correct_common_spelling(self.comic_visual_direction_var.get().strip()),
+            "dialogue_direction": correct_common_spelling(self.comic_dialogue_direction_var.get().strip()),
             "panels": [
-                self.comic_panel_vars[index].get().strip()
+                correct_common_spelling(self.comic_panel_vars[index].get().strip())
                 for index in range(count)
             ],
             "panel_count": count,
@@ -8890,12 +9120,12 @@ class PromptCorrectorApp:
         )
 
     def _meme_inputs(self) -> str:
-        scene = self.meme_scene_var.get().strip()
-        top_text = self.meme_top_text_var.get().strip()
-        bottom_text = self.meme_bottom_text_var.get().strip()
-        response_context = self.meme_response_context_var.get().strip()
-        response_goal = self.meme_response_goal_var.get().strip()
-        focus = self.meme_focus_var.get().strip()
+        scene = correct_common_spelling(self.meme_scene_var.get().strip())
+        top_text = correct_common_spelling(self.meme_top_text_var.get().strip())
+        bottom_text = correct_common_spelling(self.meme_bottom_text_var.get().strip())
+        response_context = correct_common_spelling(self.meme_response_context_var.get().strip())
+        response_goal = correct_common_spelling(self.meme_response_goal_var.get().strip())
+        focus = correct_common_spelling(self.meme_focus_var.get().strip())
         if not scene and not response_context:
             raise ValueError(
                 "Describe the meme scene or add a situation to respond to before generating."
@@ -9001,17 +9231,17 @@ class PromptCorrectorApp:
 
     def _meme_field_context(self) -> dict[str, object]:
         return {
-            "response_context": self.meme_response_context_var.get().strip(),
-            "response_goal": self.meme_response_goal_var.get().strip(),
-            "scene": self.meme_scene_var.get().strip(),
-            "focus": self.meme_focus_var.get().strip(),
+            "response_context": correct_common_spelling(self.meme_response_context_var.get().strip()),
+            "response_goal": correct_common_spelling(self.meme_response_goal_var.get().strip()),
+            "scene": correct_common_spelling(self.meme_scene_var.get().strip()),
+            "focus": correct_common_spelling(self.meme_focus_var.get().strip()),
             "tone": self.meme_tone_var.get().strip(),
             "caption_style": self.meme_caption_style_var.get().strip(),
             "aspect_ratio": self.meme_aspect_ratio_var.get().strip(),
-            "visual_direction": self.meme_visual_direction_var.get().strip(),
+            "visual_direction": correct_common_spelling(self.meme_visual_direction_var.get().strip()),
             "camera_direction": self._camera_direction(),
-            "top_caption": self.meme_top_text_var.get().strip(),
-            "bottom_caption": self.meme_bottom_text_var.get().strip(),
+            "top_caption": correct_common_spelling(self.meme_top_text_var.get().strip()),
+            "bottom_caption": correct_common_spelling(self.meme_bottom_text_var.get().strip()),
             "artistic_detail_freedom": bool(
                 self.artistic_detail_freedom_var.get()
             ),
@@ -9359,7 +9589,7 @@ class PromptCorrectorApp:
         story_elements: str,
         destination: str,
     ) -> bool:
-        """Stop a Single Image request before inference when roles are ambiguous."""
+        """Highlight source ambiguity, blocking only an explicit camera clash."""
 
         if destination != "prompt":
             return True
@@ -9368,17 +9598,16 @@ class PromptCorrectorApp:
             for value in (effective_prompt, story_elements)
             if str(value or "").strip()
         )
-        issues = multi_person_role_issues(canonical_validation_text(source))
+        role_issues = multi_person_role_issues(canonical_validation_text(source))
         role_spans = multi_person_ambiguity_spans(
             requested_prompt,
-            issues,
+            role_issues,
         )
         camera_issues: list[str] = []
         camera_spans: list[tuple[int, int]] = []
         if str(self.content_format_var.get()) == "Single Image":
             camera_issues = camera_viewpoint_conflict_issues(
                 requested_prompt,
-                self._camera_direction(),
             )
             if camera_issues:
                 camera_spans = [
@@ -9387,18 +9616,22 @@ class PromptCorrectorApp:
                         requested_prompt
                     )
                 ]
-        issues.extend(
-            "camera: " + issue
-            for issue in camera_issues
-        )
-        self.ambiguity_highlight_spans = sorted(
-            set(role_spans + camera_spans)
-        )
+        self.ambiguity_highlight_spans = sorted(set(role_spans))
+        self.contract_blocker_highlight_spans = sorted(set(camera_spans))
         self._highlight_weighted_terms()
-        if not issues:
+        if role_issues:
+            self.active_activity_workspace = destination
+            self._log_activity(
+                "Source role wording may be ambiguous; continuing with automatic "
+                "correction and treating inherited uncertainty as advisory: "
+                + "; ".join(role_issues)
+                + ". Highlighted words are optional review points.",
+                destination,
+            )
+        if not camera_issues:
             return True
 
-        detail = "; ".join(issues)
+        detail = "; ".join("camera: " + issue for issue in camera_issues)
         self.active_activity_workspace = destination
         self._log_activity(
             "Ambiguity preflight stopped correction before contacting the model: "
@@ -9407,17 +9640,17 @@ class PromptCorrectorApp:
             destination,
         )
         self._save_settings()
-        self.status_var.set("Clarify highlighted ambiguity")
+        self.status_var.set("Resolve camera conflict")
         self.progress_var.set(0.0)
         self.progress_text_var.set("Stopped before model request")
         self.show_library_tab("Activity")
         messagebox.showwarning(
-            "Clarify highlighted ambiguity",
-            "Prompt Corrector found ambiguous person bindings or a conflicting camera viewpoint before "
-            "contacting the model.\n\n"
+            "Resolve camera conflict",
+            "Prompt Corrector found a camera viewpoint in Your prompt that conflicts "
+            "with the Camera control before contacting the model.\n\n"
             + detail
-            + "\n\nThe disputed words are marked in red in Your prompt. Clarify who "
-            "performs each action, or make the prompt camera match the Camera control, then retry.",
+            + "\n\nThe disputed words are highlighted in Your prompt. Make the prompt "
+            "camera match the Camera control, then retry.",
         )
         return False
 
@@ -9432,6 +9665,9 @@ class PromptCorrectorApp:
             self.status_var.set("Another model request is already running")
             return
 
+        original_preflight_values = (draft, story_elements)
+        draft = correct_common_spelling(draft)
+        story_elements = correct_common_spelling(story_elements)
         requested_prompt = draft
         draft = self._apply_camera_direction(draft, destination)
         if not self._prompt_ambiguity_preflight(
@@ -9445,6 +9681,9 @@ class PromptCorrectorApp:
             "comic": self.comic_visual_direction_var.get(),
             "meme": self.meme_visual_direction_var.get(),
         }.get(destination, self.visual_direction_var.get()).strip()
+        effective_visual_direction = correct_common_spelling(
+            effective_visual_direction
+        )
         base_url = self._current_base_url()
         if destination == "prompt":
             (
@@ -9506,6 +9745,23 @@ class PromptCorrectorApp:
                 if effective_reference_image_analysis
                 else []
             )
+        effective_concepts = correct_common_spelling(effective_concepts)
+        effective_weighted_terms = correct_common_spelling(effective_weighted_terms)
+        effective_model_instructions = correct_common_spelling(
+            effective_model_instructions
+        )
+        effective_private_model_instructions = correct_common_spelling(
+            effective_private_model_instructions
+        )
+        effective_goal_headline = correct_common_spelling(effective_goal_headline)
+        effective_focus = correct_common_spelling(effective_focus)
+        effective_generation_feedback = correct_common_spelling(
+            effective_generation_feedback
+        )
+        if original_preflight_values != (draft, story_elements):
+            self._log_activity_threadsafe(
+                "Corrected high-confidence spelling before Prompt Correct."
+            )
         research_private_model_instructions = effective_private_model_instructions
         effective_private_model_instructions = "\n\n".join(
             part
@@ -9551,6 +9807,50 @@ class PromptCorrectorApp:
                 selected_metadata,
                 content_format=self.content_format_var.get(),
             )
+        input_conflicts = input_contract_conflict_issues(
+            draft,
+            story_elements=story_elements,
+            concept_keywords=effective_concepts,
+            goal_headline=effective_goal_headline,
+            focus=effective_focus,
+            model_instructions=effective_model_instructions,
+            weighted_terms=effective_weighted_terms,
+            generation_feedback=effective_generation_feedback,
+            visual_direction=effective_visual_direction,
+            camera_direction=self._camera_direction(),
+            content_format=self.content_format_var.get(),
+        )
+        if destination == "prompt" and input_conflicts:
+            self.contract_blocker_highlight_spans = sorted(
+                {
+                    issue.issue.span
+                    for issue in input_conflicts
+                    if getattr(issue, "issue", None) is not None
+                    and issue.issue.field == "Draft"
+                    and issue.issue.span is not None
+                }
+            )
+            self._highlight_weighted_terms()
+            detail = "; ".join(input_conflicts)
+            self.active_activity_workspace = destination
+            self._log_activity(
+                "Input contract preflight stopped correction before contacting "
+                "the model: " + detail,
+                destination,
+            )
+            self._save_settings()
+            self.status_var.set("Resolve input contract conflict")
+            self.progress_var.set(0.0)
+            self.progress_text_var.set("Stopped before model request")
+            self.show_library_tab("Activity")
+            messagebox.showwarning(
+                "Resolve input contract conflict",
+                "Prompt Corrector found mutually incompatible hard requirements "
+                "before contacting the model.\n\n"
+                + detail
+                + "\n\nResolve only the named fields, then retry.",
+            )
+            return
         precomputed_research: dict[str, object] = {}
         if destination == "prompt" and self.single_invent_research_cache:
             cache = self.single_invent_research_cache
@@ -9770,6 +10070,7 @@ class PromptCorrectorApp:
                 base_url,
                 self.mode_var.get(),
                 effective_visual_direction,
+                self._camera_direction(),
                 self.detail_var.get(),
                 self.output_length_var.get(),
                 None,
@@ -9882,6 +10183,8 @@ class PromptCorrectorApp:
             self.chat_stop_button.configure(state="normal" if running else "disabled")
         if self.flux_image_edit_window is not None:
             self.flux_image_edit_window.set_model_running(running)
+        if self.minimax_h3_i2v_window is not None:
+            self.minimax_h3_i2v_window.set_model_running(running)
         self._update_result_action_visibility()
         self._refresh_invent_recall_buttons()
 
@@ -10759,6 +11062,7 @@ class PromptCorrectorApp:
         base_url: str,
         mode: str,
         visual_direction: str,
+        camera_direction: str,
         detail_level: str,
         output_length: str,
         output_min_words: int | None,
@@ -11087,6 +11391,7 @@ class PromptCorrectorApp:
                 api_key=self._model_api_key(),
                 mode=mode,
                 visual_direction=visual_direction,
+                camera_direction=camera_direction,
                 detail_level=detail_level,
                 output_length=output_length,
                 output_min_words=output_min_words,
@@ -11388,6 +11693,56 @@ class PromptCorrectorApp:
                 cancel_check=lambda: self._raise_if_cancelled(request_id),
             )
             result = clean_flux_image_edit_llm_result(action, response)
+            result = correct_common_spelling(result)
+            if action == "correct":
+                edit_source = "\n".join(
+                    str(state.get(key, "") or "")
+                    for key in ("instruction", "prepared_prompt", "analysis")
+                )
+                result = enforce_semen_tip_origin_contract(result, edit_source)
+                result = resolve_unambiguous_entity_references(result)
+                remaining_reference_issues = list(dict.fromkeys(
+                    unresolved_entity_reference_issues(result)
+                    + multi_person_role_issues(result)
+                ))
+                if remaining_reference_issues:
+                    self._set_progress_threadsafe(
+                        72,
+                        "Repairing ambiguous entity references",
+                    )
+                    repair_response = chat_completion(
+                        base_url=base_url,
+                        model=model,
+                        messages=build_entity_reference_repair_messages(
+                            messages,
+                            candidate=result,
+                            issues=remaining_reference_issues,
+                            output_kind="FLUX Image Edit prompt",
+                        ),
+                        temperature=0.05,
+                        max_tokens=900,
+                        timeout=self._lm_timeout_seconds(),
+                        api_key=api_key,
+                        seed=self._configured_seed(),
+                        cancel_check=lambda: self._raise_if_cancelled(request_id),
+                    )
+                    result = clean_flux_image_edit_llm_result(
+                        action,
+                        repair_response,
+                    )
+                    result = correct_common_spelling(result)
+                    result = enforce_semen_tip_origin_contract(result, edit_source)
+                    result = resolve_unambiguous_entity_references(result)
+                    remaining_reference_issues = list(dict.fromkeys(
+                        unresolved_entity_reference_issues(result)
+                        + multi_person_role_issues(result)
+                    ))
+                if remaining_reference_issues:
+                    raise RuntimeError(
+                        "FLUX Image Edit correction still has unresolved entity "
+                        "references after repair: "
+                        + "; ".join(remaining_reference_issues)
+                    )
             self._raise_if_cancelled(request_id)
             if unload_after_request:
                 self._set_progress_threadsafe(
@@ -11469,6 +11824,212 @@ class PromptCorrectorApp:
         self.status_var.set("FLUX Image Edit model request failed")
         messagebox.showerror("FLUX Image Edit model request failed", message)
 
+    def start_minimax_h3_i2v_llm(
+        self,
+        action: str,
+        state: dict[str, object],
+    ) -> None:
+        if self.request_in_progress:
+            if self.minimax_h3_i2v_window is not None:
+                self.minimax_h3_i2v_window.set_model_error(
+                    "Stop the current model request before starting this action."
+                )
+            return
+        first_frame = Path(str(state.get("first_frame", "")))
+        if not first_frame.is_file():
+            if self.minimax_h3_i2v_window is not None:
+                self.minimax_h3_i2v_window.set_model_error(
+                    "Choose an available first-frame image first."
+                )
+            return
+        self.active_request_id += 1
+        request_id = self.active_request_id
+        self.cancel_event.clear()
+        self.request_in_progress = True
+        self.active_request_workspace = "prompt"
+        self._set_request_controls(True)
+        self._start_progress_timer()
+        self._set_progress(10, "Preparing MiniMax H3 keyframes")
+        thread = threading.Thread(
+            target=self._minimax_h3_i2v_llm_worker,
+            args=(request_id, action, state),
+            daemon=True,
+        )
+        thread.start()
+
+    def _minimax_h3_i2v_llm_worker(
+        self,
+        request_id: int,
+        action: str,
+        state: dict[str, object],
+    ) -> None:
+        try:
+            paths = [str(state.get("first_frame", "")).strip()]
+            last_frame = str(state.get("last_frame", "")).strip()
+            if last_frame:
+                paths.append(last_frame)
+            image_data_urls: list[str] = []
+            for index, value in enumerate(paths, start=1):
+                self._raise_if_cancelled(request_id)
+                path = Path(value)
+                if not path.is_file():
+                    raise ValueError(f"MiniMax H3 Picture {index} is unavailable: {path}")
+                self._set_progress_threadsafe(
+                    10 + (35 * index / len(paths)),
+                    f"Loading MiniMax H3 Picture {index}",
+                )
+                image_data_urls.append(
+                    fetch_local_vision_image_data_url(
+                        path,
+                        timeout=min(30.0, self._lm_timeout_seconds()),
+                        max_bytes=12_000_000,
+                    )
+                )
+            messages = build_minimax_h3_i2v_llm_messages(
+                action=action,
+                state=state,
+                image_data_urls=image_data_urls,
+            )
+            self._set_progress_threadsafe(55, "Directing MiniMax H3 motion prompt")
+            response = chat_completion(
+                base_url=self._current_base_url(),
+                model=self.model_var.get(),
+                messages=messages,
+                temperature=0.55 if action == "invent" else 0.1,
+                max_tokens=1200,
+                timeout=self._lm_timeout_seconds(),
+                api_key=self._model_api_key(),
+                seed=self._configured_seed(),
+                cancel_check=lambda: self._raise_if_cancelled(request_id),
+            )
+            result = clean_minimax_h3_i2v_llm_result(
+                response,
+                has_last_frame=bool(last_frame),
+            )
+            result = resolve_unambiguous_entity_references(result)
+            remaining_reference_issues = list(dict.fromkeys(
+                unresolved_entity_reference_issues(result)
+                + multi_person_role_issues(result)
+            ))
+            if remaining_reference_issues:
+                self._set_progress_threadsafe(
+                    72,
+                    "Repairing ambiguous entity references",
+                )
+                repair_response = chat_completion(
+                    base_url=self._current_base_url(),
+                    model=self.model_var.get(),
+                    messages=build_entity_reference_repair_messages(
+                        messages,
+                        candidate=result,
+                        issues=remaining_reference_issues,
+                        output_kind="MiniMax H3 prompt",
+                    ),
+                    temperature=0.05,
+                    max_tokens=1200,
+                    timeout=self._lm_timeout_seconds(),
+                    api_key=self._model_api_key(),
+                    seed=self._configured_seed(),
+                    cancel_check=lambda: self._raise_if_cancelled(request_id),
+                )
+                result = clean_minimax_h3_i2v_llm_result(
+                    repair_response,
+                    has_last_frame=bool(last_frame),
+                )
+                result = resolve_unambiguous_entity_references(result)
+                remaining_reference_issues = list(dict.fromkeys(
+                    unresolved_entity_reference_issues(result)
+                    + multi_person_role_issues(result)
+                ))
+            if remaining_reference_issues:
+                raise RuntimeError(
+                    "MiniMax H3 prompt still has unresolved entity references after repair: "
+                    + "; ".join(remaining_reference_issues)
+                )
+            self._raise_if_cancelled(request_id)
+        except CorrectionCancelled:
+            return
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._after_threadsafe(
+                0,
+                self._finish_minimax_h3_i2v_llm_error,
+                request_id,
+                str(exc),
+            )
+            return
+        self._after_threadsafe(
+            0,
+            self._finish_minimax_h3_i2v_llm,
+            request_id,
+            result,
+        )
+
+    def _finish_minimax_h3_i2v_llm(
+        self,
+        request_id: int,
+        result: str,
+    ) -> None:
+        if self._request_cancelled(request_id):
+            return
+        self.request_in_progress = False
+        self._finish_progress(True)
+        self._set_request_controls(False)
+        if self.minimax_h3_i2v_window is not None:
+            self.minimax_h3_i2v_window.apply_llm_result(result)
+        self.status_var.set("MiniMax H3 I2V prompt ready")
+        self._save_settings()
+
+    def _finish_minimax_h3_i2v_llm_error(
+        self,
+        request_id: int,
+        error: str,
+    ) -> None:
+        if self._request_cancelled(request_id):
+            return
+        self.request_in_progress = False
+        self._finish_progress(False)
+        self._set_request_controls(False)
+        message = (
+            "MiniMax H3 I2V prompt request failed. Confirm that the selected "
+            f"LM Studio model supports vision.\n\n{error}"
+        )
+        if self.minimax_h3_i2v_window is not None:
+            self.minimax_h3_i2v_window.set_model_error(message)
+        self.status_var.set("MiniMax H3 I2V prompt request failed")
+        messagebox.showerror("MiniMax H3 I2V prompt request failed", message)
+
+    def send_minimax_h3_i2v_to_comfyui(
+        self,
+        server_url: str,
+        prompt: str,
+        frame_paths: list[str],
+        parameters: dict[str, object],
+    ) -> None:
+        if not frame_paths:
+            messagebox.showwarning(
+                "No first frame",
+                "Choose a MiniMax H3 first-frame image before sending.",
+            )
+            return
+        self._save_settings()
+        queue_after_send = bool(self.comfyui_queue_after_send_var.get())
+        self.status_var.set(
+            f"Sending MiniMax H3 I2V prompt and {len(frame_paths)} keyframe(s) to ComfyUI..."
+        )
+        thread = threading.Thread(
+            target=self._push_result_to_comfyui_worker,
+            args=(
+                server_url,
+                prompt,
+                "MiniMax H3 I2V",
+                queue_after_send,
+                list(frame_paths),
+                dict(parameters),
+            ),
+            daemon=True,
+        )
+        thread.start()
+
     def send_flux_image_edit_to_comfyui(
         self,
         server_url: str,
@@ -11537,6 +12098,7 @@ class PromptCorrectorApp:
         workspace: str,
         queue_after_send: bool = False,
         reference_image_paths: list[str] | None = None,
+        parameters: dict[str, object] | None = None,
     ) -> None:
         try:
             result = push_prompt_to_comfyui_bridge(
@@ -11545,6 +12107,7 @@ class PromptCorrectorApp:
                 workspace=workspace,
                 queue_after_send=queue_after_send,
                 reference_image_paths=reference_image_paths or (),
+                parameters=parameters,
             )
         except (ValueError, RuntimeError) as exc:
             self._after_threadsafe(
@@ -11570,6 +12133,7 @@ class PromptCorrectorApp:
                 "Comic Story": "comic",
                 "Meme Creator": "meme",
                 "FLUX Image Edit": "prompt",
+                "MiniMax H3 I2V": "prompt",
             }.get(workspace, "system"),
         )
         self._set_status_threadsafe(
@@ -11582,11 +12146,22 @@ class PromptCorrectorApp:
                 self.flux_image_edit_window.set_send_result,
                 f"Sent prompt and {reference_count} reference image(s) to ComfyUI",
             )
+        if workspace == "MiniMax H3 I2V" and self.minimax_h3_i2v_window is not None:
+            self._after_threadsafe(
+                0,
+                self.minimax_h3_i2v_window.set_send_result,
+                f"Sent H3 prompt and {reference_count} keyframe(s) to ComfyUI",
+            )
 
     def _show_comfyui_push_error(self, error: str) -> None:
         self.status_var.set("ComfyUI push failed")
         if self.flux_image_edit_window is not None:
             self.flux_image_edit_window.set_send_result(
+                f"ComfyUI push failed: {error}",
+                error=True,
+            )
+        if self.minimax_h3_i2v_window is not None:
+            self.minimax_h3_i2v_window.set_send_result(
                 f"ComfyUI push failed: {error}",
                 error=True,
             )

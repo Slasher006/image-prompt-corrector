@@ -140,6 +140,74 @@ class PromptCorrectorBridgeTests(unittest.TestCase):
             },
         )
 
+    def test_minimax_h3_i2v_push_validates_frames_and_generation_controls(self):
+        result = nodes.validate_bridge_push_payload(
+            {
+                "prompt": "Use <Picture 1> as the exact first frame.",
+                "workspace": "MiniMax H3 I2V",
+                "reference_images": ["first.png", "last.png"],
+                "parameters": {
+                    "duration": 5,
+                    "width": 864,
+                    "height": 480,
+                    "seed": 42,
+                },
+            }
+        )
+
+        self.assertEqual(result["reference_images"], ["first.png", "last.png"])
+        self.assertEqual(
+            result["parameters"],
+            {"duration": 5.0, "width": 864, "height": 480, "seed": 42},
+        )
+
+        with self.assertRaisesRegex(
+            nodes.PromptCorrectorBridgeError,
+            "requires one first frame",
+        ):
+            nodes.validate_bridge_push_payload(
+                {
+                    "prompt": "Animate it.",
+                    "workspace": "MiniMax H3 I2V",
+                    "reference_images": [],
+                    "parameters": {},
+                }
+            )
+
+    def test_minimax_h3_bridge_exposes_first_last_frames_and_controls(self):
+        first = ("first-image", "first-mask")
+        with patch.object(
+            nodes,
+            "load_comfyui_reference_image",
+            return_value=first,
+        ) as loader:
+            result = nodes.PromptCorrectorMiniMaxH3I2VBridge().transfer(
+                "Use Picture 1 as the exact first frame.",
+                "first.png",
+                "",
+                5.0,
+                864,
+                480,
+                42,
+            )
+
+        self.assertEqual(
+            result,
+            (
+                "Use Picture 1 as the exact first frame.",
+                "MiniMax H3 I2V",
+                "first-image",
+                "first-mask",
+                None,
+                None,
+                5.0,
+                864,
+                480,
+                42,
+            ),
+        )
+        loader.assert_called_once_with("first.png")
+
     def test_push_payload_rejects_empty_or_unknown_workspace(self):
         with self.assertRaisesRegex(
             nodes.PromptCorrectorBridgeError,

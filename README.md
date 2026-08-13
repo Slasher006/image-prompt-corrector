@@ -57,6 +57,9 @@ See [Contributing](CONTRIBUTING.md) for development checks and
 - An embedded FLUX.2 Klein Image Edit tab with explicit edit/preservation
   instructions, editable role presets, vision-model analysis, output-folder
   reload, mask painting, and direct ComfyUI transport for up to eight images.
+- A persistent MiniMax H3 I2V tab with exact first/optional last frames,
+  local-vision motion and audio prompt preparation, 1-15 second duration,
+  low-VRAM and native resolution presets, and direct structured ComfyUI transport.
 - Mutually exclusive persistent **Safe for work** and **Explicit adult (NSFW)** modes for prompt correction, comics, memes, batches, A/B variants, and generated-image review.
 
 ## Requirements
@@ -311,6 +314,21 @@ with the edit workspace.
 pushes their returned input filenames together with the prompt through the
 connector bridge.
 
+For local video, open **MiniMax H3 I2V**. Choose the exact first frame and an
+optional exact last frame, describe scene continuity, temporal motion, camera
+movement, and optional native stereo audio, then click **Prepare** or use the
+selected vision-capable local model to invent/correct the H3 prompt. The default
+864 x 480 preset is a practical low-VRAM starting point; native H3 landscape,
+portrait, and square sizes are also available. **Send H3 I2V to ComfyUI** uploads
+the keyframes and transfers prompt, duration, dimensions, and seed to the
+dedicated bundled bridge node. Connect that node to ComfyUI's official
+**Image to Video (MiniMax H3)** subgraph. H3 supports natural multimodal
+instructions, native stereo audio, roughly 15-second clips, and up to 2K output;
+the local official workflow uses a native 768-pixel short edge capped at
+768 x 1344 before optional regeneration/upscaling. See the
+[MiniMax H3 release](https://www.minimax.io/blog/minimax-h3) and
+[official ComfyUI I2V template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_i2v.json).
+
 For a pull-based workflow, install the bundled
 `comfyui_promptcorrector_bridge` custom node. It exposes the newest saved
 Prompt Corrector, Comic Story, or Meme Creator result as a normal ComfyUI
@@ -337,7 +355,7 @@ For **FLUX.2 Klein 9B**, the corrector follows Black Forest Labs' documented pri
 
 The FLUX controls distinguish **Distilled (4-step)** at four inference steps and guidance `1.0` from **Base (50-step)** at 50 steps and guidance `4.0`. They also distinguish the official Qwen3 8B encoder from an abliterated Qwen3 8B compatibility profile. Abliteration is treated as changed language interpretation, not an anatomy repair; use the fixed-seed matrix below to compare it with the official encoder. The 9B weights are distributed under the FLUX Non-Commercial License. See the [official FLUX.2 overview](https://docs.bfl.ai/flux_2/flux2_overview) and [FLUX.2 Klein 9B model card](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B).
 
-Models whose names advertise 4B parameters or fewer automatically use a streamlined correction path. Their main instruction is reduced to a compact contract, and **Audit and repair** uses a short concrete audit instead of the large-model free-form audit. The path stays capped at two calls unless a hard contract still requires one targeted final repair. Missing counts, changed positions, violated exclusions, lost quoted text, panel errors, or other hard contracts still trigger repair or a conservative deterministic fallback.
+Models whose names advertise 4B parameters or fewer automatically use a streamlined correction path. Their main instruction is reduced to a compact contract, and **Audit and repair** uses a short concrete audit instead of the large-model free-form audit. A validated immutable source base is available with Audit on or off, so a hard model delta falls back safely before an avoidable whole-prompt repair. Missing counts, changed positions, violated exclusions, lost quoted text, panel errors, or other hard contracts still reject the model candidate.
 
 Some Qwen3.5 reasoning fine-tunes ignore `/no_think` and can consume the entire completion budget in `reasoning_content` without producing a prompt. The app detects this response explicitly. Prefer a Qwen3 VL instruct variant for prompt correction; the local `huihui-qwen3-vl-4b-instruct-abliterated@q8_0` model has been live-tested with the streamlined workflow.
 
@@ -502,7 +520,7 @@ The corrector now treats creativity as visual concept development rather than ad
 
 Related details are organized into entity-centered clusters. An object stays beside its material, attributes, action, position, and visual effects. For example, a light bulb is described together with its fixture, glass, color temperature, glow, illuminated surfaces, cast shadows, and reflections. The model then orders those clusters by visual hierarchy instead of preserving a scrambled draft order.
 
-For scenes with multiple people, the corrector gives each person a stable gender-or-role plus position label and repeats that label before the person's actions and attributes. Ambiguous pronouns and dropped male/female identities are hard validation failures, so the final repair pass must replace them before the prompt is returned.
+For scenes with multiple people, the corrector builds stable entity and group identities for people, objects, body parts, and high-confidence references. Inherited source ambiguity is shown as an amber advisory and correction continues; a newly introduced high-confidence ambiguity or a changed identity, actor, receiver, or ownership relation remains a hard candidate failure.
 
 Every user-authored text field is checked for clear spelling and language errors before it affects the final prompt. Exact quoted rendered text is preserved character-for-character, and uncertain names, brands, fictional terms, foreign words, or specialist vocabulary are not silently changed.
 
@@ -723,10 +741,16 @@ Run syntax checks for all application modules:
 python3 -m py_compile \
   action_emotion_presets.py \
   concept_presets.py \
+  contract_validation.py \
+  entity_resolution.py \
   krea_prompt_corrector.py \
   krea_prompt_gui.py \
   mix_ingredient_presets.py \
+  nsfw_scene_contract.py \
+  prompt_contract.py \
   prompt_workbench.py \
+  scene_dimensions.py \
+  scene_relations.py \
   visual_direction_presets.py \
   workbench_gui.py
 ```
@@ -743,6 +767,10 @@ GitHub Actions runs the same checks on Python 3.10 and 3.12.
 
 - `krea_prompt_corrector.py`: correction engine, local-model client, research,
   validation, repair, and CLI.
+- `prompt_contract.py`, `entity_resolution.py`, `scene_relations.py`,
+  `scene_dimensions.py`, and `contract_validation.py`: typed provenance and
+  authority, entity/coreference graphs, scoped scene facts, stable issue
+  severity, source-relative deltas, and immutable recovery validation.
 - `krea_prompt_gui.py`: main PySide6 desktop interface and saved-state handling.
 - `prompt_workbench.py`: project bundles, generated-image review, contracts,
   batch processing, benchmarks, and ComfyUI helpers.

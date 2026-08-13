@@ -1949,11 +1949,11 @@ class PromptCorrectorTests(unittest.TestCase):
         expanded = (
             "A red car crosses a weathered stone bridge at dawn as the first warm sunlight "
             "reaches the road. The low front three-quarter viewpoint keeps the red car "
-            "dominant while revealing its wheels following the damp curve of the bridge. "
+            "dominant while revealing the red car's wheels following the damp curve of the bridge. "
             "Fine mist hangs above the river below and catches pale gold light between the "
             "arches. Moisture darkens the old masonry and creates broken reflections beneath "
             "the moving car. The driver remains only a subtle silhouette so the vehicle and "
-            "its journey stay central. Long shadows from the parapet repeat across the road "
+            "the vehicle's journey stay central. Long shadows from the parapet repeat across the road "
             "and lead toward distant hills emerging from blue morning haze. A few loose "
             "leaves lift behind the rear tires to make the forward motion visible. Natural "
             "paint reflections follow the car's curved panels without becoming glossy or "
@@ -2046,9 +2046,137 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertEqual(completion.call_count, 3)
         self.assertEqual(temperatures, [0.25, 0.1, 0.3])
-        self.assertEqual(result, developed)
+        self.assertIn("One lantern swings", result)
+        self.assertNotIn("A lone courier", result)
+        self.assertNotIn("Her guarded posture", result)
+        self.assertTrue(
+            any("discarded unsafe sentences" in message for message in diagnostics)
+        )
         self.assertFalse(
             any("Final repair attempt 2/" in message for message in diagnostics)
+        )
+        self.assertTrue(
+            any(
+                "remaining creative-depth issues are advisory"
+                in message.casefold()
+                for message in diagnostics
+            )
+        )
+
+    def test_immutable_continuation_drops_new_ambiguous_person_and_reaction(self):
+        base = (
+            "An adult woman leans over an adult man while warm light defines "
+            "their positions."
+        )
+        continuation = (
+            "Copper reflections travel across the floor and reveal worn stone texture. "
+            "Someone trembles from the pressure. "
+            "Steam catches amber highlights beneath the ceiling."
+        )
+
+        cleaned = corrector.sanitize_immutable_creative_continuation(
+            base,
+            continuation,
+            original_prompt=base,
+            explicit_nsfw=True,
+        )
+
+        self.assertIn("Copper reflections", cleaned)
+        self.assertIn("Steam catches amber highlights", cleaned)
+        self.assertNotIn("Someone", cleaned)
+        self.assertNotIn("trembles", cleaned)
+
+    def test_input_contract_conflict_stops_before_model_inference(self):
+        diagnostics: list[str] = []
+
+        with patch("krea_prompt_corrector.chat_completion") as completion:
+            with self.assertRaisesRegex(RuntimeError, "Input contract conflict"):
+                corrector.post_chat_completion(
+                    base_url="http://127.0.0.1:1234/v1",
+                    model="test-4b",
+                    prompt="A centered bottle with no flowers.",
+                    goal_headline="Pink flowers surround the bottle.",
+                    temperature=0.3,
+                    max_tokens=300,
+                    timeout=30,
+                    api_key="test",
+                    content_format="Single Image",
+                    diagnostic_callback=diagnostics.append,
+                )
+
+        completion.assert_not_called()
+        self.assertTrue(
+            any(
+                "before model inference" in message
+                for message in diagnostics
+            )
+        )
+
+    def test_reported_krea_expanded_failure_recovers_via_clean_continuation(self):
+        source = (
+            "A woman with sun-kissed skin and wild, tangled hair leans over a man "
+            "lying on a velvet-draped massage table in a dimly energetic dramatic, "
+            "steam-hazed spa, her fingers wrapped around his erect penis with brutal, "
+            "sensual precision, veins bulging like crimson cords beneath her grip as "
+            "sweat beads trickle down both of them, the air hums with tension and heat, "
+            "ambient light glows amber from hidden lanterns above, casting long shadows "
+            "that dance across their bodies, while a single drop of blood trickles from "
+            "her knuckle, she's not just touching him, she's claiming him through "
+            "pressure, rhythm, and raw physicality."
+        )
+        ownership_broken = source.replace("his erect penis", "her erect penis")
+        continuation = (
+            "Polished brass fixtures catch narrow amber reflections across charcoal tile. "
+            "Trembling rises from the pressure without a named owner. "
+            "Dense steam layers the room into translucent planes, softening the distant "
+            "shelves while leaving the central silhouettes crisp. Condensation pearls "
+            "along dark glass, worn velvet absorbs the low light, and copper highlights "
+            "trace the table edge. A low diagonal composition concentrates the humid "
+            "atmosphere around the decisive instant while deep burgundy, burnished gold, "
+            "and smoky gray create a controlled dramatic palette."
+        )
+        diagnostics: list[str] = []
+
+        with patch(
+            "krea_prompt_corrector.chat_completion",
+            side_effect=[ownership_broken, ownership_broken, continuation],
+        ) as completion:
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.4,
+                max_tokens=760,
+                timeout=30,
+                api_key="test",
+                generator_target="Krea 2",
+                content_format="Single Image",
+                detail_level="Rich caption",
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                enhance_actions=True,
+                develop_story=True,
+                artistic_detail_freedom=True,
+                altered_text_encoder=True,
+                explicit_nsfw=True,
+                audit_repair=False,
+                diagnostic_callback=diagnostics.append,
+            )
+
+        self.assertEqual(completion.call_count, 3)
+        self.assertIn("claiming him through pressure", result)
+        self.assertNotIn("Trembling rises", result)
+        self.assertEqual(
+            corrector.final_compliance_issues(
+                result,
+                generator_target="Krea 2",
+                original_prompt=source,
+                output_length="Expanded",
+                risk_level="Creative enhancement",
+                develop_story=True,
+                explicit_nsfw=True,
+            ),
+            [],
         )
         self.assertTrue(
             any(
@@ -2057,15 +2185,12 @@ class PromptCorrectorTests(unittest.TestCase):
                 for message in diagnostics
             )
         )
-        self.assertEqual(
-            corrector.creative_development_issues(
-                result,
-                source,
-                output_length="Expanded",
-                risk_level="Creative enhancement",
-                develop_story=True,
-            ),
-            [],
+        self.assertTrue(
+            any(
+                "discarded" in message.casefold()
+                and "ambiguous people or unbound reactions" in message.casefold()
+                for message in diagnostics
+            )
         )
 
     def test_compact_candidate_mechanically_restores_visible_story_before_audit(self):
@@ -2222,7 +2347,12 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertEqual(completion.call_count, 3)
         self.assertEqual(temperatures, [0.25, 0.1, 0.3])
-        self.assertEqual(result, developed)
+        self.assertIn("One lantern swings", result)
+        self.assertNotIn("A lone courier", result)
+        self.assertNotIn("Her guarded posture", result)
+        self.assertTrue(
+            any("discarded unsafe sentences" in message for message in diagnostics)
+        )
         expansion_messages = completion.call_args_list[2].kwargs["messages"]
         self.assertIn(
             "Return continuation prose only",
@@ -3369,6 +3499,22 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("sunny public park", fallback)
         self.assertIn("adult partner", fallback)
 
+    def test_explicit_translation_preserves_slang_body_target_contract(self):
+        source = (
+            "An adult man thrusts a grotesque sex toy while his cock remains "
+            "visible in the scene."
+        )
+
+        translated = corrector.translate_explicit_adult_language(
+            corrector.deterministic_fidelity_fallback(source)
+        )
+
+        self.assertIn("his penis", translated)
+        self.assertEqual(
+            corrector.nsfw_scene_contract_issues(translated, source),
+            [],
+        )
+
     def test_explicit_solo_source_does_not_gain_support_implied_partner(self):
         self.assertEqual(
             corrector.explicit_support_participant_contract(
@@ -3605,8 +3751,8 @@ class PromptCorrectorTests(unittest.TestCase):
                 diagnostic_callback=diagnostics.append,
             )
 
-        self.assertEqual(completion.call_count, 2)
-        self.assertIn("tip points toward the vaginal opening", result)
+        self.assertEqual(completion.call_count, 1)
+        self.assertIn("uses a dildo vaginally", result)
         self.assertTrue(
             any(
                 "Initial model candidate rejected by validation" in message
@@ -3615,10 +3761,7 @@ class PromptCorrectorTests(unittest.TestCase):
             )
         )
         self.assertTrue(
-            any(
-                "Final repair attempt 1/1 is addressing" in message
-                for message in diagnostics
-            )
+            any("fidelity fallback" in message.casefold() for message in diagnostics)
         )
 
     def test_reported_explicit_failure_uses_clean_validated_fallback_and_logs_selection(self):
@@ -3658,7 +3801,7 @@ class PromptCorrectorTests(unittest.TestCase):
                 diagnostic_callback=diagnostics.append,
             )
 
-        self.assertEqual(completion.call_count, 3)
+        self.assertEqual(completion.call_count, 2)
         self.assertIn("kneeling", result)
         self.assertIn("she has trouble", result)
         self.assertIn("because it is so big", result)
@@ -3683,6 +3826,9 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn(
             "Deterministic fidelity fallback passed validation and was selected.",
             diagnostics,
+        )
+        self.assertFalse(
+            any("Final repair attempt" in message for message in diagnostics)
         )
 
     def test_post_completion_reports_optional_audit_failure_and_continues(self):
@@ -3822,7 +3968,7 @@ class PromptCorrectorTests(unittest.TestCase):
         hard, _soft = corrector.split_compliance_issues(issues)
         self.assertTrue(any("Multi-person role ambiguity" in issue for issue in hard))
 
-    def test_source_ambiguity_is_a_terminal_hard_contract(self):
+    def test_source_ambiguity_is_advisory_when_preserved(self):
         source = (
             "Two people stand in a cave; he holds a torch while she helps them."
         )
@@ -3833,14 +3979,14 @@ class PromptCorrectorTests(unittest.TestCase):
         )
 
         hard, soft = corrector.split_compliance_issues(issues)
-        self.assertTrue(
+        self.assertFalse(
             any("Source multi-person ambiguity preserved" in issue for issue in hard)
         )
-        self.assertFalse(
+        self.assertTrue(
             any("Source multi-person ambiguity preserved" in issue for issue in soft)
         )
 
-    def test_post_completion_rejects_preserved_source_ambiguity(self):
+    def test_post_completion_returns_preserved_source_ambiguity_as_advisory(self):
         source = (
             "Two people stand in a cave; he holds a torch while she helps them."
         )
@@ -3848,24 +3994,41 @@ class PromptCorrectorTests(unittest.TestCase):
             "krea_prompt_corrector.chat_completion",
             return_value=source,
         ) as completion:
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "could not preserve the prompt's hard fidelity contract",
-            ):
-                corrector.post_chat_completion(
-                    base_url="http://127.0.0.1:1234/v1",
-                    model="test-4b",
-                    prompt=source,
-                    temperature=0.2,
-                    max_tokens=400,
-                    timeout=30,
-                    api_key="test",
-                    output_length="Concise",
-                    audit_repair=False,
-                    altered_text_encoder=False,
-                )
+            result = corrector.post_chat_completion(
+                base_url="http://127.0.0.1:1234/v1",
+                model="test-4b",
+                prompt=source,
+                temperature=0.2,
+                max_tokens=400,
+                timeout=30,
+                api_key="test",
+                output_length="Concise",
+                audit_repair=False,
+                altered_text_encoder=False,
+            )
 
-        self.assertGreaterEqual(completion.call_count, 1)
+        self.assertEqual(result, corrector.normalize_final_prompt_text(source))
+        completion.assert_called_once()
+
+    def test_new_role_ambiguity_remains_hard_when_source_issue_differs(self):
+        source = "Two people stand in a cave; he holds a torch while she helps them."
+        candidate = (
+            "Two people stand in a cave; their torch flickers while someone follows."
+        )
+
+        issues = corrector.final_compliance_issues(
+            candidate,
+            original_prompt=source,
+            output_length="Concise",
+        )
+        hard, soft = corrector.split_compliance_issues(issues)
+
+        self.assertTrue(
+            any("ambiguous person references: someone, their" in issue for issue in hard)
+        )
+        self.assertTrue(
+            any("action verbs are not clearly bound" in issue for issue in soft)
+        )
 
     def test_final_compliance_issues_reports_dropped_gender_identity(self):
         issues = corrector.final_compliance_issues(
@@ -3950,6 +4113,19 @@ class PromptCorrectorTests(unittest.TestCase):
                     [],
                 )
 
+    def test_instrumental_through_is_not_a_spatial_contract(self):
+        source = (
+            "An adult woman is claiming him through pressure while the mood is "
+            "shown through posture."
+        )
+
+        self.assertEqual(corrector.extract_spatial_contracts(source), [])
+        self.assertTrue(
+            corrector.extract_spatial_contracts(
+                "A courier walks through the gate and looks through a window."
+            )
+        )
+
     def test_sexual_inside_contact_is_not_a_generic_spatial_contract(self):
         for source in (
             "she forces the dildo inside her hot",
@@ -4004,6 +4180,22 @@ class PromptCorrectorTests(unittest.TestCase):
             )
         )
 
+    def test_adult_goal_authorizes_requested_ejaculation_wording(self):
+        issues = corrector.final_compliance_issues(
+            "Two adult partners pose together as the adult man shows a visible semen release.",
+            original_prompt="Two adult partners pose together.",
+            goal_headline="The adult man visibly ejaculates.",
+            output_length="Concise",
+            explicit_nsfw=True,
+        )
+
+        self.assertFalse(
+            any(
+                "unrequested sexual fluid or outcome added: semen" in issue
+                for issue in issues
+            )
+        )
+
     def test_exclusion_contract_understands_absence_forms_and_people_proxies(self):
         source = "A clean product photo without flowers or people."
         self.assertEqual(
@@ -4019,6 +4211,134 @@ class PromptCorrectorTests(unittest.TestCase):
                 source,
             )
         )
+
+    def test_descriptive_negation_does_not_become_a_hard_exclusion(self):
+        source = (
+            "The suspended sculpture emits no sound but radiates amber light "
+            "over obsidian floor tiles."
+        )
+
+        self.assertEqual(corrector.extract_excluded_terms(source), [])
+        self.assertIn(
+            "radiates amber light over obsidian floor tiles",
+            corrector.text_without_negative_constraints(source),
+        )
+        self.assertEqual(
+            corrector.input_contract_conflict_issues(
+                source,
+                content_format="Single Image",
+            ),
+            [],
+        )
+
+    def test_only_explicit_constraint_grammar_creates_hard_exclusions(self):
+        self.assertEqual(
+            corrector.extract_excluded_terms(
+                "Do not crop her face and keep both hands visible."
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.extract_excluded_terms(
+                "A woman with no fear in her eyes. Emphasize her eyes."
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.extract_excluded_terms(
+                "Avoid harsh light while preserving warm floor reflections."
+            ),
+            ["harsh light"],
+        )
+        self.assertEqual(
+            corrector.input_contract_conflict_issues(
+                "Avoid harsh light while preserving warm floor reflections.",
+                goal_headline="Emphasize the warm floor reflections.",
+                content_format="Single Image",
+            ),
+            [],
+        )
+
+    def test_preflight_counts_require_explicit_exactness_and_full_entity_match(self):
+        self.assertEqual(
+            corrector.extract_count_contracts(
+                "One of ecstatic agony, framed with a 24 mm lens."
+            ),
+            [],
+        )
+        self.assertEqual(
+            corrector.input_contract_conflict_issues(
+                "Exactly one red car stands on the left.",
+                goal_headline="Exactly two blue cars stand on the right.",
+                content_format="Single Image",
+            ),
+            [],
+        )
+        issues = corrector.input_contract_conflict_issues(
+            "Exactly one red car stands on the left.",
+            goal_headline="Exactly two red cars stand on the right.",
+            content_format="Single Image",
+        )
+        self.assertTrue(
+            any('Input count conflict for "red car"' in issue for issue in issues)
+        )
+
+    def test_input_contract_preflight_finds_cross_field_hard_conflicts(self):
+        issues = corrector.input_contract_conflict_issues(
+            "Exactly one red car stands on the left. No flowers. "
+            "Point-of-view shot.",
+            goal_headline=(
+                "Exactly two red cars stand on the right beside pink flowers."
+            ),
+            visual_direction="Over-the-shoulder view.",
+            content_format="Single Image",
+        )
+        joined = "\n".join(issues)
+
+        self.assertIn('Input exclusion conflict for "flowers"', joined)
+        self.assertIn('Input count conflict for "red car"', joined)
+        self.assertNotIn("Input camera conflict", joined)
+        self.assertIn('Input position conflict for "red car"', joined)
+
+    def test_input_contract_preflight_allows_positive_absence_and_source_hybrid(self):
+        self.assertEqual(
+            corrector.input_contract_conflict_issues(
+                "A sunny photoreal afternoon with a rainbow. No shadows. "
+                "One adult woman stands alone.",
+                goal_headline=(
+                    "A rainy vector-art influence with soft shadowless illumination "
+                    "around the woman."
+                ),
+                content_format="Single Image",
+            ),
+            [],
+        )
+
+    def test_support_fields_supply_hard_exclusion_count_and_position_contracts(self):
+        exclusion = corrector.final_compliance_issues(
+            "A centered black bottle surrounded by pink flowers.",
+            original_prompt="A centered black bottle in a clean studio.",
+            goal_headline="No flowers.",
+            output_length="Concise",
+        )
+        count = corrector.final_compliance_issues(
+            "One red car stands beneath a softbox.",
+            original_prompt="A red car in a studio.",
+            goal_headline="Exactly two red cars stand together.",
+            output_length="Concise",
+        )
+        position = corrector.final_compliance_issues(
+            "A red car remains on the right side of the frame.",
+            original_prompt="A red car in a studio.",
+            goal_headline="The red car stays on the left side of the frame.",
+            output_length="Concise",
+        )
+
+        self.assertTrue(
+            any("Excluded content appears positively: flowers" in issue for issue in exclusion)
+        )
+        self.assertTrue(any("Count contract" in issue for issue in count))
+        self.assertTrue(any("Spatial contract" in issue for issue in position))
 
     def test_unexpected_script_stripper_removes_leaks_but_preserves_user_text(self):
         english_source = "A weathered portrait on a gallery wall."
@@ -5233,28 +5553,9 @@ class PromptCorrectorTests(unittest.TestCase):
 
         self.assertIn("solarpunk dragon", result.lower())
         self.assertIn('"OPEN"', result)
-        self.assertEqual(len(captured_payloads), 2)
-        repair_system = captured_payloads[1]["messages"][0]["content"]
-        repair_user = captured_payloads[1]["messages"][1]["content"]
-        for expected in (
-            "Shape the prompt toward this visual direction: Cinematic",
-            "Preserve the user's wording and visual intent very strictly",
-            "Enhance described actions",
-            "Story development is disabled",
-        ):
-            self.assertIn(expected, repair_system)
-        for expected in (
-            "Mode: Cinematic",
-            "Detail level: Rich caption",
-            "Rewrite risk: Strict cleanup",
-            "Prompt preset: Cinematic action",
-            "Preserve wording strictly: True",
-            "Keep the greenhouse architecture prominent",
-            "Grounded research context",
-            "Reference image findings",
-            "Concept integration context",
-        ):
-            self.assertIn(expected, repair_user)
+        # The valid immutable source base wins before an avoidable second
+        # full-prompt repair, independently of the Audit setting.
+        self.assertEqual(len(captured_payloads), 1)
 
     def test_noncompliant_repairs_return_best_usable_candidate(self):
         responses = [
@@ -5491,6 +5792,28 @@ class PromptCorrectorTests(unittest.TestCase):
             [],
         )
 
+    def test_flux_positive_framing_repairs_reported_shadow_fallback_forms(self):
+        source_variant = corrector.naturalize_flux_positive_framing(
+            "No shadows, no distractions. Only the central subject remains."
+        )
+        model_variant = corrector.naturalize_flux_positive_framing(
+            "Soft studio lighting without casting shadows or distractions."
+        )
+
+        for cleaned in (source_variant, model_variant):
+            self.assertIn("shadowless illumination", cleaned)
+            self.assertIn("uncluttered composition", cleaned)
+            self.assertEqual(corrector.flux_klein_prompt_rule_issues(cleaned), [])
+
+    def test_flux_positive_framing_repairs_other_reported_exclusions(self):
+        for prompt in (
+            "No human skin or eyes visible.",
+            "No other figures or objects present.",
+        ):
+            with self.subTest(prompt=prompt):
+                cleaned = corrector.naturalize_flux_positive_framing(prompt)
+                self.assertEqual(corrector.flux_klein_prompt_rule_issues(cleaned), [])
+
     def test_flux_rules_detect_conflicting_lenses_pronoun_duplicates_and_not(self):
         self.assertIn(
             "conflicting camera lens wording: 28mm, 50mm",
@@ -5586,13 +5909,13 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("unrequested additional adult participant", fidelity)
         self.assertTrue(corrector.is_hard_compliance_issue(fidelity))
 
-    def test_preserved_source_ambiguity_remains_a_hard_issue(self):
+    def test_preserved_source_ambiguity_is_advisory(self):
         issue = (
             "Source multi-person ambiguity preserved: action verbs are not "
             "clearly bound to a named person"
         )
 
-        self.assertTrue(corrector.is_hard_compliance_issue(issue))
+        self.assertFalse(corrector.is_hard_compliance_issue(issue))
 
     def test_single_image_penile_ventral_orientation_is_a_hard_contract(self):
         source = (
@@ -6074,6 +6397,140 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertTrue(any("Possible spelling errors" in issue for issue in issues))
         self.assertIn("medieval", corrector.concept_search_query("medivial knight"))
 
+    def test_preflight_spelling_correction_preserves_exact_quoted_text(self):
+        self.assertEqual(
+            corrector.correct_common_spelling(
+                'A ligth enviroment with a sign reading "LIGTH enviroment".'
+            ),
+            'A light environment with a sign reading "LIGTH enviroment".',
+        )
+        self.assertEqual(
+            corrector.normalize_invent_candidate(
+                "single",
+                "draft",
+                "A detialed charachter in warm ligthing.",
+            ),
+            "A detailed character in warm lighting.",
+        )
+
+    def test_invent_scene_rejects_unresolved_entity_references(self):
+        issues = corrector.invent_field_issues(
+            "single",
+            "draft",
+            "Two women stand together while her coat moves in the wind.",
+        )
+        self.assertTrue(
+            any("unresolved entity references" in issue for issue in issues)
+        )
+        self.assertEqual(
+            corrector.invent_field_issues(
+                "single",
+                "draft",
+                "A woman and a man stand together while her red coat moves.",
+            ),
+            [],
+        )
+
+        object_issues = corrector.invent_field_issues(
+            "single",
+            "draft",
+            "A cat sits beside a lamp while its surface glows.",
+        )
+        self.assertTrue(
+            any("unresolved entity references" in issue for issue in object_issues)
+        )
+
+        draft_messages = corrector.build_single_image_field_suggestion_messages(
+            field="draft",
+            draft="A woman in a red coat stands in a studio.",
+        )
+        self.assertIn(
+            "Every pronoun and possessive must have exactly one clear antecedent",
+            draft_messages[0]["content"],
+        )
+
+    def test_invent_reference_recovery_never_guesses_a_genuine_antecedent(self):
+        seed = "A woman in a red coat stands in a studio."
+        candidate = (
+            "A woman in a red coat stands in a studio. A second woman enters. "
+            "Her silver necklace glows. Amber light fills the room."
+        )
+
+        recovered = corrector.recover_invent_reference_ambiguity(
+            "single",
+            "draft",
+            candidate,
+            seed_value=seed,
+        )
+
+        self.assertEqual(
+            recovered,
+            (
+                "A woman in a red coat stands in a studio. A second woman enters. "
+                "Amber light fills the room."
+            ),
+        )
+        self.assertEqual(
+            corrector.invent_field_issues(
+                "single",
+                "draft",
+                recovered,
+                seed_value=seed,
+            ),
+            [],
+        )
+
+        one_sentence = (
+            "A woman and a second woman stand in a studio while her silver "
+            "necklace glows."
+        )
+        self.assertEqual(
+            corrector.recover_invent_reference_ambiguity(
+                "single",
+                "draft",
+                one_sentence,
+                seed_value=seed,
+            ),
+            seed,
+        )
+
+        ambiguous_seed = "Two women stand while her coat moves."
+        self.assertEqual(
+            corrector.recover_invent_reference_ambiguity(
+                "single",
+                "draft",
+                ambiguous_seed,
+                seed_value=ambiguous_seed,
+            ),
+            ambiguous_seed,
+        )
+        self.assertTrue(
+            corrector.invent_field_issues(
+                "single",
+                "draft",
+                ambiguous_seed,
+                seed_value=ambiguous_seed,
+            )
+        )
+
+    def test_unambiguous_its_reference_expands_named_body_part(self):
+        prompt = "The penis is visible. Its tip releases semen."
+        resolved = corrector.resolve_unambiguous_entity_references(prompt)
+
+        self.assertEqual(
+            resolved,
+            "The penis is visible. The penis's tip releases semen.",
+        )
+        self.assertEqual(corrector.unresolved_entity_reference_issues(resolved), [])
+
+    def test_object_reference_issues_keep_ambiguous_it(self):
+        prompt = "A cat sits beside a lamp. It glows."
+        self.assertEqual(
+            corrector.resolve_unambiguous_entity_references(prompt),
+            prompt,
+        )
+        self.assertTrue(corrector.unresolved_entity_reference_issues(prompt))
+
     def test_parse_weighted_terms_reads_priority_values(self):
         terms = corrector.parse_weighted_terms(
             "face:1.6, red cloak=1.3, torchlight*1.15, face:1.1, background:4"
@@ -6461,6 +6918,39 @@ class PromptCorrectorTests(unittest.TestCase):
                     corrector.contradiction_issues(prompt, prompt),
                     [],
                 )
+
+    def test_contradiction_check_ignores_contextual_running_and_standing_nouns(self):
+        for prompt in (
+            "A seated driver checks the running lights.",
+            "A seated person rests beside standing water.",
+            "A seated designer works at a standing desk.",
+        ):
+            with self.subTest(prompt=prompt):
+                self.assertEqual(corrector.contradiction_issues(prompt), [])
+
+        self.assertTrue(
+            corrector.contradiction_issues(
+                "The same adult is running while also seated."
+            )
+        )
+        self.assertTrue(
+            corrector.contradiction_issues(
+                "The same adult is standing while also seated."
+            )
+        )
+
+    def test_style_conflict_check_uses_complete_terms(self):
+        self.assertEqual(
+            corrector.style_conflict_issues(
+                "A macroscopic wide angle landscape."
+            ),
+            [],
+        )
+        self.assertTrue(
+            corrector.style_conflict_issues(
+                "A macro wide angle landscape."
+            )
+        )
 
     def test_intent_lock_ignores_prepended_style_and_camera_controls(self):
         source = (
@@ -8258,7 +8748,6 @@ class PromptCorrectorTests(unittest.TestCase):
                 story_elements="the skateboarder catches the board as rain splashes from the concrete",
             )
 
-        self.assertIn("mid-kickflip", result)
         self.assertNotIn("\u2014", result)
         self.assertIn("brutalist architecture", result)
         self.assertIn("rain slick concrete", result)
@@ -8297,11 +8786,7 @@ class PromptCorrectorTests(unittest.TestCase):
         self.assertIn("User transformation instructions", messages[1]["content"])
         self.assertIn("grounded sports photography", messages[1]["content"])
         self.assertIn(draft, messages[1]["content"])
-        self.assertEqual(captured["payloads"][1]["messages"][0]["role"], "system")
-        self.assertIn("deterministic validation", captured["payloads"][1]["messages"][0]["content"])
-        self.assertIn("Coherent story invention and extension is authorized", captured["payloads"][1]["messages"][0]["content"])
-        self.assertIn("Validation issues", captured["payloads"][1]["messages"][1]["content"])
-        self.assertIn("between 35 and 75 words", captured["payloads"][1]["messages"][1]["content"])
+        self.assertEqual(len(captured["payloads"]), 1)
 
     def test_generation_feedback_guides_revision_without_becoming_a_final_constraint(self):
         completed_prompt = (
@@ -8558,7 +9043,8 @@ class PromptCorrectorTests(unittest.TestCase):
                 concept_keywords="medivial armor",
             )
 
-        self.assertEqual(len(captured_payloads), 3)
+        self.assertEqual(len(captured_payloads), 2)
+        self.assertEqual(len(responses), 1)
         self.assertIn("medieval armor", result)
         self.assertIn("creative director and precision prompt editor", captured_payloads[0]["messages"][0]["content"])
         self.assertIn(
@@ -8574,10 +9060,6 @@ class PromptCorrectorTests(unittest.TestCase):
             captured_payloads[1]["messages"][1]["content"],
         )
         self.assertIn("medieval armor", captured_payloads[1]["messages"][1]["content"])
-        self.assertIn(
-            "deterministic validation",
-            captured_payloads[2]["messages"][0]["content"],
-        )
 
     def test_unexpected_lm_studio_response_raises_clear_error(self):
         with patch("urllib.request.urlopen", return_value=FakeResponse({"bad": "shape"})):
@@ -8999,6 +9481,16 @@ class PromptCorrectorTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_explicit_style_revision_supersedes_old_medium(self):
+        issues = corrector.final_compliance_issues(
+            "A watercolor portrait of a woman.",
+            original_prompt="A portrait photograph of a woman.",
+            goal_headline="Change style to watercolor.",
+            output_length="Concise",
+        )
+        hard, _soft = corrector.split_compliance_issues(issues)
+        self.assertEqual(hard, [])
 
     def test_open_palms_conflict_with_two_occupied_hands(self):
         conflict = (

@@ -8,6 +8,9 @@ function matchingBridgeNodes(workspace) {
         if (workspace === "FLUX Image Edit") {
             return node.type === "PromptCorrectorFluxImageEditBridge";
         }
+        if (workspace === "MiniMax H3 I2V") {
+            return node.type === "PromptCorrectorMiniMaxH3I2VBridge";
+        }
         if (node.type !== "PromptCorrectorBridge") {
             return false;
         }
@@ -42,6 +45,32 @@ async function updateBridgeNode(node, payload, status) {
         referenceWidget.value = filename;
         await referenceWidget.callback?.(filename);
     }
+    if (node.type === "PromptCorrectorMiniMaxH3I2VBridge") {
+        const frameNames = ["first_frame", "last_frame"];
+        for (let index = 0; index < frameNames.length; index += 1) {
+            const widget = node.widgets?.find(
+                (item) => item.name === frameNames[index],
+            );
+            if (!widget) {
+                continue;
+            }
+            const filename = referenceImages[index] || "";
+            widget.value = filename;
+            await widget.callback?.(filename);
+        }
+        const parameters = payload.parameters || {};
+        for (const name of ["duration", "width", "height", "seed"]) {
+            if (!(name in parameters)) {
+                continue;
+            }
+            const widget = node.widgets?.find((item) => item.name === name);
+            if (!widget) {
+                continue;
+            }
+            widget.value = parameters[name];
+            await widget.callback?.(parameters[name]);
+        }
+    }
     if (node.promptCorrectorBridgeButton) {
         node.promptCorrectorBridgeButton.name = status;
         window.setTimeout(() => {
@@ -49,6 +78,8 @@ async function updateBridgeNode(node, payload, status) {
                 node.promptCorrectorBridgeButton.name =
                     node.type === "PromptCorrectorFluxImageEditBridge"
                         ? "Waiting for FLUX Image Edit"
+                        : node.type === "PromptCorrectorMiniMaxH3I2VBridge"
+                          ? "Waiting for MiniMax H3 I2V"
                         : "Pull latest corrected prompt";
                 node.setDirtyCanvas(true, true);
             }
@@ -117,7 +148,9 @@ app.registerExtension({
         const isTextBridge = nodeData.name === "PromptCorrectorBridge";
         const isFluxEditBridge =
             nodeData.name === "PromptCorrectorFluxImageEditBridge";
-        if (!isTextBridge && !isFluxEditBridge) {
+        const isMiniMaxH3Bridge =
+            nodeData.name === "PromptCorrectorMiniMaxH3I2VBridge";
+        if (!isTextBridge && !isFluxEditBridge && !isMiniMaxH3Bridge) {
             return;
         }
 
@@ -126,17 +159,19 @@ app.registerExtension({
             const result = onNodeCreated
                 ? onNodeCreated.apply(this, arguments)
                 : undefined;
-            if (isFluxEditBridge) {
+            if (isFluxEditBridge || isMiniMaxH3Bridge) {
                 const statusButton = this.addWidget(
                     "button",
-                    "Waiting for FLUX Image Edit",
+                    isMiniMaxH3Bridge
+                        ? "Waiting for MiniMax H3 I2V"
+                        : "Waiting for FLUX Image Edit",
                     null,
                     () => {},
                 );
                 this.promptCorrectorBridgeButton = statusButton;
                 this.size = [
                     Math.max(this.size[0], 420),
-                    Math.max(this.size[1], 520),
+                    Math.max(this.size[1], isMiniMaxH3Bridge ? 440 : 520),
                 ];
                 return result;
             }

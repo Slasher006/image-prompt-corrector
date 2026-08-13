@@ -10,6 +10,9 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from contract_validation import candidate_delta_issues, compile_prompt_contract
+from scene_relations import extract_relation_facts
+
 
 SEXUAL_SIGNAL_PATTERN = re.compile(
     r"\b(?:nsfw|nude|naked|erotic|sexual|sex|intercourse|masturbat\w*|"
@@ -18,7 +21,10 @@ SEXUAL_SIGNAL_PATTERN = re.compile(
     r"(?:grip(?:s|ped|ping)?|hold(?:s|ing)?|held|strok(?:e|es|ed|ing)|"
     r"rub(?:s|bed|bing)?)\b[^.!?;]{0,70}\b(?:penis|cock|"
     r"(?:his|her|their)(?:\s+erect)?\s+shaft|erect\s+shaft)\b|"
-    r"penetrat\w*|orgasm\w*|climax\w*|foreplay|"
+    r"penetrat\w*|penetrative\s+sex|"
+    r"fuck(?:s|ed|ing)?\s+(?:(?:an?|the)\s+)?(?:adult\s+)?"
+    r"(?:woman|man|female|male|her|him|them)\b|"
+    r"orgasm\w*|climax\w*|foreplay|"
     r"seduc\w*|intimate|kiss(?:es|ed|ing)?|dildos?|vibrators?|strap[- ]ons?|"
     r"sex\s+toys?|adult\s+toys?|bondage)\b",
     re.IGNORECASE,
@@ -36,7 +42,8 @@ ROLE_PATTERN_TEXT = (
 ROLE_PATTERN = re.compile(rf"\b{ROLE_PATTERN_TEXT}\b", re.IGNORECASE)
 
 NEGATIVE_CLAUSE_PATTERN = re.compile(
-    r"(?i)\b(?:no|without|avoid|exclude|never|do\s+not|don't)\b[^,.!?;\n]*"
+    r"(?i)\b(?:no|without|avoid|exclude|never|do\s+not|don't)\b"
+    r"(?:(?!\bbut\b)[^,.!?;\n])*"
 )
 TOY_TERM_PATTERN_TEXT = (
     r"(?:dildos?|vibrators?|strap[- ]ons?|sex\s+toys?|adult\s+toys?|"
@@ -69,6 +76,29 @@ PENIS_VENTRAL_ORIENTATION_PROMPT = (
     "The penis is oriented with its ventral underside facing the camera, the "
     "frenulum visibly centered on the ventral midline directly beneath the "
     "glans, and the dorsal surface facing away from the camera."
+)
+SEMEN_TIP_ORIGIN_PROMPT = (
+    "Visible semen emerges from the urethral opening centered at the tip of the "
+    "glans; the shaft base remains clean and continuously attached to the pelvis."
+)
+VISIBLE_SEMEN_RELEASE_PATTERN = re.compile(
+    r"\b(?:cum(?:shot)?|semen|ejaculat(?:e|es|ed|ing|ion)|spurts?|"
+    r"jets?|shoots?|sprays?|release(?:s|d|ing)?\s+(?:cum|semen))\b",
+    re.IGNORECASE,
+)
+SEMEN_WRONG_BASE_PATTERNS = (
+    re.compile(
+        r"\b(?:cum|semen|ejaculat\w*|spurts?|jets?|sprays?)\b"
+        r"[^.!?;]{0,45}\b(?:from|at|out\s+of)\s+(?:the\s+)?"
+        r"(?:penile\s+|penis\s+|shaft\s+)?(?:base|root)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:base|root)\s+of\s+(?:the\s+)?(?:penis|shaft)\b"
+        r"[^.!?;]{0,45}\b(?:releases?|emits?|shoots?|sprays?|ejaculat\w*)\b"
+        r"[^.!?;]{0,20}\b(?:cum|semen)?\b",
+        re.IGNORECASE,
+    ),
 )
 PENIS_ANATOMY_PATTERN = re.compile(
     r"\b(?:penis|penile|cock|dick|phallus|frenulum|frenular|"
@@ -519,6 +549,92 @@ def enforce_penis_ventral_orientation_contract(
         return cleaned.rstrip(" .") + ". " + PENIS_VENTRAL_ORIENTATION_PROMPT
     return PENIS_VENTRAL_ORIENTATION_PROMPT
 
+
+def requires_semen_tip_origin(text: str) -> bool:
+    """Return whether a visible penile semen release needs an origin contract."""
+
+    cleaned = NEGATIVE_CLAUSE_PATTERN.sub("", str(text or ""))
+    return bool(
+        PENIS_ANATOMY_PATTERN.search(cleaned)
+        and VISIBLE_SEMEN_RELEASE_PATTERN.search(cleaned)
+        and not re.search(
+            r"\b(?:female\s+ejaculat\w*|vaginal\s+fluid|specimen|sample|vial|cup)\b",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+
+
+def semen_tip_origin_instruction(text: str) -> str:
+    """Return private generation guidance for the anatomical emission point."""
+
+    if not requires_semen_tip_origin(text):
+        return ""
+    return (
+        "Private semen-origin anatomy contract: visible semen must emerge only "
+        "from the urethral opening centered at the tip of the glans. Keep the "
+        "shaft base clean and continuously attached to the pelvis; never depict "
+        "semen emerging from the base, root, shaft surface, or groin. Express the "
+        "correct positive anatomy naturally without quoting this private contract."
+    )
+
+
+def semen_tip_origin_issues(final_prompt: str, original_prompt: str) -> list[str]:
+    """Validate the visible origin of semen when penile release is requested."""
+
+    if not requires_semen_tip_origin(original_prompt):
+        return []
+    candidate = str(final_prompt or "")
+    issues: list[str] = []
+    if any(pattern.search(candidate) for pattern in SEMEN_WRONG_BASE_PATTERNS):
+        issues.append("semen is incorrectly emitted from the penis base or root")
+    correct_origin = bool(
+        re.search(
+            r"\b(?:cum|semen|ejaculat\w*|fluid)\b[^.!?;]{0,70}"
+            r"\b(?:from|through|at|out\s+of)\b[^.!?;]{0,35}"
+            r"\b(?:urethral\s+opening|meatus|tip\s+of\s+(?:the\s+)?glans|glans\s+tip)\b",
+            candidate,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:urethral\s+opening|meatus|tip\s+of\s+(?:the\s+)?glans|glans\s+tip)\b"
+            r"[^.!?;]{0,70}\b(?:emits?|releases?|shoots?|sprays?|spurts?|jets?)\b"
+            r"[^.!?;]{0,25}\b(?:cum|semen|ejaculate|fluid)\b",
+            candidate,
+            re.IGNORECASE,
+        )
+    )
+    if not correct_origin:
+        issues.append("semen origin is not explicitly bound to the urethral opening at the glans tip")
+    return issues
+
+
+def enforce_semen_tip_origin_contract(candidate: str, original_prompt: str) -> str:
+    """Repair wrong semen origins and add one concise positive anatomy sentence."""
+
+    cleaned = str(candidate or "").strip()
+    if not requires_semen_tip_origin(original_prompt):
+        return cleaned
+    replacements = (
+        (
+            r"(?i)\b(?:from|at|out\s+of)\s+(?:the\s+)?"
+            r"(?:penile\s+|penis\s+|shaft\s+)?(?:base|root)\b",
+            "from the urethral opening at the tip of the glans",
+        ),
+        (
+            r"(?i)\b(?:base|root)\s+of\s+(?:the\s+)?(?:penis|shaft)\b"
+            r"(?=[^.!?;]{0,45}\b(?:releases?|emits?|shoots?|sprays?|ejaculat\w*))",
+            "urethral opening at the tip of the glans",
+        ),
+    )
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned)
+    if not semen_tip_origin_issues(cleaned, original_prompt):
+        return cleaned
+    if cleaned:
+        return cleaned.rstrip(" .") + ". " + SEMEN_TIP_ORIGIN_PROMPT
+    return SEMEN_TIP_ORIGIN_PROMPT
+
 ACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("toy use", TOY_USE_PATTERN),
     (
@@ -555,7 +671,16 @@ ACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("intercourse", re.compile(r"\b(?:intercourse|making\s+love|has?\s+sex)\b", re.IGNORECASE)),
+    (
+        "intercourse",
+        re.compile(
+            r"\b(?:intercourse|penetrative\s+sex|making\s+love|"
+            r"(?:has|have|having|had)\s+sex|"
+            r"fuck(?:s|ed|ing)?\s+(?:(?:an?|the)\s+)?(?:adult\s+)?"
+            r"(?:woman|man|female|male|her|him|them))\b",
+            re.IGNORECASE,
+        ),
+    ),
     (
         "manual stimulation",
         re.compile(
@@ -576,14 +701,45 @@ BODY_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "vaginal",
         re.compile(
-            r"\b(?:vagina|vaginal|vaginally|vulva|vulval|labia|pussy)\b",
+            r"\b(?:vagina|vaginal|vaginally|vulva|vulval|labia|pussy|"
+            r"cunt|twat|snatch|cooch(?:ie)?)\b",
             re.IGNORECASE,
         ),
     ),
-    ("anal", re.compile(r"\b(?:anus|anal|anally|rectum|rectal)\b", re.IGNORECASE)),
+    (
+        "anal",
+        re.compile(
+            r"\b(?:anus|anal|anally|rectum|rectal|asshole|butt\s*hole|back\s*door)\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("oral", re.compile(r"\b(?:mouth|oral|lips|tongue)\b", re.IGNORECASE)),
-    ("chest", re.compile(r"\b(?:chest|breasts?|nipples?)\b", re.IGNORECASE)),
-    ("genital", re.compile(r"\b(?:genitals?|penis|vagina|vulva|testicles?|scrotum)\b", re.IGNORECASE)),
+    (
+        "chest",
+        re.compile(
+            r"\b(?:chest|breasts?|nipples?|tits?|boobs?|knockers|jugs|funbags)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "genital",
+        re.compile(
+            r"\b(?:genitals?|penis|cock|dick|schlong|dong|wang|vagina|vulva|"
+            r"testicles?|scrotum)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+EXPLICIT_ORAL_CONTACT_PATTERN = re.compile(
+    r"\b(?:oral\s+(?:sex|pleasure|intimacy|stimulation)|blowjobs?|cunnilingus|"
+    r"mouth-to-(?:genital|penis|vulva)\s+contact|"
+    r"(?:mouth|lips|tongue)\b[^.!?;]{0,55}\b(?:on|around|against|touching|"
+    r"contact(?:ing)?)\b[^.!?;]{0,35}\b"
+    r"(?:penis|cock|genitals?|vulva|clitoris)|"
+    r"(?:penis|cock|genitals?|vulva|clitoris)\b[^.!?;]{0,55}\b"
+    r"(?:in|inside|against|touching|contact(?:ing)?)\b[^.!?;]{0,25}\b"
+    r"(?:mouth|lips|tongue))\b",
+    re.IGNORECASE,
 )
 OBJECT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dildo", re.compile(r"\bdildos?\b", re.IGNORECASE)),
@@ -601,14 +757,29 @@ PHASE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("active", re.compile(r"\b(?:penetrat\w*|intercourse|masturbat\w*|thrust\w*|oral\s+(?:sex|pleasure)|manual\s+stimulation)\b", re.IGNORECASE)),
+    (
+        "active",
+        re.compile(
+            r"\b(?:penetrat\w*|penetrative\s+sex|intercourse|masturbat\w*|thrust\w*|"
+            r"fuck(?:s|ed|ing)?\s+(?:(?:an?|the)\s+)?(?:adult\s+)?"
+            r"(?:woman|man|female|male|her|him|them)|"
+            r"oral\s+(?:sex|pleasure)|manual\s+stimulation)\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("foreplay", re.compile(r"\b(?:foreplay|undress\w*|caress\w*|intimate\s+touch|deep\s+kiss)\b", re.IGNORECASE)),
     ("anticipation", re.compile(r"\b(?:anticipat\w*|seduc\w*|teas\w*|almost-touching|inviting\s+closer)\b", re.IGNORECASE)),
 )
 FLUID_OUTCOME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("precum", re.compile(r"\b(?:precum|pre[- ]ejaculate)\b", re.IGNORECASE)),
     ("semen", re.compile(r"\b(?:semen|cum)\b", re.IGNORECASE)),
-    ("ejaculation", re.compile(r"\bejaculat\w*\b", re.IGNORECASE)),
+    (
+        "ejaculation",
+        re.compile(
+            r"(?<!pre-)(?<!pre )\bejaculat\w*\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 ADDITIONAL_PARTICIPANT_PATTERN = re.compile(
     rf"\b(?:another|additional|second|third|fourth)\s+{ROLE_PATTERN_TEXT}\b",
@@ -806,11 +977,14 @@ def extract_nsfw_scene_contract(
         act in acts for act in ("anal sex", "vaginal intercourse")
     ):
         acts.remove("intercourse")
-    targets = (
-        [label for label, pattern in BODY_TARGET_PATTERNS if pattern.search(normalized)]
-        if acts
-        else []
-    )
+    targets = []
+    if acts:
+        for label, pattern in BODY_TARGET_PATTERNS:
+            if not pattern.search(normalized):
+                continue
+            if label == "oral" and not EXPLICIT_ORAL_CONTACT_PATTERN.search(normalized):
+                continue
+            targets.append(label)
     if "genital" in targets and any(
         value in targets for value in ("vaginal", "anal")
     ):
@@ -847,6 +1021,7 @@ def extract_nsfw_scene_contract(
             if BODY_TARGET_PATTERNS[1][1].search(dildo_context)
             else "intended body-contact point"
         )
+    scoped_relations = extract_relation_facts(text)
     return {
         "sexual": bool(SEXUAL_SIGNAL_PATTERN.search(normalized)),
         "participant_count": participant_count,
@@ -857,6 +1032,19 @@ def extract_nsfw_scene_contract(
         "dildo_use_target": dildo_use_target,
         "literal_core": _literal_dildo_contact(normalized),
         "relations": _relations(normalized),
+        "scoped_relations": [
+            {
+                "predicate": relation.predicate,
+                "actor": relation.actor_id,
+                "receiver": relation.receiver_id,
+                "object": relation.object_id,
+                "body_target": relation.body_target_id,
+                "reaction_owner": relation.reaction_owner_id,
+                "cause": relation.cause_relation_id,
+                "confidence": relation.confidence,
+            }
+            for relation in scoped_relations
+        ],
         "phases": phases,
         "visible_phase": chosen_phase,
         "reactions": reaction_terms,
@@ -945,6 +1133,16 @@ def reaction_binding_issues(text: str, *, participant_count: int | None) -> list
         if not ACTION_CAUSE_PATTERN.search(sentence):
             issues.append("reaction is not tied to its causing action or contact: " + ", ".join(reactions[:3]))
     return _unique(issues)
+
+
+def _canonical_reaction_issue(issue: str) -> str:
+    """Normalize reaction synonyms before comparing source and candidate issues."""
+
+    return re.sub(
+        r"\b(?:climax\w*|orgasm\w*)\b",
+        "climax",
+        str(issue or "").casefold(),
+    )
 
 
 def enforce_reaction_binding(text: str, original_prompt: str) -> str:
@@ -1132,8 +1330,14 @@ def nsfw_scene_contract_issues(
     for phase in sorted(candidate_phases - source_phases):
         issues.append(f"unrequested visible sexual phase or outcome added: {phase}")
     source_fluids = set(source.get("fluid_outcomes", []))
+    authorized_fluids = set(source_fluids)
+    # A requested visible ejaculation may be rendered in canonical visual
+    # wording as semen. The reverse is not necessarily true: a passive semen
+    # mention must not silently authorize a newly invented ejaculation event.
+    if "ejaculation" in source_fluids:
+        authorized_fluids.add("semen")
     candidate_fluids = set(candidate.get("fluid_outcomes", []))
-    for fluid in sorted(candidate_fluids - source_fluids):
+    for fluid in sorted(candidate_fluids - authorized_fluids):
         issues.append(f"unrequested sexual fluid or outcome added: {fluid}")
 
     candidate_relations = {
@@ -1158,13 +1362,33 @@ def nsfw_scene_contract_issues(
                 "missing or reversed sexual role binding: "
                 f"{key[0]} -> {key[1]} -> {key[2]}"
             )
+    # A fidelity fallback must never become impossible merely because the
+    # user's source already contains a compact, unbound reaction such as
+    # "both flushed". Still reject newly introduced or newly ambiguous
+    # reactions, but do not turn verbatim source ambiguity into an
+    # unrecoverable hard failure.
+    source_reaction_issues = {
+        _canonical_reaction_issue(issue)
+        for issue in reaction_binding_issues(
+            original_prompt,
+            participant_count=source_count,
+        )
+    }
     issues.extend(
-        reaction_binding_issues(
+        issue
+        for issue in reaction_binding_issues(
             final_prompt,
             participant_count=candidate_count,
         )
+        if _canonical_reaction_issue(issue) not in source_reaction_issues
     )
     issues.extend(single_phase_issues(final_prompt, content_format=content_format))
+    typed_source = compile_prompt_contract({"Draft": original_prompt})
+    for typed_issue in candidate_delta_issues(typed_source, final_prompt):
+        if typed_issue.code == "candidate.relation_reversed":
+            issues.append("scoped actor/receiver relation changed")
+        elif typed_issue.code == "candidate.ownership_reassigned":
+            issues.append("scoped body ownership changed")
     return _unique(issues)
 
 
@@ -1307,6 +1531,9 @@ def nsfw_image_audit_contract(
     penile_orientation = requests_visible_penis_ventral_orientation(
         f"{original_prompt}\n{corrected_prompt}"
     )
+    semen_tip_origin = requires_semen_tip_origin(
+        f"{original_prompt}\n{corrected_prompt}"
+    )
     cross_subject_binding = requires_explicit_cross_subject_genital_binding(
         f"{original_prompt}\n{corrected_prompt}"
     )
@@ -1340,6 +1567,15 @@ def nsfw_image_audit_contract(
                 "camera, and the dorsal surface faces away."
             ]
             if penile_orientation
+            else []
+        ),
+        *(
+            [
+                "- Required semen origin: visible semen emerges from the urethral "
+                "opening centered at the tip of the glans, never from the shaft "
+                "base, root, shaft surface, or groin."
+            ]
+            if semen_tip_origin
             else []
         ),
         f"- Required visible phase: {source.get('visible_phase') or corrected.get('visible_phase') or 'one decisive phase'}",

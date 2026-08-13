@@ -1,8 +1,8 @@
 # ComfyUI PromptCorrector Bridge
 
 This bundled custom node transfers finished text from Image Prompt Corrector
-into ComfyUI without using the clipboard. Its dedicated FLUX Image Edit node
-also receives the selected reference images.
+into ComfyUI without using the clipboard. Dedicated nodes also receive FLUX
+edit references and MiniMax H3 I2V keyframes plus generation controls.
 
 ## Install
 
@@ -60,6 +60,28 @@ PromptCorrector embeds painted masks into temporary RGBA transport copies, so
 the original reference files remain unchanged. Unused outputs receive an empty
 placeholder.
 
+### MiniMax H3 image to video
+
+1. Update ComfyUI and open its official `video_minimax_h3_i2v` template.
+2. Add **PromptCorrector MiniMax H3 I2V Bridge** from
+   `video > PromptCorrector`.
+3. Connect `prompt`, `first_frame`, optional `last_frame`, `duration`, `width`,
+   `height`, and `seed` to the matching inputs on ComfyUI's
+   **Image to Video (MiniMax H3)** subgraph.
+4. In PromptCorrector's **MiniMax H3 I2V** tab, choose the exact opening frame,
+   optionally choose an ending frame, prepare or locally correct the motion and
+   native-audio prompt, then click **Send H3 I2V to ComfyUI**.
+
+The workspace defaults to 864 x 480 for a practical local low-VRAM starting
+point and also exposes H3's 768-pixel-short-edge native landscape, portrait,
+and square sizes. Duration is restricted to H3's 1-15 second range. The bridge
+uploads one or two keyframes without changing the originals and keeps sampler
+implementation details outside H3's natural-language prompt.
+
+Official references: [MiniMax H3 overview](https://www.minimax.io/blog/minimax-h3),
+[ComfyUI H3 I2V workflow](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_i2v.json),
+and [Comfy-Org model files](https://huggingface.co/Comfy-Org/MiniMax-H3).
+
 In PromptCorrector, enable **ComfyUI > Auto-send completed results** to push each
 successful Prompt Corrector, Comic Story, or Meme Creator result automatically.
 Enable **Queue workflow after sending** to queue the currently open ComfyUI
@@ -74,5 +96,5 @@ queueing is enabled.
 
 The node definitions keep their default prompt and reference filenames empty,
 so ComfyUI's global node metadata does not expose saved content. FLUX reference
-files are uploaded to ComfyUI's normal input directory; the push event carries
-only their ComfyUI filenames, not local filesystem paths.
+and H3 keyframe files are uploaded to ComfyUI's normal input directory; the push
+event carries only their ComfyUI filenames, not local filesystem paths.

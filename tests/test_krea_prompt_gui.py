@@ -101,7 +101,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertIn("not an anatomy fix", recommendation)
 
     @mock.patch("krea_prompt_gui.messagebox.showwarning")
-    def test_camera_control_conflict_stops_before_model_request(self, showwarning):
+    def test_camera_control_authoritatively_replaces_draft_camera(self, showwarning):
         self.controller.content_format_var.set("Single Image")
         self.controller.camera_control_var.set(
             "Point-of-view shot, natural 35mm perspective"
@@ -118,12 +118,9 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             destination="prompt",
         )
 
-        self.assertFalse(allowed)
-        self.assertTrue(self.controller.ambiguity_highlight_spans)
-        self.assertIn(
-            "camera:",
-            showwarning.call_args.args[1],
-        )
+        self.assertTrue(allowed)
+        self.assertEqual(self.controller.contract_blocker_highlight_spans, [])
+        showwarning.assert_not_called()
 
     @mock.patch("krea_prompt_gui.messagebox.showwarning")
     def test_invented_environmental_motion_passes_ambiguity_preflight(
@@ -394,6 +391,103 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             ["one.png", "two.png", "three.png"],
         )
         self.assertEqual(result["reference_images"], 3)
+
+    def test_minimax_h3_i2v_push_uploads_keyframes_and_parameters(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"ok": true, "reference_images": 2}'
+        )
+        with (
+            mock.patch(
+                "krea_prompt_gui.upload_comfyui_image",
+                side_effect=["first.png", "last.png"],
+            ) as upload,
+            mock.patch(
+                "krea_prompt_gui.urllib.request.urlopen",
+                return_value=response,
+            ) as urlopen,
+        ):
+            gui.push_prompt_to_comfyui_bridge(
+                server_url="http://127.0.0.1:8188",
+                prompt="Use <Picture 1> as the exact first frame.",
+                workspace="MiniMax H3 I2V",
+                reference_image_paths=["/tmp/first.png", "/tmp/last.png"],
+                parameters={
+                    "duration": 5.0,
+                    "width": 864,
+                    "height": 480,
+                    "seed": 42,
+                },
+            )
+
+        self.assertEqual(
+            [call.kwargs["upload_name"] for call in upload.call_args_list],
+            [
+                "promptcorrector_minimax_h3_frame_1_first.png",
+                "promptcorrector_minimax_h3_frame_2_last.png",
+            ],
+        )
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["reference_images"], ["first.png", "last.png"])
+        self.assertEqual(
+            payload["parameters"],
+            {"duration": 5.0, "width": 864, "height": 480, "seed": 42},
+        )
+
+    def test_minimax_h3_llm_messages_bind_first_and_last_frames(self):
+        messages = gui.build_minimax_h3_i2v_llm_messages(
+            action="correct",
+            state={
+                "scene": "A red car in rain.",
+                "motion": "The car accelerates while the camera pans right.",
+                "audio": "Rain and engine sound.",
+                "prepared_prompt": "Draft motion prompt.",
+                "duration": 5,
+            },
+            image_data_urls=[
+                "data:image/png;base64,first",
+                "data:image/png;base64,last",
+            ],
+        )
+        content = messages[1]["content"]
+        image_items = [item for item in content if item["type"] == "image_url"]
+        joined_text = "\n".join(
+            item["text"] for item in content if item["type"] == "text"
+        )
+        self.assertEqual(len(image_items), 2)
+        self.assertIn("Picture 1: exact first frame", joined_text)
+        self.assertIn("Picture 2: optional exact final frame", joined_text)
+        self.assertIn("native stereo", messages[0]["content"])
+        self.assertIn("otherwise repeat the exact noun", messages[0]["content"])
+
+    def test_entity_reference_repair_turn_preserves_grounded_request(self):
+        original = gui.build_minimax_h3_i2v_llm_messages(
+            action="correct",
+            state={"prepared_prompt": "A cat sits beside a lamp. It glows."},
+            image_data_urls=["data:image/png;base64,first"],
+        )
+        repaired = gui.build_entity_reference_repair_messages(
+            original,
+            candidate="A cat sits beside a lamp. It glows.",
+            issues=['Ambiguous reference "It" in Candidate'],
+            output_kind="MiniMax H3 prompt",
+        )
+
+        self.assertEqual(repaired[:2], original)
+        self.assertEqual(repaired[2]["role"], "assistant")
+        self.assertIn("repeat", repaired[3]["content"])
+        self.assertIn("MiniMax H3 prompt", repaired[3]["content"])
+
+    def test_minimax_h3_workspace_is_persistent_embedded_tab(self):
+        widget = self.controller.minimax_h3_i2v_window
+        self.assertIsNotNone(widget)
+        self.assertEqual(self.controller.mode_tabs.indexOf(widget), 5)
+        widget.motion.setPlainText("The camera slowly pushes in.")
+        snapshot = self.controller._settings_snapshot()
+        self.assertEqual(
+            snapshot["minimax_h3_i2v"]["motion"],
+            "The camera slowly pushes in.",
+        )
 
     def test_flux_image_edit_is_embedded_tab_and_sends_three_references(self):
         self.controller.show_flux_image_edit_window()
@@ -745,7 +839,7 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         self.assertNotIn("Generation feedback", sent["model_instructions"])
 
-    def test_ambiguity_preflight_blocks_model_and_marks_disputed_words_red(self):
+    def test_role_ambiguity_is_highlighted_but_correction_continues(self):
         prompt = "Two people enter a cave; he follows her while they carry a torch."
         self.controller.camera_control_var.set("Auto")
         self.controller.draft_text.setPlainText(prompt)
@@ -756,26 +850,22 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         ):
             self.controller.correct_prompt()
 
-        thread_class.assert_not_called()
-        warning.assert_called_once()
+        thread_class.return_value.start.assert_called_once()
+        warning.assert_not_called()
         highlighted = {
             prompt[start:end].casefold()
             for start, end in self.controller.ambiguity_highlight_spans
         }
         self.assertTrue({"he", "her", "they"}.issubset(highlighted))
-        red_selections = [
+        advisory_selections = [
             selection
             for selection in self.controller.draft_text.extraSelections()
-            if selection.format.foreground().color().name() == "#ff6677"
+            if selection.format.foreground().color().name() == "#ffbf69"
         ]
-        self.assertGreaterEqual(len(red_selections), 3)
-        self.assertEqual(
-            self.controller.status_var.get(),
-            "Clarify highlighted ambiguity",
-        )
+        self.assertGreaterEqual(len(advisory_selections), 3)
         activity = self.controller.activity_text.toPlainText()
-        self.assertIn("Ambiguity preflight stopped correction", activity)
-        self.assertNotIn("Started prompt correction", activity)
+        self.assertIn("continuing with automatic correction", activity)
+        self.assertIn("Started prompt correction", activity)
 
     def test_ambiguity_preflight_allows_first_person_single_subject(self):
         self.controller.camera_control_var.set(
@@ -790,6 +880,39 @@ class PromptCorrectorGuiTests(unittest.TestCase):
 
         thread_class.return_value.start.assert_called_once()
         self.assertEqual(self.controller.ambiguity_highlight_spans, [])
+
+    def test_input_contract_preflight_blocks_cross_field_exclusion_before_worker(self):
+        self.controller.content_format_var.set("Single Image")
+        self.controller.camera_control_var.set("Auto")
+        self.controller.draft_text.setPlainText(
+            "A centered black bottle in a clean studio. No flowers."
+        )
+        self.controller.goal_headline_var.set(
+            "Pink flowers surround the bottle."
+        )
+
+        with (
+            mock.patch("krea_prompt_gui.threading.Thread") as thread_class,
+            mock.patch.object(gui.messagebox, "showwarning") as warning,
+        ):
+            self.controller.correct_prompt()
+
+        thread_class.assert_not_called()
+        warning.assert_called_once()
+        self.assertEqual(
+            self.controller.status_var.get(),
+            "Resolve input contract conflict",
+        )
+        activity = self.controller.activity_text.toPlainText()
+        self.assertIn("Input contract preflight stopped correction", activity)
+        self.assertIn("flowers", activity)
+        self.assertNotIn("Started prompt correction", activity)
+        blocker_selections = [
+            selection
+            for selection in self.controller.draft_text.extraSelections()
+            if selection.format.foreground().color().name() == "#ff6677"
+        ]
+        self.assertGreaterEqual(len(blocker_selections), 1)
 
     def test_context_tokens_default_dropdown_and_legacy_migration(self):
         self.assertEqual(
@@ -1139,6 +1262,32 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertNotIn("separate object", diagnostic["next_step"])
         self.assertNotIn("identity, count, or position", diagnostic["next_step"])
 
+    def test_combined_exclusion_and_adult_contract_error_names_both_repairs(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "Excluded content appears positively: mouth; NSFW scene fidelity contract: "
+            "unrequested sexual fluid or outcome added: semen, reaction is not assigned "
+            "to a named adult role: orgasm",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn("remove the named excluded term", diagnostic["next_step"])
+        self.assertIn("make only the named adult role/reaction explicit", diagnostic["next_step"])
+        self.assertIn("authorize the named fluid/outcome", diagnostic["next_step"])
+
+    def test_input_contract_conflict_is_classified_as_input_problem(self):
+        diagnostic = gui.classify_workflow_error(
+            'Input contract conflict: Input exclusion conflict for "flowers"',
+            workspace="prompt",
+            stage="Input preflight",
+        )
+
+        self.assertEqual(diagnostic["category"], "input")
+        self.assertEqual(diagnostic["title"], "The current input needs attention")
+        self.assertIn("Correct the named input conflict", diagnostic["next_step"])
+
     def test_creative_development_error_gives_expansion_specific_recovery_guidance(self):
         diagnostic = gui.classify_workflow_error(
             "LM Studio could not preserve the prompt's hard fidelity contract: "
@@ -1156,6 +1305,20 @@ class PromptCorrectorGuiTests(unittest.TestCase):
             "target prompt-specific scene and story development",
             diagnostic["next_step"],
         )
+        self.assertNotIn("identity, count, or position", diagnostic["next_step"])
+
+    def test_flux_positive_prompt_error_gives_visual_state_recovery_guidance(self):
+        diagnostic = gui.classify_workflow_error(
+            "LM Studio could not preserve the prompt's hard fidelity contract: "
+            "FLUX.2 Klein positive-prompt contract: negative phrasing remains "
+            "instead of a positive desired visual state: No shadows",
+            workspace="prompt",
+            stage="Final validation",
+        )
+
+        self.assertEqual(diagnostic["category"], "contract")
+        self.assertIn("state its desired visible result positively", diagnostic["next_step"])
+        self.assertIn("soft shadowless light", diagnostic["next_step"])
         self.assertNotIn("identity, count, or position", diagnostic["next_step"])
 
     def test_unexpected_worker_exception_unlocks_ui_and_preserves_result(self):
@@ -1514,14 +1677,16 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         self.assertEqual(self.controller.active_request_id, 9)
 
     def test_ui_groups_prompt_workflow_and_direct_model_chat(self):
-        self.assertEqual(self.controller.mode_tabs.count(), 6)
+        self.assertEqual(self.controller.mode_tabs.count(), 7)
         self.assertEqual(self.controller.mode_tabs.tabText(0), "Prompt Corrector")
         self.assertEqual(self.controller.mode_tabs.tabText(1), "Comic Story")
         self.assertEqual(self.controller.mode_tabs.tabText(2), "Meme Creator")
         self.assertEqual(self.controller.mode_tabs.tabText(3), "Model Chat")
         self.assertEqual(self.controller.mode_tabs.tabText(4), "FLUX Image Edit")
-        self.assertEqual(self.controller.mode_tabs.tabText(5), "Workbench")
+        self.assertEqual(self.controller.mode_tabs.tabText(5), "MiniMax H3 I2V")
+        self.assertEqual(self.controller.mode_tabs.tabText(6), "Workbench")
         self.assertIsNotNone(self.controller.flux_image_edit_window)
+        self.assertIsNotNone(self.controller.minimax_h3_i2v_window)
         self.assertIsNotNone(self.controller.workbench_widget)
         self.assertEqual(self.controller.setup_tabs.count(), 4)
         self.assertEqual(self.controller.setup_tabs.tabText(0), "Sampling and presets")
@@ -3326,6 +3491,46 @@ class PromptCorrectorGuiTests(unittest.TestCase):
         )
         logged = "\n".join(call.args[0] for call in activity.call_args_list)
         self.assertIn("deterministic length recovery", logged)
+
+    def test_invent_repair_returns_preserved_seed_after_ambiguous_model_repair(self):
+        seed = "A woman in a red coat stands in a studio."
+        ambiguous = (
+            "A woman and a second woman stand in a studio while her silver "
+            "necklace glows."
+        )
+        with mock.patch(
+            "krea_prompt_gui.chat_completion",
+            return_value=ambiguous,
+        ) as repair:
+            with mock.patch.object(
+                self.controller,
+                "_log_activity_threadsafe",
+            ) as activity:
+                result = self.controller._normalize_or_repair_invent(
+                    request_id=self.controller.active_request_id,
+                    base_url="http://127.0.0.1:1234/v1",
+                    model="test-model",
+                    workspace="single",
+                    field="draft",
+                    response=ambiguous,
+                    seed_value=seed,
+                    temperature=0.7,
+                    seed=None,
+                )
+
+        self.assertEqual(repair.call_count, 1)
+        self.assertEqual(result, seed)
+        self.assertEqual(
+            gui.invent_field_issues(
+                "single",
+                "draft",
+                result,
+                seed_value=seed,
+            ),
+            [],
+        )
+        logged = "\n".join(call.args[0] for call in activity.call_args_list)
+        self.assertIn("returned the preserved input", logged)
 
     def test_concepts_invent_deterministically_keeps_the_existing_seed(self):
         with mock.patch("krea_prompt_gui.chat_completion") as repair:
